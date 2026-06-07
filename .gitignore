@@ -1,0 +1,4 @@
+.build/
+.claude/
+.DS_Store
+*.dmg
