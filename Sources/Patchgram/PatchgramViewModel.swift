@@ -6,10 +6,13 @@ import UniformTypeIdentifiers
 
 struct BinaryRuleRowState: Identifiable, Hashable {
     private static let dylibRuleIds: Set<String> = [
+        "binary.account.custom_settings",
         "binary.visual.bot_verification",
         "binary.visual.custom_level_rating",
         "binary.visual.hide_self_phone",
         "binary.visual.self_identity_override",
+        "binary.visual.local_personal_channel",
+        "binary.visual.fragment_phone",
         "binary.visual.peer_badge",
         "binary.visual.no_premium_anim",
         "binary.visual.disable_spoilers",
@@ -35,6 +38,8 @@ struct BinaryRuleRowState: Identifiable, Hashable {
     var botVerificationConfig: BotVerificationPatchConfig?
     var customLevelRatingConfig: CustomLevelRatingPatchConfig?
     var selfIdentityConfig: SelfIdentityPatchConfig?
+    var localPersonalChannelConfig: LocalPersonalChannelPatchConfig?
+    var fragmentPhoneConfig: FragmentPhonePatchConfig?
     var subpatches: [BinarySubpatchRowState] = []
 
     var patchDeliveryLabel: String {
@@ -55,6 +60,12 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         if status.rule.kind == .selfIdentityOverride {
             return selfIdentityConfig?.displayValue
         }
+        if status.rule.kind == .localPersonalChannel {
+            return localPersonalChannelConfig?.displayValue
+        }
+        if status.rule.kind == .fragmentPhone {
+            return fragmentPhoneConfig?.displayValue
+        }
         guard let parameter = status.rule.parameter, let parameterValue else { return nil }
         return parameter.displayValue(parameterValue)
     }
@@ -64,7 +75,9 @@ struct BinaryRuleRowState: Identifiable, Hashable {
             || (status.state == .applied && (status.rule.parameter != nil
                 || status.rule.kind == .botVerification
                 || status.rule.kind == .customLevelRating
-                || status.rule.kind == .selfIdentityOverride))
+                || status.rule.kind == .selfIdentityOverride
+                || status.rule.kind == .localPersonalChannel
+                || status.rule.kind == .fragmentPhone))
     }
 
     var updateButtonTitle: String? {
@@ -72,11 +85,12 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         return (status.rule.parameter == nil
             && status.rule.kind != .botVerification
             && status.rule.kind != .customLevelRating
-            && status.rule.kind != .selfIdentityOverride) ? "Update" : "Change"
+            && status.rule.kind != .selfIdentityOverride
+            && status.rule.kind != .localPersonalChannel) ? "Update" : "Change"
     }
 
     var needsApply: Bool {
-        if subpatches.contains(where: { $0.desiredEnabled != $0.appliedEnabled }) {
+        if subpatches.contains(where: { $0.desiredEnabled != $0.appliedEnabled || $0.parametersChanged }) {
             return true
         }
         return desiredEnabled != status.state.isEnabled || (desiredEnabled && status.state == .partial)
@@ -88,12 +102,16 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         let total = subpatches.count
         let turningOn = subpatches.filter { $0.desiredEnabled && !$0.appliedEnabled }.count
         let turningOff = subpatches.filter { !$0.desiredEnabled && $0.appliedEnabled }.count
+        let changingParameters = subpatches.filter(\.parametersChanged).count
         var parts = ["\(selected)/\(total) subpatches"]
         if turningOn > 0 {
             parts.append("+\(turningOn)")
         }
         if turningOff > 0 {
             parts.append("-\(turningOff)")
+        }
+        if changingParameters > 0 {
+            parts.append("~\(changingParameters)")
         }
         return parts.joined(separator: " ")
     }
@@ -102,13 +120,36 @@ struct BinaryRuleRowState: Identifiable, Hashable {
 struct BinarySubpatchRowState: Identifiable, Hashable {
     let id: String
     let title: String
+    let showsSettingsButton: Bool
+    let showsChangeButton: Bool
     var desiredEnabled: Bool
     var appliedEnabled: Bool
+    var parametersChanged: Bool
 }
 
 private struct BinaryCompositeSubpatchDefinition: Identifiable, Hashable {
     let id: String
     let title: String
+    let internalRuleId: String?
+    let alternativeGroup: String?
+    let showsSettingsButton: Bool
+    let showsChangeButton: Bool
+
+    init(
+        id: String,
+        title: String,
+        internalRuleId: String? = nil,
+        alternativeGroup: String? = nil,
+        showsSettingsButton: Bool = false,
+        showsChangeButton: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.internalRuleId = internalRuleId
+        self.alternativeGroup = alternativeGroup
+        self.showsSettingsButton = showsSettingsButton
+        self.showsChangeButton = showsChangeButton
+    }
 }
 
 struct BotVerificationUserPreset: Identifiable, Codable, Hashable {
@@ -196,6 +237,8 @@ final class PatchgramViewModel: ObservableObject {
     @Published var isShowingBotVerificationSettings = false
     @Published var customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:]
     @Published var selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:]
+    @Published var localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:]
+    @Published var fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:]
     @Published var writeAccessAlert: WriteAccessAlert?
 
     private let binaryEngine = BinaryPatchEngine()
@@ -203,7 +246,19 @@ final class PatchgramViewModel: ObservableObject {
     private static let botVerificationDefaultsPrefix = "Patchgram.botVerificationConfig."
     private static let customLevelRatingDefaultsPrefix = "Patchgram.customLevelRatingConfig."
     private static let selfIdentityDefaultsPrefix = "Patchgram.selfIdentityConfig."
+    private static let localPersonalChannelDefaultsPrefix = "Patchgram.localPersonalChannelConfig."
+    private static let fragmentPhoneDefaultsPrefix = "Patchgram.fragmentPhoneConfig."
     private static let botVerificationPresetsFileName = "BotVerificationPresets.json"
+    private static let customAccountDesiredSubpatchIdsKey = "Patchgram.customAccountSubpatches.desired"
+    private static let customAccountAppliedSubpatchIdsKey = "Patchgram.customAccountSubpatches.applied"
+    private static let customAccountFeatureRuleId = "binary.account.custom_settings"
+    private static let customPhoneNumberSubpatchId = "custom_phone_number"
+    private static let customUserIdSubpatchId = "custom_user_id"
+    private static let customPhoneNumberAlternativeGroup = "self_identity.custom_phone_number"
+    private static let customUserIdAlternativeGroup = "self_identity.custom_user_id"
+    private static let selfIdentityOverrideRuleId = "binary.visual.self_identity_override"
+    private static let localPersonalChannelRuleId = "binary.visual.local_personal_channel"
+    private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
     private static let appConfigDesiredSubpatchIdsKey = "Patchgram.appConfigSubpatches.desired"
     private static let appConfigAppliedSubpatchIdsKey = "Patchgram.appConfigSubpatches.applied"
     private static let appConfigFeatureRuleId = "binary.config.disable_monetization"
@@ -224,6 +279,7 @@ final class PatchgramViewModel: ObservableObject {
         "binary.visual.custom_level_rating",
         "binary.visual.hide_self_phone",
         "binary.visual.self_identity_override",
+        "binary.visual.local_personal_channel",
         "binary.visual.peer_badge",
         "binary.visual.no_premium_anim",
         "binary.visual.disable_spoilers",
@@ -242,9 +298,21 @@ final class PatchgramViewModel: ObservableObject {
         adsFeatureRuleId
     ]
     private static let compositeFeatureRuleIds: Set<String> = [
+        customAccountFeatureRuleId,
         appConfigFeatureRuleId,
         messageSettingsFeatureRuleId,
         adsFeatureRuleId
+    ]
+    private static let hiddenCustomAccountRuleIds: Set<String> = [
+        "binary.display.custom_stars",
+        "binary.display.custom_ton",
+        "binary.visual.custom_level_rating",
+        "binary.visual.peer_badge",
+        "binary.visual.bot_verification",
+        "binary.premium.local",
+        selfIdentityOverrideRuleId,
+        localPersonalChannelRuleId,
+        fragmentPhoneRuleId
     ]
     private static let messageSettingsSubpatchDefinitions: [BinaryCompositeSubpatchDefinition] = [
         BinaryCompositeSubpatchDefinition(id: "typing", title: "Typing activity"),
@@ -266,12 +334,28 @@ final class PatchgramViewModel: ObservableObject {
         BinaryCompositeSubpatchDefinition(id: "telegram_ads", title: "Telegram Ads"),
         BinaryCompositeSubpatchDefinition(id: "proxy_sponsor", title: "Proxy sponsor")
     ]
+    private static let customAccountSubpatchDefinitions: [BinaryCompositeSubpatchDefinition] = [
+        BinaryCompositeSubpatchDefinition(id: "custom_stars", title: "Custom Stars", internalRuleId: "binary.display.custom_stars", showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "custom_ton", title: "Custom TON", internalRuleId: "binary.display.custom_ton", showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "custom_level_rating", title: "Custom level rating", internalRuleId: "binary.visual.custom_level_rating", showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "visual_peer_badge", title: "Visual peer badge", internalRuleId: "binary.visual.peer_badge", showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "bot_verification", title: "Bot verification", internalRuleId: "binary.visual.bot_verification", showsSettingsButton: true, showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "local_premium", title: "Local Telegram Premium", internalRuleId: "binary.premium.local"),
+        BinaryCompositeSubpatchDefinition(id: customPhoneNumberSubpatchId, title: "Custom phone number", internalRuleId: selfIdentityOverrideRuleId, alternativeGroup: customPhoneNumberAlternativeGroup, showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: customUserIdSubpatchId, title: "Custom userID", internalRuleId: selfIdentityOverrideRuleId, alternativeGroup: customUserIdAlternativeGroup, showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "local_personal_channel", title: "Local attached channel", internalRuleId: localPersonalChannelRuleId, showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "fragment_phone", title: "Fragment phone", internalRuleId: fragmentPhoneRuleId, showsChangeButton: true)
+    ]
     private var desiredAppConfigSubpatchIds: Set<String>
     private var appliedAppConfigSubpatchIds: Set<String>
+    private var desiredCustomAccountSubpatchIds: Set<String>
+    private var appliedCustomAccountSubpatchIds: Set<String>
     private var desiredMessageSettingsSubpatchIds: Set<String>
     private var appliedMessageSettingsSubpatchIds: Set<String>
     private var desiredAdsSubpatchIds: Set<String>
     private var appliedAdsSubpatchIds: Set<String>
+    private var pendingConfigSubpatchIds: Set<String> = []
+    private var latestStatusByRuleId: [String: BinaryRuleStatus] = [:]
 
     init() {
         binaryParameterValues = Self.loadBinaryParameterValues()
@@ -279,6 +363,16 @@ final class PatchgramViewModel: ObservableObject {
         botVerificationConfigs = Self.loadBotVerificationConfigs()
         customLevelRatingConfigs = Self.loadCustomLevelRatingConfigs()
         selfIdentityConfigs = Self.loadSelfIdentityConfigs()
+        localPersonalChannelConfigs = Self.loadLocalPersonalChannelConfigs()
+        fragmentPhoneConfigs = Self.loadFragmentPhoneConfigs()
+        desiredCustomAccountSubpatchIds = Self.loadCustomAccountSubpatchIds(
+            key: Self.customAccountDesiredSubpatchIdsKey,
+            defaultValue: []
+        )
+        appliedCustomAccountSubpatchIds = Self.loadCustomAccountSubpatchIds(
+            key: Self.customAccountAppliedSubpatchIdsKey,
+            defaultValue: []
+        )
         desiredAppConfigSubpatchIds = Self.loadAppConfigSubpatchIds(
             key: Self.appConfigDesiredSubpatchIdsKey,
             defaultValue: Set(Self.appConfigSubpatchDefinitions.map(\.id))
@@ -416,6 +510,14 @@ final class PatchgramViewModel: ObservableObject {
             if !manifestSelfIdentityConfigs.isEmpty {
                 selfIdentityConfigs.merge(manifestSelfIdentityConfigs) { _, manifestValue in manifestValue }
             }
+            let manifestLocalPersonalChannelConfigs = try binaryEngine.manifestLocalPersonalChannelConfigs(appURL: appURL)
+            if !manifestLocalPersonalChannelConfigs.isEmpty {
+                localPersonalChannelConfigs.merge(manifestLocalPersonalChannelConfigs) { _, manifestValue in manifestValue }
+            }
+            let manifestFragmentPhoneConfigs = try binaryEngine.manifestFragmentPhoneConfigs(appURL: appURL)
+            if !manifestFragmentPhoneConfigs.isEmpty {
+                fragmentPhoneConfigs.merge(manifestFragmentPhoneConfigs) { _, manifestValue in manifestValue }
+            }
             let statuses: [BinaryRuleStatus]
             let statusRules = rulesForStatus()
             let manifestStatuses = try binaryEngine.manifestStatuses(appURL: appURL, rules: statusRules)
@@ -428,7 +530,9 @@ final class PatchgramViewModel: ObservableObject {
                     parameterValues: binaryParameterValuesForEngine(),
                     botVerificationConfigs: botVerificationConfigsForEngine(),
                     customLevelRatingConfigs: customLevelRatingConfigsForEngine(),
-                    selfIdentityConfigs: selfIdentityConfigsForEngine()
+                    selfIdentityConfigs: selfIdentityConfigsForEngine(),
+                    localPersonalChannelConfigs: localPersonalChannelConfigsForEngine(),
+                    fragmentPhoneConfigs: fragmentPhoneConfigsForEngine()
                 )
             }
             applyAppInspection(inspection, statuses: statuses, quick: quick)
@@ -521,7 +625,11 @@ final class PatchgramViewModel: ObservableObject {
     }
 
     private func applyAppInspection(_ inspection: AppInspection, statuses: [BinaryRuleStatus], quick: Bool) {
-        binaryRows = statuses.map {
+        latestStatusByRuleId = Dictionary(uniqueKeysWithValues: statuses.map { ($0.id, $0) })
+        reconcileCustomAccountSubpatchesFromStatuses()
+        let displayStatuses = statuses.filter { !Self.hiddenCustomAccountRuleIds.contains($0.id) }
+            + [customAccountStatus()]
+        binaryRows = displayStatuses.map {
             let subpatches = subpatchRows(for: $0)
             let desiredEnabled = Self.compositeFeatureRuleIds.contains($0.id)
                 ? !desiredSubpatchIds(for: $0.id).isEmpty
@@ -533,6 +641,8 @@ final class PatchgramViewModel: ObservableObject {
                 botVerificationConfig: botVerificationConfig(for: $0.rule),
                 customLevelRatingConfig: customLevelRatingConfig(for: $0.rule),
                 selfIdentityConfig: selfIdentityConfig(for: $0.rule),
+                localPersonalChannelConfig: localPersonalChannelConfig(for: $0.rule),
+                fragmentPhoneConfig: fragmentPhoneConfig(for: $0.rule),
                 subpatches: subpatches
             )
         }
@@ -547,7 +657,15 @@ final class PatchgramViewModel: ObservableObject {
         guard !isWorking else { return }
         guard let index = binaryRows.firstIndex(where: { $0.id == row.id }) else { return }
         if enabled {
-            if row.id == Self.appConfigFeatureRuleId {
+            if row.id == Self.customAccountFeatureRuleId {
+                guard confirmFeaturePatchDisablesAppConfigIfNeeded(enabling: Self.customAccountRule) else { return }
+                guard configureCustomAccountSubpatches(
+                    Set(Self.customAccountSubpatchDefinitions.map(\.id)),
+                    actionTitle: "Enable"
+                ) else { return }
+                desiredCustomAccountSubpatchIds = Set(Self.customAccountSubpatchDefinitions.map(\.id))
+                storeCustomAccountSubpatchIds(desiredCustomAccountSubpatchIds, key: Self.customAccountDesiredSubpatchIdsKey)
+            } else if row.id == Self.appConfigFeatureRuleId {
                 guard confirmAppConfigConflictsIfNeeded() else { return }
                 desiredAppConfigSubpatchIds = Set(Self.appConfigSubpatchDefinitions.map(\.id))
                 storeAppConfigSubpatchIds(desiredAppConfigSubpatchIds, key: Self.appConfigDesiredSubpatchIdsKey)
@@ -563,6 +681,9 @@ final class PatchgramViewModel: ObservableObject {
             } else if Self.appConfigConflictingRuleIds.contains(row.id) {
                 guard confirmFeaturePatchDisablesAppConfigIfNeeded(enabling: row.status.rule) else { return }
             }
+        } else if row.id == Self.customAccountFeatureRuleId {
+            desiredCustomAccountSubpatchIds = []
+            storeCustomAccountSubpatchIds(desiredCustomAccountSubpatchIds, key: Self.customAccountDesiredSubpatchIdsKey)
         } else if row.id == Self.appConfigFeatureRuleId {
             desiredAppConfigSubpatchIds = []
             storeAppConfigSubpatchIds(desiredAppConfigSubpatchIds, key: Self.appConfigDesiredSubpatchIdsKey)
@@ -608,6 +729,15 @@ final class PatchgramViewModel: ObservableObject {
         guard !isWorking else { return }
         guard Self.compositeFeatureRuleIds.contains(ruleId),
               binaryRows.contains(where: { $0.id == ruleId }) else { return }
+        if ruleId == Self.customAccountFeatureRuleId, enabled {
+            if let definition = Self.customAccountSubpatchDefinitions.first(where: { $0.id == subpatchId }),
+               let internalRuleId = definition.internalRuleId,
+               Self.appConfigConflictingRuleIds.contains(internalRuleId),
+               let internalRule = BinaryPatchRuleCatalog.rule(id: internalRuleId) {
+                guard confirmFeaturePatchDisablesAppConfigIfNeeded(enabling: internalRule) else { return }
+            }
+            guard configureCustomAccountSubpatches([subpatchId], actionTitle: "Enable") else { return }
+        }
         if ruleId == Self.appConfigFeatureRuleId,
            enabled,
            desiredAppConfigSubpatchIds.isEmpty {
@@ -625,10 +755,40 @@ final class PatchgramViewModel: ObservableObject {
         binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
     }
 
+    func changeSubpatch(ruleId: String, subpatchId: String) {
+        guard !isWorking else { return }
+        guard ruleId == Self.customAccountFeatureRuleId,
+              binaryRows.contains(where: { $0.id == ruleId }),
+              Self.customAccountSubpatchDefinitions.contains(where: {
+                  $0.id == subpatchId && $0.showsChangeButton
+              }) else {
+            return
+        }
+        guard configureCustomAccountSubpatches([subpatchId], actionTitle: "Change") else { return }
+        if desiredSubpatchIds(for: ruleId).contains(subpatchId)
+            || appliedSubpatchIds(for: ruleId).contains(subpatchId) {
+            pendingConfigSubpatchIds.insert(subpatchId)
+        }
+        guard let index = binaryRows.firstIndex(where: { $0.id == ruleId }) else { return }
+        binaryRows[index].desiredEnabled = !desiredSubpatchIds(for: ruleId).isEmpty
+        binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
+    }
+
     func updateAppliedPatch(for row: BinaryRuleRowState) {
         guard !isWorking else { return }
         guard let appURL else { return }
         guard verifyPatchWriteAccess(appURL: appURL) else { return }
+        if row.id == Self.customAccountFeatureRuleId {
+            let enabledSubpatches = desiredSubpatchIds(for: row.id)
+            guard !enabledSubpatches.isEmpty,
+                  configureCustomAccountSubpatches(enabledSubpatches, actionTitle: "Update") else {
+                return
+            }
+            setAppliedSubpatchIds([], for: Self.customAccountFeatureRuleId)
+            refreshCustomAccountRow()
+            applyBinaryChanges()
+            return
+        }
         let nextParameterValue: UInt64?
         let nextBotVerificationConfig: BotVerificationPatchConfig?
         let nextCustomLevelRatingConfig: CustomLevelRatingPatchConfig?
@@ -713,7 +873,9 @@ final class PatchgramViewModel: ObservableObject {
                 patchedParameterValue: nextParameterValue,
                 patchedBotVerificationConfig: nextBotVerificationConfig,
                 patchedCustomLevelRatingConfig: nextCustomLevelRatingConfig,
-                patchedSelfIdentityConfig: nextSelfIdentityConfig
+                patchedSelfIdentityConfig: nextSelfIdentityConfig,
+                patchedLocalPersonalChannelConfig: nil,
+                patchedFragmentPhoneConfig: nil
             )
             setOperationProgress(0.90, message: liveRuntimeUpdate ? "Runtime config updated." : "Opening selected app...")
             _ = closeMessage
@@ -741,18 +903,7 @@ final class PatchgramViewModel: ObservableObject {
         let pendingRows = binaryRows.filter(\.needsApply)
         guard !pendingRows.isEmpty else { return }
         guard verifyPatchWriteAccess(appURL: appURL) else { return }
-        let changes = pendingRows.map {
-            let rule = ruleForChange($0, changedGroupsOnly: true)
-            return BinaryPatchRuleChange(
-                rule: rule,
-                enabled: $0.desiredEnabled,
-                parameterValue: parameterValue(for: rule),
-                botVerificationConfig: botVerificationConfig(for: rule),
-                customLevelRatingConfig: customLevelRatingConfig(for: rule),
-                selfIdentityConfig: selfIdentityConfig(for: rule),
-                enabledAlternativeGroups: alternativeGroupsForChange($0)
-            )
-        }
+        let changes = pendingRows.flatMap { self.changes(for: $0, changedGroupsOnly: true) }
         beginOperation("Applying built app patches...")
         do {
             let liveRuntimeUpdate = try canLiveUpdateRuntimeChanges(changes, appURL: appURL)
@@ -780,6 +931,8 @@ final class PatchgramViewModel: ObservableObject {
                     patchedBotVerificationConfig: change.botVerificationConfig,
                     patchedCustomLevelRatingConfig: change.customLevelRatingConfig,
                     patchedSelfIdentityConfig: change.selfIdentityConfig,
+                    patchedLocalPersonalChannelConfig: change.localPersonalChannelConfig,
+                    patchedFragmentPhoneConfig: change.fragmentPhoneConfig,
                     enabledAlternativeGroups: change.enabledAlternativeGroups
                 )
             }
@@ -801,15 +954,44 @@ final class PatchgramViewModel: ObservableObject {
     }
 
     private func canLiveUpdateRuntimeChanges(_ changes: [BinaryPatchRuleChange], appURL: URL) throws -> Bool {
-        guard !changes.isEmpty,
-              changes.allSatisfy({ Self.runtimeRuleIds.contains($0.rule.id) }),
-              try binaryEngine.runtimeHookSupportsLiveReload(appURL: appURL) else {
+        guard !changes.isEmpty else {
+            binaryEngine.appendDiagnosticLog(
+                "LIVE RUNTIME decision result=false reason=empty-changes",
+                appURL: appURL
+            )
             return false
         }
-        let runtimeStillDesired = binaryRows.contains {
+        guard changes.allSatisfy({ Self.runtimeRuleIds.contains($0.rule.id) }) else {
+            binaryEngine.appendDiagnosticLog(
+                "LIVE RUNTIME decision result=false reason=non-runtime-change changes=\(changes.map { $0.rule.id }.joined(separator: ","))",
+                appURL: appURL
+            )
+            return false
+        }
+        let supportsLiveReload = try binaryEngine.runtimeHookSupportsLiveReload(appURL: appURL)
+        guard supportsLiveReload else {
+            binaryEngine.appendDiagnosticLog(
+                "LIVE RUNTIME decision result=false reason=hook-not-live-reloadable changes=\(changes.map { "\($0.rule.id)=\($0.enabled)" }.joined(separator: ","))",
+                appURL: appURL
+            )
+            return false
+        }
+        let runtimeStillDesired = changes.contains {
+            Self.runtimeRuleIds.contains($0.rule.id)
+                && $0.enabled
+        } || desiredCustomAccountSubpatchIds.contains { subpatchId in
+            guard let ruleId = Self.customAccountSubpatchDefinitions.first(where: { $0.id == subpatchId })?.internalRuleId else {
+                return false
+            }
+            return Self.runtimeRuleIds.contains(ruleId)
+        } || binaryRows.contains {
             Self.runtimeRuleIds.contains($0.id)
                 && $0.desiredEnabled
         }
+        binaryEngine.appendDiagnosticLog(
+            "LIVE RUNTIME decision result=\(runtimeStillDesired) reason=\(runtimeStillDesired ? "runtime-config" : "no-runtime-left") changes=\(changes.map { "\($0.rule.id)=\($0.enabled)" }.joined(separator: ","))",
+            appURL: appURL
+        )
         return runtimeStillDesired
     }
 
@@ -819,8 +1001,8 @@ final class PatchgramViewModel: ObservableObject {
         let rowsToDisable = binaryRows.filter { $0.desiredEnabled || $0.status.state.isEnabled }
         guard !rowsToDisable.isEmpty else { return }
         guard verifyPatchWriteAccess(appURL: appURL) else { return }
-        let changes = rowsToDisable.map {
-            BinaryPatchRuleChange(rule: ruleForChange($0, changedGroupsOnly: false), enabled: false)
+        let changes = rowsToDisable.flatMap {
+            self.changes(for: $0, changedGroupsOnly: false, forcedEnabled: false)
         }
         beginOperation("Disabling built app patches...")
         do {
@@ -838,9 +1020,12 @@ final class PatchgramViewModel: ObservableObject {
                     patchedBotVerificationConfig: nil,
                     patchedCustomLevelRatingConfig: nil,
                     patchedSelfIdentityConfig: nil,
+                    patchedLocalPersonalChannelConfig: nil,
+                    patchedFragmentPhoneConfig: nil,
                     enabledAlternativeGroups: change.enabledAlternativeGroups
                 )
             }
+            markAllBinaryRulesDisabled()
             setOperationProgress(0.90, message: "Opening selected app...")
             _ = closeMessage
             _ = report
@@ -881,11 +1066,24 @@ final class PatchgramViewModel: ObservableObject {
         patchedBotVerificationConfig: BotVerificationPatchConfig?,
         patchedCustomLevelRatingConfig: CustomLevelRatingPatchConfig?,
         patchedSelfIdentityConfig: SelfIdentityPatchConfig?,
+        patchedLocalPersonalChannelConfig: LocalPersonalChannelPatchConfig?,
+        patchedFragmentPhoneConfig: FragmentPhonePatchConfig?,
         enabledAlternativeGroups: Set<String>? = nil
     ) {
-        guard let index = binaryRows.firstIndex(where: { $0.id == rule.id }) else { return }
         let displayRule = BinaryPatchRuleCatalog.rule(id: rule.id) ?? rule
         let state: RuleApplicationState = enabled ? .applied : .notApplied
+        let nextStatus = BinaryRuleStatus(
+            rule: displayRule,
+            state: state,
+            detail: enabled ? "Recorded in Patchgram manifest." : "Not recorded in Patchgram manifest."
+        )
+        latestStatusByRuleId[displayRule.id] = nextStatus
+        if Self.hiddenCustomAccountRuleIds.contains(displayRule.id) {
+            markCustomAccountSubpatches(for: displayRule.id, enabled: enabled, enabledAlternativeGroups: enabledAlternativeGroups)
+            refreshCustomAccountRow()
+            return
+        }
+        guard let index = binaryRows.firstIndex(where: { $0.id == rule.id }) else { return }
         binaryRows[index].status = BinaryRuleStatus(
             rule: displayRule,
             state: state,
@@ -906,6 +1104,14 @@ final class PatchgramViewModel: ObservableObject {
         binaryRows[index].selfIdentityConfig = enabled
             ? storedSelfIdentityConfig
             : (patchedSelfIdentityConfig ?? storedSelfIdentityConfig)
+        let storedLocalPersonalChannelConfig = localPersonalChannelConfig(for: displayRule)
+        binaryRows[index].localPersonalChannelConfig = enabled
+            ? storedLocalPersonalChannelConfig
+            : (patchedLocalPersonalChannelConfig ?? storedLocalPersonalChannelConfig)
+        let storedFragmentPhoneConfig = fragmentPhoneConfig(for: displayRule)
+        binaryRows[index].fragmentPhoneConfig = enabled
+            ? storedFragmentPhoneConfig
+            : (patchedFragmentPhoneConfig ?? storedFragmentPhoneConfig)
         if Self.compositeFeatureRuleIds.contains(displayRule.id) {
             if enabled {
                 let appliedIds = subpatchIds(forAlternativeGroups: enabledAlternativeGroups, ruleId: displayRule.id)
@@ -921,10 +1127,13 @@ final class PatchgramViewModel: ObservableObject {
     }
 
     private func markAllBinaryRulesDisabled() {
+        setDesiredSubpatchIds([], for: Self.customAccountFeatureRuleId)
+        setAppliedSubpatchIds([], for: Self.customAccountFeatureRuleId)
         setDesiredSubpatchIds([], for: Self.appConfigFeatureRuleId)
         setAppliedSubpatchIds([], for: Self.appConfigFeatureRuleId)
         setDesiredSubpatchIds([], for: Self.adsFeatureRuleId)
         setAppliedSubpatchIds([], for: Self.adsFeatureRuleId)
+        pendingConfigSubpatchIds = []
         for index in binaryRows.indices {
             let rule = binaryRows[index].status.rule
             binaryRows[index].status = BinaryRuleStatus(
@@ -936,6 +1145,8 @@ final class PatchgramViewModel: ObservableObject {
             binaryRows[index].botVerificationConfig = botVerificationConfig(for: rule)
             binaryRows[index].customLevelRatingConfig = customLevelRatingConfig(for: rule)
             binaryRows[index].selfIdentityConfig = selfIdentityConfig(for: rule)
+            binaryRows[index].localPersonalChannelConfig = localPersonalChannelConfig(for: rule)
+            binaryRows[index].fragmentPhoneConfig = fragmentPhoneConfig(for: rule)
             if Self.compositeFeatureRuleIds.contains(rule.id) {
                 binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
             }
@@ -1107,15 +1318,23 @@ final class PatchgramViewModel: ObservableObject {
     }
 
     private func resetBinaryRows() {
-        binaryRows = BinaryPatchRuleCatalog.rules.map {
+        let unavailableStatuses = BinaryPatchRuleCatalog.rules.map {
+            BinaryRuleStatus(rule: $0, state: .unavailable, detail: "No app selected.")
+        }
+        latestStatusByRuleId = Dictionary(uniqueKeysWithValues: unavailableStatuses.map { ($0.id, $0) })
+        let displayStatuses = unavailableStatuses.filter { !Self.hiddenCustomAccountRuleIds.contains($0.id) }
+            + [customAccountStatus()]
+        binaryRows = displayStatuses.map {
             BinaryRuleRowState(
-                status: BinaryRuleStatus(rule: $0, state: .unavailable, detail: "No app selected."),
+                status: $0,
                 desiredEnabled: false,
-                parameterValue: parameterValue(for: $0),
-                botVerificationConfig: botVerificationConfig(for: $0),
-                customLevelRatingConfig: customLevelRatingConfig(for: $0),
-                selfIdentityConfig: selfIdentityConfig(for: $0),
-                subpatches: subpatchRows(for: BinaryRuleStatus(rule: $0, state: .unavailable, detail: "No app selected."))
+                parameterValue: parameterValue(for: $0.rule),
+                botVerificationConfig: botVerificationConfig(for: $0.rule),
+                customLevelRatingConfig: customLevelRatingConfig(for: $0.rule),
+                selfIdentityConfig: selfIdentityConfig(for: $0.rule),
+                localPersonalChannelConfig: localPersonalChannelConfig(for: $0.rule),
+                fragmentPhoneConfig: fragmentPhoneConfig(for: $0.rule),
+                subpatches: subpatchRows(for: $0)
             )
         }
     }
@@ -1145,6 +1364,78 @@ final class PatchgramViewModel: ObservableObject {
             return compositeRule(row.id, filteredTo: alternativeGroups(forSubpatchIds: changedSubpatchIds, ruleId: row.id))
         }
         return row.status.rule
+    }
+
+    private func changes(
+        for row: BinaryRuleRowState,
+        changedGroupsOnly: Bool,
+        forcedEnabled: Bool? = nil
+    ) -> [BinaryPatchRuleChange] {
+        if row.id == Self.customAccountFeatureRuleId {
+            return customAccountChanges(for: row, changedGroupsOnly: changedGroupsOnly, forcedEnabled: forcedEnabled)
+        }
+        let rule = ruleForChange(row, changedGroupsOnly: changedGroupsOnly)
+        let enabled = forcedEnabled ?? row.desiredEnabled
+        return [
+            BinaryPatchRuleChange(
+                rule: rule,
+                enabled: enabled,
+                parameterValue: enabled ? parameterValue(for: rule) : nil,
+                botVerificationConfig: enabled ? botVerificationConfig(for: rule) : nil,
+                customLevelRatingConfig: enabled ? customLevelRatingConfig(for: rule) : nil,
+                selfIdentityConfig: enabled ? selfIdentityConfig(for: rule) : nil,
+                localPersonalChannelConfig: enabled ? localPersonalChannelConfig(for: rule) : nil,
+                fragmentPhoneConfig: enabled ? fragmentPhoneConfig(for: rule) : nil,
+                enabledAlternativeGroups: enabled ? alternativeGroupsForChange(row) : nil
+            )
+        ]
+    }
+
+    private func customAccountChanges(
+        for row: BinaryRuleRowState,
+        changedGroupsOnly: Bool,
+        forcedEnabled: Bool?
+    ) -> [BinaryPatchRuleChange] {
+        let desired = forcedEnabled == false ? [] : desiredSubpatchIds(for: row.id)
+        let candidateDefinitions = changedGroupsOnly && forcedEnabled == nil
+            ? Self.customAccountSubpatchDefinitions.filter {
+                changedSubpatchIds(for: row).contains($0.id)
+                    || pendingConfigSubpatchIds.contains($0.id)
+            }
+            : Self.customAccountSubpatchDefinitions
+        var changedRuleIds = Set(candidateDefinitions.compactMap(\.internalRuleId))
+        if candidateDefinitions.contains(where: { $0.internalRuleId == Self.selfIdentityOverrideRuleId }) {
+            changedRuleIds.insert(Self.selfIdentityOverrideRuleId)
+        }
+        return changedRuleIds.compactMap { ruleId in
+            guard let rule = BinaryPatchRuleCatalog.rule(id: ruleId) else { return nil }
+            let enabled = desired.contains { subpatchId in
+                Self.customAccountSubpatchDefinitions.contains {
+                    $0.id == subpatchId && $0.internalRuleId == ruleId
+                }
+            }
+            let groups: Set<String>?
+            if ruleId == Self.selfIdentityOverrideRuleId, enabled {
+                groups = Set(Self.customAccountSubpatchDefinitions.compactMap { definition in
+                    desired.contains(definition.id) && definition.internalRuleId == ruleId
+                        ? definition.alternativeGroup
+                        : nil
+                })
+            } else {
+                groups = nil
+            }
+            return BinaryPatchRuleChange(
+                rule: rule,
+                enabled: enabled,
+                parameterValue: enabled ? parameterValue(for: rule) : nil,
+                botVerificationConfig: enabled ? botVerificationConfig(for: rule) : nil,
+                customLevelRatingConfig: enabled ? customLevelRatingConfig(for: rule) : nil,
+                selfIdentityConfig: enabled ? selfIdentityConfig(for: rule) : nil,
+                localPersonalChannelConfig: enabled ? localPersonalChannelConfig(for: rule) : nil,
+                fragmentPhoneConfig: enabled ? fragmentPhoneConfig(for: rule) : nil,
+                enabledAlternativeGroups: groups
+            )
+        }
     }
 
     private func alternativeGroupsForChange(_ row: BinaryRuleRowState) -> Set<String>? {
@@ -1182,8 +1473,11 @@ final class PatchgramViewModel: ObservableObject {
             BinarySubpatchRowState(
                 id: subpatch.id,
                 title: subpatch.title,
+                showsSettingsButton: subpatch.showsSettingsButton,
+                showsChangeButton: subpatch.showsChangeButton,
                 desiredEnabled: desiredIds.contains(subpatch.id),
-                appliedEnabled: appliedIds.contains(subpatch.id)
+                appliedEnabled: appliedIds.contains(subpatch.id),
+                parametersChanged: pendingConfigSubpatchIds.contains(subpatch.id)
             )
         }
     }
@@ -1218,8 +1512,134 @@ final class PatchgramViewModel: ObservableObject {
         return Set(groups.map { Self.subpatchId(forAlternativeGroup: $0, ruleId: ruleId) })
     }
 
+    private static var customAccountRule: BinaryPatchRule {
+        BinaryPatchRule(
+            id: customAccountFeatureRuleId,
+            title: "Custom account settings",
+            methodName: "Patchgram runtime account customizations",
+            constructorId: "custom-account-settings",
+            kind: .runtimeMemory,
+            summary: "Groups local account customization patches into one Patchgram runtime feature.",
+            disabledBehavior: "Disables the selected local account customization subpatches.",
+            riskNote: "These are local client-side display patches. Server-side Telegram account data is unchanged.",
+            supportedBuildNote: "Telegram Desktop 6.8.x arm64.",
+            replacements: []
+        )
+    }
+
+    private func customAccountStatus() -> BinaryRuleStatus {
+        let applied = appliedCustomAccountSubpatchIds
+        let desired = desiredCustomAccountSubpatchIds
+        let state: RuleApplicationState
+        let detail: String
+        let internalStatuses = Self.customAccountSubpatchDefinitions.compactMap { definition in
+            definition.internalRuleId.flatMap { latestStatusByRuleId[$0] }
+        }
+        if !internalStatuses.isEmpty,
+           internalStatuses.allSatisfy({ $0.state == .unavailable }) {
+            state = .unavailable
+            detail = "No app selected."
+        } else if applied.isEmpty {
+            state = .notApplied
+            detail = "No custom account subpatches are recorded as applied."
+        } else if !desired.isEmpty, applied != desired {
+            state = .partial
+            detail = "Some custom account subpatches differ from the selected state."
+        } else {
+            state = .applied
+            detail = "\(applied.count) custom account subpatches are recorded as applied."
+        }
+        return BinaryRuleStatus(rule: Self.customAccountRule, state: state, detail: detail)
+    }
+
+    private func reconcileCustomAccountSubpatchesFromStatuses() {
+        var reconciled = appliedCustomAccountSubpatchIds
+        for definition in Self.customAccountSubpatchDefinitions {
+            guard let ruleId = definition.internalRuleId,
+                  let status = latestStatusByRuleId[ruleId] else {
+                continue
+            }
+            if ruleId == Self.selfIdentityOverrideRuleId {
+                if !status.state.isEnabled {
+                    reconciled.remove(definition.id)
+                }
+                continue
+            }
+            if status.state.isEnabled {
+                reconciled.insert(definition.id)
+            } else {
+                reconciled.remove(definition.id)
+            }
+        }
+        let selfIdentityDefinitions = Set(Self.customAccountSubpatchDefinitions.compactMap { definition -> String? in
+            definition.internalRuleId == Self.selfIdentityOverrideRuleId ? definition.id : nil
+        })
+        if latestStatusByRuleId[Self.selfIdentityOverrideRuleId]?.state.isEnabled == true,
+           reconciled.intersection(selfIdentityDefinitions).isEmpty,
+           appliedCustomAccountSubpatchIds.intersection(selfIdentityDefinitions).isEmpty {
+            reconciled.formUnion(selfIdentityDefinitions)
+        }
+        if reconciled != appliedCustomAccountSubpatchIds {
+            appliedCustomAccountSubpatchIds = reconciled
+            storeCustomAccountSubpatchIds(reconciled, key: Self.customAccountAppliedSubpatchIdsKey)
+        }
+        pendingConfigSubpatchIds = pendingConfigSubpatchIds.filter {
+            desiredCustomAccountSubpatchIds.contains($0) || appliedCustomAccountSubpatchIds.contains($0)
+        }
+        if desiredCustomAccountSubpatchIds.isEmpty, !appliedCustomAccountSubpatchIds.isEmpty {
+            desiredCustomAccountSubpatchIds = appliedCustomAccountSubpatchIds
+            storeCustomAccountSubpatchIds(desiredCustomAccountSubpatchIds, key: Self.customAccountDesiredSubpatchIdsKey)
+        }
+    }
+
+    private func markCustomAccountSubpatches(
+        for ruleId: String,
+        enabled: Bool,
+        enabledAlternativeGroups: Set<String>?
+    ) {
+        var applied = appliedCustomAccountSubpatchIds
+        let definitions = Self.customAccountSubpatchDefinitions.filter { $0.internalRuleId == ruleId }
+        if enabled {
+            if ruleId == Self.selfIdentityOverrideRuleId {
+                let groups = enabledAlternativeGroups ?? [
+                    Self.customPhoneNumberAlternativeGroup,
+                    Self.customUserIdAlternativeGroup
+                ]
+                for definition in definitions {
+                    guard let group = definition.alternativeGroup else { continue }
+                    if groups.contains(group) {
+                        applied.insert(definition.id)
+                        pendingConfigSubpatchIds.remove(definition.id)
+                    } else {
+                        applied.remove(definition.id)
+                    }
+                }
+            } else {
+                for definition in definitions {
+                    applied.insert(definition.id)
+                    pendingConfigSubpatchIds.remove(definition.id)
+                }
+            }
+        } else {
+            for definition in definitions {
+                applied.remove(definition.id)
+                pendingConfigSubpatchIds.remove(definition.id)
+            }
+        }
+        setAppliedSubpatchIds(applied, for: Self.customAccountFeatureRuleId)
+    }
+
+    private func refreshCustomAccountRow() {
+        guard let index = binaryRows.firstIndex(where: { $0.id == Self.customAccountFeatureRuleId }) else { return }
+        binaryRows[index].status = customAccountStatus()
+        binaryRows[index].desiredEnabled = !desiredSubpatchIds(for: Self.customAccountFeatureRuleId).isEmpty
+        binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
+    }
+
     private static func subpatchDefinitions(for ruleId: String) -> [BinaryCompositeSubpatchDefinition] {
         switch ruleId {
+        case customAccountFeatureRuleId:
+            return customAccountSubpatchDefinitions
         case appConfigFeatureRuleId:
             return appConfigSubpatchDefinitions
         case messageSettingsFeatureRuleId:
@@ -1233,6 +1653,8 @@ final class PatchgramViewModel: ObservableObject {
 
     private func desiredSubpatchIds(for ruleId: String) -> Set<String> {
         switch ruleId {
+        case Self.customAccountFeatureRuleId:
+            return desiredCustomAccountSubpatchIds
         case Self.appConfigFeatureRuleId:
             return desiredAppConfigSubpatchIds
         case Self.messageSettingsFeatureRuleId:
@@ -1246,6 +1668,8 @@ final class PatchgramViewModel: ObservableObject {
 
     private func appliedSubpatchIds(for ruleId: String) -> Set<String> {
         switch ruleId {
+        case Self.customAccountFeatureRuleId:
+            return appliedCustomAccountSubpatchIds
         case Self.appConfigFeatureRuleId:
             return appliedAppConfigSubpatchIds
         case Self.messageSettingsFeatureRuleId:
@@ -1259,6 +1683,9 @@ final class PatchgramViewModel: ObservableObject {
 
     private func setDesiredSubpatchIds(_ ids: Set<String>, for ruleId: String) {
         switch ruleId {
+        case Self.customAccountFeatureRuleId:
+            desiredCustomAccountSubpatchIds = ids
+            storeCustomAccountSubpatchIds(ids, key: Self.customAccountDesiredSubpatchIdsKey)
         case Self.appConfigFeatureRuleId:
             desiredAppConfigSubpatchIds = ids
             storeAppConfigSubpatchIds(ids, key: Self.appConfigDesiredSubpatchIdsKey)
@@ -1275,6 +1702,9 @@ final class PatchgramViewModel: ObservableObject {
 
     private func setAppliedSubpatchIds(_ ids: Set<String>, for ruleId: String) {
         switch ruleId {
+        case Self.customAccountFeatureRuleId:
+            appliedCustomAccountSubpatchIds = ids
+            storeCustomAccountSubpatchIds(ids, key: Self.customAccountAppliedSubpatchIdsKey)
         case Self.appConfigFeatureRuleId:
             appliedAppConfigSubpatchIds = ids
             storeAppConfigSubpatchIds(ids, key: Self.appConfigAppliedSubpatchIdsKey)
@@ -1410,6 +1840,34 @@ final class PatchgramViewModel: ObservableObject {
         })
     }
 
+    private static func loadLocalPersonalChannelConfigs() -> [String: LocalPersonalChannelPatchConfig] {
+        let decoder = JSONDecoder()
+        return Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
+            guard rule.kind == .localPersonalChannel else { return nil }
+            let key = localPersonalChannelDefaultsPrefix + rule.id
+            let saved = UserDefaults.standard
+                .data(forKey: key)
+                .flatMap { try? decoder.decode(LocalPersonalChannelPatchConfig.self, from: $0) }
+            return (rule.id, (saved ?? LocalPersonalChannelPatchConfig.defaultConfig).normalized)
+        })
+    }
+
+    private static func loadFragmentPhoneConfigs() -> [String: FragmentPhonePatchConfig] {
+        let decoder = JSONDecoder()
+        return Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
+            guard rule.kind == .fragmentPhone else { return nil }
+            let key = fragmentPhoneDefaultsPrefix + rule.id
+            let saved = UserDefaults.standard
+                .data(forKey: key)
+                .flatMap { try? decoder.decode(FragmentPhonePatchConfig.self, from: $0) }
+            return (rule.id, (saved ?? FragmentPhonePatchConfig.defaultConfig).normalized)
+        })
+    }
+
+    private static func loadCustomAccountSubpatchIds(key: String, defaultValue: Set<String>) -> Set<String> {
+        loadSubpatchIds(key: key, knownIds: Set(customAccountSubpatchDefinitions.map(\.id)), defaultValue: defaultValue)
+    }
+
     private static func loadAppConfigSubpatchIds(key: String, defaultValue: Set<String>) -> Set<String> {
         loadSubpatchIds(key: key, knownIds: Set(appConfigSubpatchDefinitions.map(\.id)), defaultValue: defaultValue)
     }
@@ -1430,6 +1888,10 @@ final class PatchgramViewModel: ObservableObject {
     }
 
     private func storeAppConfigSubpatchIds(_ ids: Set<String>, key: String) {
+        UserDefaults.standard.set(ids.sorted(), forKey: key)
+    }
+
+    private func storeCustomAccountSubpatchIds(_ ids: Set<String>, key: String) {
         UserDefaults.standard.set(ids.sorted(), forKey: key)
     }
 
@@ -1465,6 +1927,20 @@ final class PatchgramViewModel: ObservableObject {
     private func selfIdentityConfigsForEngine() -> [String: SelfIdentityPatchConfig] {
         Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
             guard rule.kind == .selfIdentityOverride, let config = selfIdentityConfig(for: rule) else { return nil }
+            return (rule.id, config)
+        })
+    }
+
+    private func localPersonalChannelConfigsForEngine() -> [String: LocalPersonalChannelPatchConfig] {
+        Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
+            guard rule.kind == .localPersonalChannel, let config = localPersonalChannelConfig(for: rule) else { return nil }
+            return (rule.id, config)
+        })
+    }
+
+    private func fragmentPhoneConfigsForEngine() -> [String: FragmentPhonePatchConfig] {
+        Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
+            guard rule.kind == .fragmentPhone, let config = fragmentPhoneConfig(for: rule) else { return nil }
             return (rule.id, config)
         })
     }
@@ -1529,6 +2005,16 @@ final class PatchgramViewModel: ObservableObject {
         return (selfIdentityConfigs[rule.id] ?? SelfIdentityPatchConfig.defaultConfig).normalized
     }
 
+    private func localPersonalChannelConfig(for rule: BinaryPatchRule) -> LocalPersonalChannelPatchConfig? {
+        guard rule.kind == .localPersonalChannel else { return nil }
+        return (localPersonalChannelConfigs[rule.id] ?? LocalPersonalChannelPatchConfig.defaultConfig).normalized
+    }
+
+    private func fragmentPhoneConfig(for rule: BinaryPatchRule) -> FragmentPhonePatchConfig? {
+        guard rule.kind == .fragmentPhone else { return nil }
+        return (fragmentPhoneConfigs[rule.id] ?? FragmentPhonePatchConfig.defaultConfig).normalized
+    }
+
     private func storeBotVerificationConfig(_ config: BotVerificationPatchConfig, for ruleId: String) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(config.normalized) {
@@ -1540,6 +2026,20 @@ final class PatchgramViewModel: ObservableObject {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(config.normalized) {
             UserDefaults.standard.set(data, forKey: Self.selfIdentityDefaultsPrefix + ruleId)
+        }
+    }
+
+    private func storeLocalPersonalChannelConfig(_ config: LocalPersonalChannelPatchConfig, for ruleId: String) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(config.normalized) {
+            UserDefaults.standard.set(data, forKey: Self.localPersonalChannelDefaultsPrefix + ruleId)
+        }
+    }
+
+    private func storeFragmentPhoneConfig(_ config: FragmentPhonePatchConfig, for ruleId: String) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(config.normalized) {
+            UserDefaults.standard.set(data, forKey: Self.fragmentPhoneDefaultsPrefix + ruleId)
         }
     }
 
@@ -1985,7 +2485,401 @@ final class PatchgramViewModel: ObservableObject {
             return nil
         }
 
-        return SelfIdentityPatchConfig(phone: phone, userId: userIdText).normalized
+        return SelfIdentityPatchConfig(
+            phone: phone,
+            userId: userIdText,
+            phoneTargetMode: current.phoneTargetMode,
+            userIdTargetMode: current.userIdTargetMode
+        ).normalized
+    }
+
+    private func configureCustomAccountSubpatches(_ subpatchIds: Set<String>, actionTitle: String) -> Bool {
+        for definition in Self.customAccountSubpatchDefinitions where subpatchIds.contains(definition.id) {
+            guard let ruleId = definition.internalRuleId,
+                  let rule = BinaryPatchRuleCatalog.rule(id: ruleId) else {
+                continue
+            }
+            switch definition.id {
+            case Self.customPhoneNumberSubpatchId:
+                guard promptForCustomPhoneNumber(for: rule, actionTitle: actionTitle) != nil else { return false }
+            case Self.customUserIdSubpatchId:
+                guard promptForCustomUserId(for: rule, actionTitle: actionTitle) != nil else { return false }
+            default:
+                if rule.kind == .botVerification {
+                    guard let config = promptForBotVerificationConfig(for: rule, actionTitle: actionTitle) else { return false }
+                    botVerificationConfigs[rule.id] = config
+                    storeBotVerificationConfig(config, for: rule.id)
+                } else if rule.kind == .customLevelRating {
+                    guard let config = promptForCustomLevelRatingConfig(for: rule, actionTitle: actionTitle) else { return false }
+                    customLevelRatingConfigs[rule.id] = config
+                    storeCustomLevelRatingConfig(config, for: rule.id)
+                } else if rule.kind == .localPersonalChannel {
+                    guard let config = promptForLocalPersonalChannelConfig(for: rule, actionTitle: actionTitle) else { return false }
+                    localPersonalChannelConfigs[rule.id] = config
+                    storeLocalPersonalChannelConfig(config, for: rule.id)
+                } else if rule.kind == .fragmentPhone {
+                    guard let config = promptForFragmentPhoneConfig(for: rule, actionTitle: actionTitle) else { return false }
+                    fragmentPhoneConfigs[rule.id] = config
+                    storeFragmentPhoneConfig(config, for: rule.id)
+                } else if rule.parameter != nil {
+                    guard let value = promptForParameterIfNeeded(for: rule, actionTitle: actionTitle) else { return false }
+                    binaryParameterValues[rule.id] = value
+                    UserDefaults.standard.set(String(value), forKey: Self.binaryParameterDefaultsPrefix + rule.id)
+                }
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    private func promptForCustomPhoneNumber(for rule: BinaryPatchRule, actionTitle: String) -> SelfIdentityPatchConfig? {
+        guard rule.kind == .selfIdentityOverride else { return nil }
+        let current = selfIdentityConfig(for: rule) ?? SelfIdentityPatchConfig.defaultConfig
+        let alert = NSAlert()
+        alert.messageText = "Custom phone number"
+        alert.informativeText = "Enter a local phone value. Leave empty to keep Telegram's original value."
+        alert.addButton(withTitle: actionTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let labelWidth: CGFloat = 72
+        let controlX = labelWidth + 12
+        let controlWidth: CGFloat = 260
+        let rowHeight: CGFloat = 26
+        let rowGap: CGFloat = 10
+        let width = controlX + controlWidth
+        let height: CGFloat = rowHeight * 2 + rowGap
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+
+        func addLabel(_ title: String, row: Int) {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap + 3
+            let label = NSTextField(labelWithString: title + ":")
+            label.alignment = .right
+            label.frame = NSRect(x: 0, y: y, width: labelWidth, height: 20)
+            container.addSubview(label)
+        }
+
+        func rowFrame(_ row: Int) -> NSRect {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap
+            return NSRect(x: controlX, y: y, width: controlWidth, height: rowHeight)
+        }
+
+        addLabel("Mode", row: 0)
+        let targetPopup = NSPopUpButton(frame: rowFrame(0), pullsDown: false)
+        for mode in BotVerificationTargetMode.allCases {
+            targetPopup.addItem(withTitle: mode.label)
+            targetPopup.lastItem?.representedObject = mode.rawValue
+        }
+        if let index = BotVerificationTargetMode.allCases.firstIndex(of: current.phoneTargetMode) {
+            targetPopup.selectItem(at: index)
+        }
+        container.addSubview(targetPopup)
+
+        addLabel("Phone", row: 1)
+        let field = NSTextField(frame: rowFrame(1))
+        field.stringValue = current.phone
+        field.placeholderString = "+10000000000"
+        container.addSubview(field)
+        alert.accessoryView = container
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let phone = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard phone.count <= 64 else {
+            statusMessage = "Enter a phone value up to 64 characters."
+            return nil
+        }
+        let targetRaw = targetPopup.selectedItem?.representedObject as? String
+        let targetMode = targetRaw.flatMap(BotVerificationTargetMode.init(rawValue:)) ?? .onlySelf
+        let next = SelfIdentityPatchConfig(
+            phone: phone,
+            userId: current.userId,
+            phoneTargetMode: targetMode,
+            userIdTargetMode: current.userIdTargetMode
+        ).normalized
+        selfIdentityConfigs[rule.id] = next
+        storeSelfIdentityConfig(next, for: rule.id)
+        return next
+    }
+
+    @discardableResult
+    private func promptForCustomUserId(for rule: BinaryPatchRule, actionTitle: String) -> SelfIdentityPatchConfig? {
+        guard rule.kind == .selfIdentityOverride else { return nil }
+        let current = selfIdentityConfig(for: rule) ?? SelfIdentityPatchConfig.defaultConfig
+        let alert = NSAlert()
+        alert.messageText = "Custom userID"
+        alert.informativeText = "Enter a local display user id. Leave empty to keep Telegram's original value."
+        alert.addButton(withTitle: actionTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let labelWidth: CGFloat = 72
+        let controlX = labelWidth + 12
+        let controlWidth: CGFloat = 260
+        let rowHeight: CGFloat = 26
+        let rowGap: CGFloat = 10
+        let width = controlX + controlWidth
+        let height: CGFloat = rowHeight * 2 + rowGap
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+
+        func addLabel(_ title: String, row: Int) {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap + 3
+            let label = NSTextField(labelWithString: title + ":")
+            label.alignment = .right
+            label.frame = NSRect(x: 0, y: y, width: labelWidth, height: 20)
+            container.addSubview(label)
+        }
+
+        func rowFrame(_ row: Int) -> NSRect {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap
+            return NSRect(x: controlX, y: y, width: controlWidth, height: rowHeight)
+        }
+
+        addLabel("Mode", row: 0)
+        let targetPopup = NSPopUpButton(frame: rowFrame(0), pullsDown: false)
+        for mode in BotVerificationTargetMode.allCases {
+            targetPopup.addItem(withTitle: mode.label)
+            targetPopup.lastItem?.representedObject = mode.rawValue
+        }
+        if let index = BotVerificationTargetMode.allCases.firstIndex(of: current.userIdTargetMode) {
+            targetPopup.selectItem(at: index)
+        }
+        container.addSubview(targetPopup)
+
+        addLabel("User id", row: 1)
+        let field = NSTextField(frame: rowFrame(1))
+        field.stringValue = current.userId
+        field.placeholderString = "Original"
+        container.addSubview(field)
+        alert.accessoryView = container
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let userIdText = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !userIdText.isEmpty,
+           (UInt64(userIdText) == nil || UInt64(userIdText)! > 0x0000ffffffffffff) {
+            statusMessage = "Enter a valid user id from 1 to 281474976710655, or leave it empty for original."
+            return nil
+        }
+        let targetRaw = targetPopup.selectedItem?.representedObject as? String
+        let targetMode = targetRaw.flatMap(BotVerificationTargetMode.init(rawValue:)) ?? .onlySelf
+        let next = SelfIdentityPatchConfig(
+            phone: current.phone,
+            userId: userIdText,
+            phoneTargetMode: current.phoneTargetMode,
+            userIdTargetMode: targetMode
+        ).normalized
+        selfIdentityConfigs[rule.id] = next
+        storeSelfIdentityConfig(next, for: rule.id)
+        return next
+    }
+
+    private func promptForLocalPersonalChannelConfig(
+        for rule: BinaryPatchRule,
+        actionTitle: String
+    ) -> LocalPersonalChannelPatchConfig? {
+        guard rule.kind == .localPersonalChannel else { return nil }
+        let current = localPersonalChannelConfig(for: rule) ?? LocalPersonalChannelPatchConfig.defaultConfig
+        let alert = NSAlert()
+        alert.messageText = rule.title
+        alert.informativeText = "Enter a numeric channel id. Telegram Desktop stores the attached channel as ChannelId, so username is not accepted here."
+        alert.addButton(withTitle: actionTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let labelWidth: CGFloat = 80
+        let controlX = labelWidth + 12
+        let controlWidth: CGFloat = 280
+        let rowHeight: CGFloat = 26
+        let rowGap: CGFloat = 10
+        let width = controlX + controlWidth
+        let height: CGFloat = rowHeight * 3 + rowGap * 2
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+
+        func addLabel(_ title: String, row: Int) {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap + 3
+            let label = NSTextField(labelWithString: title + ":")
+            label.alignment = .right
+            label.frame = NSRect(x: 0, y: y, width: labelWidth, height: 20)
+            container.addSubview(label)
+        }
+
+        func rowFrame(_ row: Int) -> NSRect {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap
+            return NSRect(x: controlX, y: y, width: controlWidth, height: rowHeight)
+        }
+
+        addLabel("Mode", row: 0)
+        let targetPopup = NSPopUpButton(frame: rowFrame(0), pullsDown: false)
+        for mode in BotVerificationTargetMode.allCases {
+            targetPopup.addItem(withTitle: mode.label)
+            targetPopup.lastItem?.representedObject = mode.rawValue
+        }
+        if let index = BotVerificationTargetMode.allCases.firstIndex(of: current.targetMode) {
+            targetPopup.selectItem(at: index)
+        }
+        container.addSubview(targetPopup)
+
+        addLabel("Channel", row: 1)
+        let referenceField = NSTextField(frame: rowFrame(1))
+        referenceField.stringValue = current.channelReference
+        referenceField.placeholderString = "123456789 or -100123456789"
+        container.addSubview(referenceField)
+
+        addLabel("Post id", row: 2)
+        let messageField = NSTextField(frame: rowFrame(2))
+        messageField.stringValue = current.messageId == 0 ? "" : String(current.messageId)
+        messageField.placeholderString = "Optional"
+        container.addSubview(messageField)
+
+        alert.accessoryView = container
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        let reference = referenceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reference.isEmpty else {
+            statusMessage = "Enter a channel id."
+            return nil
+        }
+        let messageText = messageField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let messageId: Int32
+        if messageText.isEmpty {
+            messageId = 0
+        } else if let value = Int32(messageText), value >= 0 {
+            messageId = value
+        } else {
+            statusMessage = "Enter a valid post id, or leave it empty."
+            return nil
+        }
+        let targetRaw = targetPopup.selectedItem?.representedObject as? String
+        let targetMode = targetRaw.flatMap(BotVerificationTargetMode.init(rawValue:)) ?? .onlySelf
+        let config = LocalPersonalChannelPatchConfig(
+            channelReference: reference,
+            messageId: messageId,
+            targetMode: targetMode
+        ).normalized
+        guard config.channelId != nil else {
+            statusMessage = "Enter a numeric channel id. Usernames are not supported for this patch."
+            return nil
+        }
+        return config
+    }
+
+    private func promptForFragmentPhoneConfig(
+        for rule: BinaryPatchRule,
+        actionTitle: String
+    ) -> FragmentPhonePatchConfig? {
+        guard rule.kind == .fragmentPhone else { return nil }
+        let current = fragmentPhoneConfig(for: rule) ?? FragmentPhonePatchConfig.defaultConfig
+        let alert = NSAlert()
+        alert.messageText = rule.title
+        alert.informativeText = "Enter local fragment.collectibleInfo values. Purchase date accepts unix-time or HH:MM:SS dd.mm.yyyy."
+        alert.addButton(withTitle: actionTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let labelWidth: CGFloat = 108
+        let controlX = labelWidth + 12
+        let controlWidth: CGFloat = 300
+        let rowHeight: CGFloat = 26
+        let rowGap: CGFloat = 8
+        let width = controlX + controlWidth
+        let rows = 7
+        let height = CGFloat(rows) * rowHeight + CGFloat(rows - 1) * rowGap
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+
+        func addLabel(_ title: String, row: Int) {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap + 3
+            let label = NSTextField(labelWithString: title + ":")
+            label.alignment = .right
+            label.frame = NSRect(x: 0, y: y, width: labelWidth, height: 20)
+            container.addSubview(label)
+        }
+
+        func rowFrame(_ row: Int) -> NSRect {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap
+            return NSRect(x: controlX, y: y, width: controlWidth, height: rowHeight)
+        }
+
+        addLabel("Mode", row: 0)
+        let targetPopup = NSPopUpButton(frame: rowFrame(0), pullsDown: false)
+        for mode in BotVerificationTargetMode.allCases {
+            targetPopup.addItem(withTitle: mode.label)
+            targetPopup.lastItem?.representedObject = mode.rawValue
+        }
+        if let index = BotVerificationTargetMode.allCases.firstIndex(of: current.targetMode) {
+            targetPopup.selectItem(at: index)
+        }
+        container.addSubview(targetPopup)
+
+        addLabel("Purchase date", row: 1)
+        let dateField = NSTextField(frame: rowFrame(1))
+        dateField.stringValue = current.purchaseDateText
+        dateField.placeholderString = "0 or 12:34:56 07.06.2026"
+        container.addSubview(dateField)
+
+        addLabel("Currency", row: 2)
+        let currencyField = NSTextField(frame: rowFrame(2))
+        currencyField.stringValue = current.currency
+        currencyField.placeholderString = "USD"
+        container.addSubview(currencyField)
+
+        addLabel("Amount", row: 3)
+        let amountField = NSTextField(frame: rowFrame(3))
+        amountField.stringValue = String(current.amount)
+        amountField.placeholderString = "0"
+        container.addSubview(amountField)
+
+        addLabel("Crypto currency", row: 4)
+        let cryptoCurrencyField = NSTextField(frame: rowFrame(4))
+        cryptoCurrencyField.stringValue = current.cryptoCurrency
+        cryptoCurrencyField.placeholderString = "TON"
+        container.addSubview(cryptoCurrencyField)
+
+        addLabel("Crypto amount", row: 5)
+        let cryptoAmountField = NSTextField(frame: rowFrame(5))
+        cryptoAmountField.stringValue = String(current.cryptoAmount)
+        cryptoAmountField.placeholderString = "0"
+        container.addSubview(cryptoAmountField)
+
+        addLabel("URL", row: 6)
+        let urlField = NSTextField(frame: rowFrame(6))
+        urlField.stringValue = current.url
+        urlField.placeholderString = "https://fragment.com/number/..."
+        container.addSubview(urlField)
+
+        alert.accessoryView = container
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        func int64Value(_ field: NSTextField, label: String) -> Int64? {
+            let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return 0 }
+            guard let value = Int64(text), value >= 0 else {
+                statusMessage = "Enter a valid non-negative \(label)."
+                return nil
+            }
+            return value
+        }
+
+        guard let amount = int64Value(amountField, label: "amount"),
+              let cryptoAmount = int64Value(cryptoAmountField, label: "crypto amount") else {
+            return nil
+        }
+        let targetRaw = targetPopup.selectedItem?.representedObject as? String
+        let targetMode = targetRaw.flatMap(BotVerificationTargetMode.init(rawValue:)) ?? .onlySelf
+        let config = FragmentPhonePatchConfig(
+            targetMode: targetMode,
+            purchaseDateText: dateField.stringValue,
+            currency: currencyField.stringValue,
+            amount: amount,
+            cryptoCurrency: cryptoCurrencyField.stringValue,
+            cryptoAmount: cryptoAmount,
+            url: urlField.stringValue
+        ).normalized
+        guard config.purchaseDateUnix != nil else {
+            statusMessage = "Enter purchase date as unix-time or HH:MM:SS dd.mm.yyyy."
+            return nil
+        }
+        guard config.currency.count <= 32, config.cryptoCurrency.count <= 32 else {
+            statusMessage = "Enter currency values up to 32 characters."
+            return nil
+        }
+        guard config.url.count <= 256 else {
+            statusMessage = "Enter a URL up to 256 characters."
+            return nil
+        }
+        return config
     }
 
     private static func durationString(since start: Date) -> String {

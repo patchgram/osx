@@ -12,6 +12,8 @@ public enum BinaryPatchRuleKind: String, Codable, Sendable {
     case customLevelRating
     case hideSelfPhone
     case selfIdentityOverride
+    case localPersonalChannel
+    case fragmentPhone
     case runtimeMemory
 }
 
@@ -187,20 +189,33 @@ public struct CustomLevelRatingPatchConfig: Codable, Hashable, Sendable {
 public struct SelfIdentityPatchConfig: Codable, Hashable, Sendable {
     public static let defaultConfig = SelfIdentityPatchConfig(
         phone: "+10000000000",
-        userId: ""
+        userId: "",
+        phoneTargetMode: .onlySelf,
+        userIdTargetMode: .onlySelf
     )
 
     public let phone: String
     public let userId: String
+    public let phoneTargetMode: BotVerificationTargetMode
+    public let userIdTargetMode: BotVerificationTargetMode
 
-    public init(phone: String, userId: String) {
+    public init(
+        phone: String,
+        userId: String,
+        phoneTargetMode: BotVerificationTargetMode = .onlySelf,
+        userIdTargetMode: BotVerificationTargetMode = .onlySelf
+    ) {
         self.phone = phone
         self.userId = userId
+        self.phoneTargetMode = phoneTargetMode
+        self.userIdTargetMode = userIdTargetMode
     }
 
     private enum CodingKeys: String, CodingKey {
         case phone
         case userId
+        case phoneTargetMode
+        case userIdTargetMode
     }
 
     public init(from decoder: Decoder) throws {
@@ -213,25 +228,193 @@ public struct SelfIdentityPatchConfig: Codable, Hashable, Sendable {
         } else {
             userId = ""
         }
+        phoneTargetMode = try container.decodeIfPresent(
+            BotVerificationTargetMode.self,
+            forKey: .phoneTargetMode
+        ) ?? .onlySelf
+        userIdTargetMode = try container.decodeIfPresent(
+            BotVerificationTargetMode.self,
+            forKey: .userIdTargetMode
+        ) ?? .onlySelf
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(phone, forKey: .phone)
         try container.encode(userId, forKey: .userId)
+        try container.encode(phoneTargetMode, forKey: .phoneTargetMode)
+        try container.encode(userIdTargetMode, forKey: .userIdTargetMode)
     }
 
     public var displayValue: String {
         let phoneValue = normalized.phone.isEmpty ? "unchanged phone" : normalized.phone
         let userIdValue = normalized.userId.isEmpty ? "unchanged id" : "id \(normalized.userId)"
-        return "\(phoneValue), \(userIdValue)"
+        return "\(phoneValue) (\(normalized.phoneTargetMode.label)), \(userIdValue) (\(normalized.userIdTargetMode.label))"
     }
 
     public var normalized: SelfIdentityPatchConfig {
         SelfIdentityPatchConfig(
             phone: phone.trimmingCharacters(in: .whitespacesAndNewlines),
-            userId: userId.trimmingCharacters(in: .whitespacesAndNewlines)
+            userId: userId.trimmingCharacters(in: .whitespacesAndNewlines),
+            phoneTargetMode: phoneTargetMode,
+            userIdTargetMode: userIdTargetMode
         )
+    }
+}
+
+public struct LocalPersonalChannelPatchConfig: Codable, Hashable, Sendable {
+    public static let defaultConfig = LocalPersonalChannelPatchConfig(
+        channelReference: "",
+        messageId: 0,
+        targetMode: .onlySelf
+    )
+
+    public let channelReference: String
+    public let messageId: Int32
+    public let targetMode: BotVerificationTargetMode
+
+    private enum CodingKeys: String, CodingKey {
+        case channelReference
+        case messageId
+        case targetMode
+    }
+
+    public init(
+        channelReference: String,
+        messageId: Int32 = 0,
+        targetMode: BotVerificationTargetMode = .onlySelf
+    ) {
+        self.channelReference = channelReference
+        self.messageId = messageId
+        self.targetMode = targetMode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        channelReference = try container.decodeIfPresent(String.self, forKey: .channelReference) ?? ""
+        messageId = try container.decodeIfPresent(Int32.self, forKey: .messageId) ?? 0
+        targetMode = try container.decodeIfPresent(BotVerificationTargetMode.self, forKey: .targetMode) ?? .onlySelf
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(channelReference, forKey: .channelReference)
+        try container.encode(messageId, forKey: .messageId)
+        try container.encode(targetMode, forKey: .targetMode)
+    }
+
+    public var normalized: LocalPersonalChannelPatchConfig {
+        LocalPersonalChannelPatchConfig(
+            channelReference: channelReference.trimmingCharacters(in: .whitespacesAndNewlines),
+            messageId: max(0, messageId),
+            targetMode: targetMode
+        )
+    }
+
+    public var channelId: UInt64? {
+        let text = normalized.channelReference
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        let lowered = text.lowercased()
+        let candidate: String
+        if lowered.contains("/c/") {
+            let parts = text.split(separator: "/").map(String.init)
+            if let cIndex = parts.firstIndex(where: { $0.lowercased() == "c" }),
+               parts.indices.contains(cIndex + 1) {
+                candidate = parts[cIndex + 1]
+            } else {
+                candidate = text
+            }
+        } else {
+            candidate = text
+        }
+        let normalizedCandidate: String
+        if candidate.hasPrefix("-100") {
+            normalizedCandidate = String(candidate.dropFirst(4))
+        } else if candidate.hasPrefix("100"), candidate.count > 10 {
+            normalizedCandidate = String(candidate.dropFirst(3))
+        } else {
+            normalizedCandidate = candidate
+        }
+        guard let value = UInt64(normalizedCandidate), value > 0 else { return nil }
+        return value
+    }
+
+    public var displayValue: String {
+        let value = normalized.channelReference
+        return value.isEmpty ? "unchanged channel" : "\(value) (\(normalized.targetMode.label))"
+    }
+}
+
+public struct FragmentPhonePatchConfig: Codable, Hashable, Sendable {
+    public static let defaultConfig = FragmentPhonePatchConfig(
+        targetMode: .onlySelf,
+        purchaseDateText: "0",
+        currency: "USD",
+        amount: 0,
+        cryptoCurrency: "TON",
+        cryptoAmount: 0,
+        url: ""
+    )
+
+    public let targetMode: BotVerificationTargetMode
+    public let purchaseDateText: String
+    public let currency: String
+    public let amount: Int64
+    public let cryptoCurrency: String
+    public let cryptoAmount: Int64
+    public let url: String
+
+    public init(
+        targetMode: BotVerificationTargetMode = .onlySelf,
+        purchaseDateText: String,
+        currency: String,
+        amount: Int64,
+        cryptoCurrency: String,
+        cryptoAmount: Int64,
+        url: String
+    ) {
+        self.targetMode = targetMode
+        self.purchaseDateText = purchaseDateText
+        self.currency = currency
+        self.amount = amount
+        self.cryptoCurrency = cryptoCurrency
+        self.cryptoAmount = cryptoAmount
+        self.url = url
+    }
+
+    public var normalized: FragmentPhonePatchConfig {
+        FragmentPhonePatchConfig(
+            targetMode: targetMode,
+            purchaseDateText: purchaseDateText.trimmingCharacters(in: .whitespacesAndNewlines),
+            currency: currency.trimmingCharacters(in: .whitespacesAndNewlines),
+            amount: max(0, amount),
+            cryptoCurrency: cryptoCurrency.trimmingCharacters(in: .whitespacesAndNewlines),
+            cryptoAmount: max(0, cryptoAmount),
+            url: url.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    public var purchaseDateUnix: Int32? {
+        let text = normalized.purchaseDateText
+        if text.isEmpty {
+            return 0
+        }
+        if let value = Int64(text), value >= 0, value <= Int64(Int32.max) {
+            return Int32(value)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "HH:mm:ss dd.MM.yyyy"
+        guard let date = formatter.date(from: text) else { return nil }
+        let timestamp = Int64(date.timeIntervalSince1970)
+        guard timestamp >= 0, timestamp <= Int64(Int32.max) else { return nil }
+        return Int32(timestamp)
+    }
+
+    public var displayValue: String {
+        "\(normalized.targetMode.label) - \(normalized.cryptoAmount) \(normalized.cryptoCurrency), \(normalized.amount) \(normalized.currency)"
     }
 }
 
@@ -1403,6 +1586,30 @@ public enum BinaryPatchRuleDefinitions {
             summary: "Installs a local runtime hook that overrides the phone string stored on your own UserData and provides a local display-only user id for Patchgram visual details.",
             disabledBehavior: "Keeps Telegram's original self phone and user id display values.",
             riskNote: "This is a local client-side display patch. It does not change your Telegram account phone, real PeerId, authorization, or server state.",
+            supportedBuildNote: unsupportedBuild,
+            replacements: []
+        ),
+        BinaryPatchRule(
+            id: "binary.visual.local_personal_channel",
+            title: "Local attached channel",
+            methodName: "UserData::personalChannelId",
+            constructorId: "local-personal-channel",
+            kind: .localPersonalChannel,
+            summary: "Installs a local runtime hook that writes a display-only personal channel id into your own UserData so Telegram Desktop shows it as attached in the self-profile.",
+            disabledBehavior: "Keeps Telegram's original personal channel value.",
+            riskNote: "This is a local client-side display patch. It does not attach a channel to your Telegram account or change server-side profile data.",
+            supportedBuildNote: unsupportedBuild,
+            replacements: []
+        ),
+        BinaryPatchRule(
+            id: "binary.visual.fragment_phone",
+            title: "Fragment phone",
+            methodName: "Info::Profile::IsCollectiblePhone / fragment.getCollectibleInfo",
+            constructorId: "fragment.getCollectibleInfo#be1e85ba / fragment.collectibleInfo#6ebdff91",
+            kind: .fragmentPhone,
+            summary: "Installs a local runtime hook that makes selected phone rows look collectible and stores local fragment.collectibleInfo values for the phone collectible dialog.",
+            disabledBehavior: "Keeps Telegram's original Fragment phone collectible detection and response data.",
+            riskNote: "This is a local client-side display patch. It does not mint or transfer a Fragment collectible phone number.",
             supportedBuildNote: unsupportedBuild,
             replacements: []
         ),

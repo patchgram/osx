@@ -1,3 +1,3 @@
 ## What's Changed
 
-- Added the Self identity override patch.
+- Added the Custom account settings patch.

@@ -226,6 +226,8 @@ private struct RuleList: View {
                             viewModel.setDesired(enabled, for: row)
                         } onSubpatchToggle: { ruleId, subpatchId, enabled in
                             viewModel.setSubpatch(ruleId: ruleId, subpatchId: subpatchId, enabled: enabled)
+                        } onSubpatchChange: { ruleId, subpatchId in
+                            viewModel.changeSubpatch(ruleId: ruleId, subpatchId: subpatchId)
                         } onUpdate: {
                             viewModel.updateAppliedPatch(for: row)
                         } onSettings: {
@@ -245,6 +247,7 @@ private struct BinaryRuleCard: View {
     let isWorking: Bool
     let onToggle: @MainActor @Sendable (Bool) -> Void
     let onSubpatchToggle: @MainActor @Sendable (String, String, Bool) -> Void
+    let onSubpatchChange: @MainActor @Sendable (String, String) -> Void
     let onUpdate: @MainActor @Sendable () -> Void
     let onSettings: @MainActor @Sendable () -> Void
     @State private var showsSubpatches = false
@@ -326,6 +329,12 @@ private struct BinaryRuleCard: View {
                                     isWorking: isWorking,
                                     onToggle: { subpatchId, enabled in
                                         onSubpatchToggle(row.id, subpatchId, enabled)
+                                    },
+                                    onChange: { subpatchId in
+                                        onSubpatchChange(row.id, subpatchId)
+                                    },
+                                    onSettings: {
+                                        onSettings()
                                     }
                                 )
                             }
@@ -500,6 +509,8 @@ private struct SubpatchToggleRow: View {
     let subpatch: BinarySubpatchRowState
     let isWorking: Bool
     let onToggle: @MainActor @Sendable (String, Bool) -> Void
+    let onChange: @MainActor @Sendable (String) -> Void
+    let onSettings: @MainActor @Sendable () -> Void
 
     var body: some View {
         Button {
@@ -514,6 +525,28 @@ private struct SubpatchToggleRow: View {
                     Text(subpatch.desiredEnabled ? "Selected" : "Will disable")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(subpatch.desiredEnabled ? .blue : .orange)
+                } else if subpatch.parametersChanged {
+                    Text("Parameters changed")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.blue)
+                }
+                if subpatch.showsChangeButton {
+                    Button("Change") {
+                        onChange(subpatch.id)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .disabled(isWorking)
+                }
+                if subpatch.showsSettingsButton {
+                    Button {
+                        onSettings()
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Manage bot verification presets")
+                    .disabled(isWorking)
                 }
                 Toggle("", isOn: .constant(subpatch.desiredEnabled))
                     .labelsHidden()

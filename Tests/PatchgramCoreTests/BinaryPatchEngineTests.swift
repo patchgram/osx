@@ -79,6 +79,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.custom_level_rating"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.hide_self_phone"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.self_identity_override"))
+        XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.fragment_phone"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.no_premium_anim"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.disable_spoilers"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.sensitive_blur"))
@@ -714,7 +715,12 @@ final class BinaryPatchEngineTests: XCTestCase {
     func testSelfIdentityRuntimeHookPersistsConfig() throws {
         let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
         let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.self_identity_override"))
-        let config = SelfIdentityPatchConfig(phone: "+15551234567", userId: "987654321")
+        let config = SelfIdentityPatchConfig(
+            phone: "+15551234567",
+            userId: "987654321",
+            phoneTargetMode: .allExceptSelf,
+            userIdTargetMode: .onlySelf
+        )
 
         let applyReport = try engine.applyRuleChanges(
             [
@@ -736,6 +742,8 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertTrue(configJSON.contains("\"selfIdentityOverrideEnabled\" : true"))
         XCTAssertTrue(configJSON.contains("\"selfIdentityOverridePhone\" : \"+15551234567\""))
         XCTAssertTrue(configJSON.contains("\"selfIdentityOverrideUserId\" : \"987654321\""))
+        XCTAssertTrue(configJSON.contains("\"customPhoneNumberTargetMode\" : \"allExceptSelf\""))
+        XCTAssertTrue(configJSON.contains("\"customUserIdTargetMode\" : \"onlySelf\""))
 
         let statuses = try engine.statuses(
             appURL: appURL,
@@ -773,6 +781,210 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertTrue(configJSON.contains("\"selfIdentityOverrideUserId\" : \"\""))
     }
 
+    func testSelfIdentityRuntimeConfigSplitsPhoneAndUserIdSubpatches() throws {
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.self_identity_override"))
+
+        _ = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    selfIdentityConfig: SelfIdentityPatchConfig(phone: "+15551234567", userId: "987654321"),
+                    enabledAlternativeGroups: ["self_identity.custom_user_id"]
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+
+        let configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"selfIdentityOverrideEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"customPhoneNumberEnabled\" : false"))
+        XCTAssertTrue(configJSON.contains("\"customUserIdEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"selfIdentityOverridePhone\" : \"+15551234567\""))
+        XCTAssertTrue(configJSON.contains("\"selfIdentityOverrideUserId\" : \"987654321\""))
+    }
+
+    func testLocalPersonalChannelRuntimeHookPersistsConfig() throws {
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.local_personal_channel"))
+        let config = LocalPersonalChannelPatchConfig(
+            channelReference: "123456789",
+            messageId: 42,
+            targetMode: .allExceptSelf
+        )
+
+        let applyReport = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    localPersonalChannelConfig: config
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+
+        XCTAssertTrue(applyReport.changedExecutable)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeConfigURL.path))
+        let configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"localPersonalChannelEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"localPersonalChannelReference\" : \"123456789\""))
+        XCTAssertTrue(configJSON.contains("\"localPersonalChannelTargetMode\" : \"allExceptSelf\""))
+        XCTAssertTrue(configJSON.contains("\"localPersonalChannelId\" : 123456789"))
+        XCTAssertTrue(configJSON.contains("\"localPersonalChannelMessageId\" : 42"))
+
+        let statuses = try engine.statuses(
+            appURL: appURL,
+            rules: [rule],
+            localPersonalChannelConfigs: [rule.id: config]
+        )
+        XCTAssertEqual(statuses.first?.state, .applied)
+    }
+
+    func testLocalPersonalChannelConfigNormalizesCommonChannelIdFormats() throws {
+        XCTAssertEqual(LocalPersonalChannelPatchConfig(channelReference: "123456789").channelId, 123456789)
+        XCTAssertEqual(LocalPersonalChannelPatchConfig(channelReference: "-100123456789").channelId, 123456789)
+        XCTAssertEqual(LocalPersonalChannelPatchConfig(channelReference: "https://t.me/c/123456789/42").channelId, 123456789)
+        XCTAssertNil(LocalPersonalChannelPatchConfig(channelReference: "@example").channelId)
+    }
+
+    func testFragmentPhoneRuntimeHookPersistsConfig() throws {
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.fragment_phone"))
+        let config = FragmentPhonePatchConfig(
+            targetMode: .onlySelf,
+            purchaseDateText: "12:34:56 07.06.2026",
+            currency: "USD",
+            amount: 1_250,
+            cryptoCurrency: "TON",
+            cryptoAmount: 500_000_000,
+            url: "https://fragment.com/number/15551234567"
+        )
+
+        _ = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    fragmentPhoneConfig: config
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+
+        let configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"fragmentPhoneEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"fragmentPhoneTargetMode\" : \"onlySelf\""))
+        XCTAssertTrue(configJSON.contains("\"fragmentPhoneCurrency\" : \"USD\""))
+        XCTAssertTrue(configJSON.contains("\"fragmentPhoneAmount\" : 1250"))
+        XCTAssertTrue(configJSON.contains("\"fragmentPhoneCryptoCurrency\" : \"TON\""))
+        XCTAssertTrue(configJSON.contains("\"fragmentPhoneCryptoAmount\" : 500000000"))
+        XCTAssertTrue(configJSON.contains("\"fragmentPhoneUrl\" : \"https:\\/\\/fragment.com\\/number\\/15551234567\""))
+        XCTAssertNotNil(config.normalized.purchaseDateUnix)
+
+        let statuses = try engine.statuses(
+            appURL: appURL,
+            rules: [rule],
+            fragmentPhoneConfigs: [rule.id: config]
+        )
+        XCTAssertEqual(statuses.first?.state, .applied)
+
+        let staleStatuses = try engine.statuses(
+            appURL: appURL,
+            rules: [rule],
+            fragmentPhoneConfigs: [
+                rule.id: FragmentPhonePatchConfig(
+                    targetMode: .onlySelf,
+                    purchaseDateText: "0",
+                    currency: "EUR",
+                    amount: 1,
+                    cryptoCurrency: "TON",
+                    cryptoAmount: 1,
+                    url: ""
+                )
+            ]
+        )
+        XCTAssertEqual(staleStatuses.first?.state, .partial)
+    }
+
+    func testFragmentPhoneRuntimeConfigUpdateDoesNotReportExecutableChange() throws {
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.fragment_phone"))
+
+        let firstReport = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    fragmentPhoneConfig: FragmentPhonePatchConfig.defaultConfig
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+        XCTAssertTrue(firstReport.changedExecutable)
+
+        let updateReport = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    fragmentPhoneConfig: FragmentPhonePatchConfig(
+                        targetMode: .onlySelf,
+                        purchaseDateText: "1234567890",
+                        currency: "USD",
+                        amount: 2_500,
+                        cryptoCurrency: "TON",
+                        cryptoAmount: 10,
+                        url: "https://fragment.com/number/15551234567"
+                    )
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+        XCTAssertFalse(updateReport.changedExecutable)
+    }
+
+    func testFragmentPhoneConfigParsesUnixTimeAndFormattedDate() throws {
+        XCTAssertEqual(FragmentPhonePatchConfig.defaultConfig.purchaseDateUnix, 0)
+        XCTAssertEqual(
+            FragmentPhonePatchConfig(
+                purchaseDateText: "1234567890",
+                currency: "USD",
+                amount: 0,
+                cryptoCurrency: "TON",
+                cryptoAmount: 0,
+                url: ""
+            ).purchaseDateUnix,
+            1_234_567_890
+        )
+        XCTAssertNotNil(
+            FragmentPhonePatchConfig(
+                purchaseDateText: "12:34:56 07.06.2026",
+                currency: "USD",
+                amount: 0,
+                cryptoCurrency: "TON",
+                cryptoAmount: 0,
+                url: ""
+            ).purchaseDateUnix
+        )
+        XCTAssertNil(
+            FragmentPhonePatchConfig(
+                purchaseDateText: "07.06.2026",
+                currency: "USD",
+                amount: 0,
+                cryptoCurrency: "TON",
+                cryptoAmount: 0,
+                url: ""
+            ).purchaseDateUnix
+        )
+    }
+
     func testSelfIdentityConfigDecodesLegacyNumericUserId() throws {
         let numeric = Data(#"{"phone":"+15551234567","userId":987654321}"#.utf8)
         let zero = Data(#"{"phone":"","userId":0}"#.utf8)
@@ -804,7 +1016,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertTrue(report.changedExecutable)
         XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeHookDylibURL.path))
         let dylib = try Data(contentsOf: runtimeHookDylibURL)
-        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_20260607_SELF_IDENTITY_SELF_PROFILE_ID".utf8)))
+        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_20260608_FRAGMENT_PHONE_NO_TEXT_FALLBACK".utf8)))
     }
 
     private var executableURL: URL {
@@ -856,7 +1068,13 @@ private struct StubProcessRunner: ProcessRunning {
                 at: output.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try Data("stub dylib".utf8).write(to: output, options: .atomic)
+            let source = arguments.last
+                .map { URL(fileURLWithPath: $0) }
+                .flatMap { try? Data(contentsOf: $0) }
+                ?? Data()
+            var dylib = Data("stub dylib ".utf8)
+            dylib.append(source)
+            try dylib.write(to: output, options: .atomic)
         }
         return ProcessResult(exitCode: 0, output: "stub")
     }
