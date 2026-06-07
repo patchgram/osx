@@ -11,14 +11,35 @@ permissions:
 jobs:
   dmg:
     name: Build DMG
-    runs-on: macos-latest
+    runs-on: macos-26
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          swift --version
+
       - name: Build DMG
         run: ./scripts/build-dmg.sh
+
+      - name: Verify linked SDK
+        run: |
+          sdk="$(otool -l .build/Patchgram.app/Contents/MacOS/Patchgram | awk '/LC_BUILD_VERSION/{found=1} found && / sdk /{print $2; exit}')"
+          minos="$(otool -l .build/Patchgram.app/Contents/MacOS/Patchgram | awk '/LC_BUILD_VERSION/{found=1} found && / minos /{print $2; exit}')"
+          echo "Linked macOS SDK: $sdk"
+          echo "Minimum macOS: $minos"
+          case "$sdk" in
+            26.*) ;;
+            *) echo "Expected the release build to link against macOS SDK 26.x" >&2; exit 1 ;;
+          esac
+          case "$minos" in
+            14.*) ;;
+            *) echo "Expected the release build to keep macOS 14.x as the deployment target" >&2; exit 1 ;;
+          esac
 
       - name: Create GitHub Release
         env:
