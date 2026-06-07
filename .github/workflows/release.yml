@@ -37,8 +37,8 @@ jobs:
             *) echo "Expected the release build to link against macOS SDK 26.x" >&2; exit 1 ;;
           esac
           case "$minos" in
-            14.*) ;;
-            *) echo "Expected the release build to keep macOS 14.x as the deployment target" >&2; exit 1 ;;
+            12.*) ;;
+            *) echo "Expected the release build to keep macOS 12.x as the deployment target" >&2; exit 1 ;;
           esac
 
       - name: Create GitHub Release

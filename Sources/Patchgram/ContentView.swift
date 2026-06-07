@@ -305,7 +305,6 @@ private struct BinaryRuleCard: View {
                             Image(systemName: showsSubpatches ? "chevron.down" : "chevron.right")
                                 .font(.caption.weight(.semibold))
                                 .frame(width: 12)
-                                .contentTransition(.symbolEffect(.replace))
                             Text("Subpatches")
                             if let summary = row.subpatchSummary {
                                 Text(summary)

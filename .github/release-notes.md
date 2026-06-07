@@ -1,5 +1,6 @@
 ## What's Changed
 
+- The release build now supports macOS 12.0 and newer.
 - Bot verification no longer shows the legacy Custom item in the verification picker.
 - Added Bot verification Settings for managing custom verification presets.
 - Scared Cat is now shown as a locked built-in preset with its custom_emoji_id and description.

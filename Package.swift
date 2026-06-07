@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "Patchgram",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v12)
     ],
     products: [
         .library(name: "PatchgramCore", targets: ["PatchgramCore"]),

@@ -1619,7 +1619,7 @@ public final class BinaryPatchEngine {
                 "-arch", "arm64",
                 "-x", "c",
                 "-O2",
-                "-mmacosx-version-min=14.0",
+                "-mmacosx-version-min=12.0",
                 "-o", dylibURL.path,
                 sourceURL.path
             ],
