@@ -648,12 +648,7 @@ private struct PatchgramLogo: View {
     }
 
     private static let image: NSImage? = {
-        let urls = [
-            Bundle.main.url(forResource: "PatchgramLogo", withExtension: "svg"),
-            Bundle.module.url(forResource: "PatchgramLogo", withExtension: "svg")
-        ]
-
-        for url in urls {
+        for url in appResourceURLs(named: "PatchgramLogo", extension: "svg") {
             guard let url, let image = NSImage(contentsOf: url) else { continue }
             image.isTemplate = false
             return image
@@ -716,16 +711,22 @@ private struct TelegramIcon: View {
     }
 
     private static let image: NSImage? = {
-        let urls = [
-            Bundle.main.url(forResource: "TelegramLogo", withExtension: "svg"),
-            Bundle.module.url(forResource: "TelegramLogo", withExtension: "svg")
-        ]
-
-        for url in urls {
+        for url in appResourceURLs(named: "TelegramLogo", extension: "svg") {
             guard let url, let image = NSImage(contentsOf: url) else { continue }
             image.isTemplate = false
             return image
         }
         return nil
     }()
+}
+
+private func appResourceURLs(named name: String, extension fileExtension: String) -> [URL?] {
+    let resourceURL = Bundle.main.resourceURL
+    return [
+        Bundle.main.url(forResource: name, withExtension: fileExtension),
+        resourceURL?.appendingPathComponent("\(name).\(fileExtension)"),
+        resourceURL?
+            .appendingPathComponent("Patchgram_Patchgram.bundle", isDirectory: true)
+            .appendingPathComponent("\(name).\(fileExtension)")
+    ]
 }

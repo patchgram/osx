@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/.build/Patchgram.app"
 EXECUTABLE="$ROOT/.build/release/patchgram"
 LOGO="$ROOT/Sources/Patchgram/Resources/PatchgramLogo.svg"
+TELEGRAM_LOGO="$ROOT/Sources/Patchgram/Resources/TelegramLogo.svg"
+RESOURCE_BUNDLE="$ROOT/.build/release/Patchgram_Patchgram.bundle"
 SWIFTPM_CACHE="$ROOT/.build/swiftpm-cache"
 SWIFTPM_CONFIG="$ROOT/.build/swiftpm-config"
 SWIFTPM_SECURITY="$ROOT/.build/swiftpm-security"
@@ -47,6 +49,11 @@ mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 cp "$EXECUTABLE" "$APP/Contents/MacOS/Patchgram"
 cp "$LOGO" "$APP/Contents/Resources/PatchgramLogo.svg"
+cp "$TELEGRAM_LOGO" "$APP/Contents/Resources/TelegramLogo.svg"
+if [ -d "$RESOURCE_BUNDLE" ]; then
+  rm -rf "$APP/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
+  cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
+fi
 
 rm -rf "$ICON_WORK"
 mkdir -p "$ICONSET"
@@ -91,9 +98,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>0.1.1</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>2</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>
