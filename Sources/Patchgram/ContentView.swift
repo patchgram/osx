@@ -459,7 +459,7 @@ private struct BotVerificationPresetRow: View {
                             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     }
                 }
-                Text("custom_emoji_id: \(customEmojiId)")
+                Text("custom_emoji_id: \(String(customEmojiId))")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
