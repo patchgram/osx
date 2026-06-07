@@ -50,4 +50,4 @@ jobs:
             .build/Patchgram.dmg \
             --repo "$GITHUB_REPOSITORY" \
             --title "Patchgram $TAG_NAME" \
-            --notes "Patchgram"
+            --notes-file .github/release-notes.md

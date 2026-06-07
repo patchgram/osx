@@ -4,18 +4,6 @@ import PatchgramCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-private final class PopupClosureTarget: NSObject {
-    private let closure: () -> Void
-
-    init(_ closure: @escaping () -> Void) {
-        self.closure = closure
-    }
-
-    @objc func perform(_ sender: Any?) {
-        closure()
-    }
-}
-
 struct BinaryRuleRowState: Identifiable, Hashable {
     private static let dylibRuleIds: Set<String> = [
         "binary.visual.bot_verification",
@@ -116,6 +104,47 @@ private struct BinaryCompositeSubpatchDefinition: Identifiable, Hashable {
     let title: String
 }
 
+struct BotVerificationUserPreset: Identifiable, Codable, Hashable {
+    let id: UUID
+    var title: String
+    var customEmojiId: UInt64
+    var description: String
+
+    var normalizedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var normalizedDescription: String {
+        description.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+}
+
+extension BotVerificationUserPreset {
+    func matchesConfig(_ config: BotVerificationPatchConfig) -> Bool {
+        customEmojiId == config.customEmojiId
+            && normalizedDescription == config.description.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+extension BotVerificationPatchConfig {
+    func matchesPreset(_ preset: BotVerificationUserPreset) -> Bool {
+        customEmojiId == preset.customEmojiId
+            && description.trimmingCharacters(in: .whitespacesAndNewlines) == preset.normalizedDescription
+    }
+}
+
+private struct BotVerificationPresetOption: Hashable {
+    let title: String
+    let customEmojiId: UInt64
+    let description: String
+    let isScaredCat: Bool
+
+    var configPreset: BotVerificationPreset {
+        isScaredCat ? .scaredCat : .custom
+    }
+}
+
 struct WriteAccessAlert: Identifiable, Equatable {
     let id = UUID()
     let message: String
@@ -156,6 +185,8 @@ final class PatchgramViewModel: ObservableObject {
     @Published var deliveryFilter: PatchDeliveryFilter = .all
     @Published var binaryParameterValues: [String: UInt64] = [:]
     @Published var botVerificationConfigs: [String: BotVerificationPatchConfig] = [:]
+    @Published var botVerificationUserPresets: [BotVerificationUserPreset] = []
+    @Published var isShowingBotVerificationSettings = false
     @Published var customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:]
     @Published var writeAccessAlert: WriteAccessAlert?
 
@@ -163,6 +194,7 @@ final class PatchgramViewModel: ObservableObject {
     private static let binaryParameterDefaultsPrefix = "Patchgram.binaryParameter."
     private static let botVerificationDefaultsPrefix = "Patchgram.botVerificationConfig."
     private static let customLevelRatingDefaultsPrefix = "Patchgram.customLevelRatingConfig."
+    private static let botVerificationPresetsFileName = "BotVerificationPresets.json"
     private static let appConfigDesiredSubpatchIdsKey = "Patchgram.appConfigSubpatches.desired"
     private static let appConfigAppliedSubpatchIdsKey = "Patchgram.appConfigSubpatches.applied"
     private static let appConfigFeatureRuleId = "binary.config.disable_monetization"
@@ -233,6 +265,7 @@ final class PatchgramViewModel: ObservableObject {
 
     init() {
         binaryParameterValues = Self.loadBinaryParameterValues()
+        botVerificationUserPresets = Self.loadBotVerificationUserPresets()
         botVerificationConfigs = Self.loadBotVerificationConfigs()
         customLevelRatingConfigs = Self.loadCustomLevelRatingConfigs()
         desiredAppConfigSubpatchIds = Self.loadAppConfigSubpatchIds(
@@ -259,6 +292,7 @@ final class PatchgramViewModel: ObservableObject {
             key: Self.adsAppliedSubpatchIdsKey,
             defaultValue: []
         )
+        migrateSavedBotVerificationConfigsIntoUserPresets()
 
         if let saved = UserDefaults.standard.string(forKey: "Patchgram.appURL") {
             appURL = URL(fileURLWithPath: saved)
@@ -394,6 +428,80 @@ final class PatchgramViewModel: ObservableObject {
             resetBinaryRows()
             statusMessage = error.localizedDescription
         }
+    }
+
+    func showBotVerificationSettings() {
+        guard !isWorking else { return }
+        isShowingBotVerificationSettings = true
+    }
+
+    func addBotVerificationUserPreset(title: String, customEmojiIdText: String, description: String) -> Bool {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let emojiText = customEmojiIdText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !normalizedTitle.isEmpty else {
+            statusMessage = "Enter a verification preset name."
+            return false
+        }
+        guard let customEmojiId = UInt64(emojiText), customEmojiId > 0 else {
+            statusMessage = "Enter a valid custom_emoji_id."
+            return false
+        }
+        guard !normalizedDescription.isEmpty else {
+            statusMessage = "Enter a bot verification description."
+            return false
+        }
+        guard customEmojiId != BotVerificationPatchConfig.scaredCatEmojiId
+            || normalizedDescription != BotVerificationPatchConfig.scaredCatDescription else {
+            statusMessage = "Scared Cat already exists as a built-in preset."
+            return false
+        }
+        guard !botVerificationUserPresets.contains(where: {
+            $0.customEmojiId == customEmojiId
+                && $0.normalizedDescription == normalizedDescription
+        }) else {
+            statusMessage = "This verification preset already exists."
+            return false
+        }
+
+        botVerificationUserPresets.append(
+            BotVerificationUserPreset(
+                id: UUID(),
+                title: normalizedTitle,
+                customEmojiId: customEmojiId,
+                description: normalizedDescription
+            )
+        )
+        storeBotVerificationUserPresets()
+        statusMessage = "Bot verification preset saved."
+        return true
+    }
+
+    func deleteBotVerificationUserPreset(_ preset: BotVerificationUserPreset) {
+        guard !isWorking else { return }
+        botVerificationUserPresets.removeAll { $0.id == preset.id }
+        storeBotVerificationUserPresets()
+
+        let matchingRuleIds = botVerificationConfigs.compactMap { ruleId, config in
+            config.matchesPreset(preset) ? ruleId : nil
+        }
+        for ruleId in matchingRuleIds {
+            let config = botVerificationConfigs[ruleId] ?? BotVerificationPatchConfig.defaultConfig
+            let replacement = BotVerificationPatchConfig(
+                targetMode: config.targetMode,
+                preset: .scaredCat,
+                customEmojiId: BotVerificationPatchConfig.scaredCatEmojiId,
+                description: BotVerificationPatchConfig.scaredCatDescription
+            )
+            botVerificationConfigs[ruleId] = replacement.normalized
+            storeBotVerificationConfig(replacement, for: ruleId)
+            if let index = binaryRows.firstIndex(where: { $0.id == ruleId }) {
+                binaryRows[index].botVerificationConfig = replacement.normalized
+            }
+        }
+
+        statusMessage = "Bot verification preset deleted."
     }
 
     private func applyAppInspection(_ inspection: AppInspection, statuses: [BinaryRuleStatus], quick: Bool) {
@@ -1206,6 +1314,28 @@ final class PatchgramViewModel: ObservableObject {
         })
     }
 
+    private static func loadBotVerificationUserPresets() -> [BotVerificationUserPreset] {
+        let decoder = JSONDecoder()
+        guard let data = try? Data(contentsOf: botVerificationUserPresetsURL),
+              let presets = try? decoder.decode([BotVerificationUserPreset].self, from: data) else {
+            return []
+        }
+        var seen = Set<String>()
+        return presets.compactMap { preset in
+            let title = preset.normalizedTitle
+            let description = preset.normalizedDescription
+            guard !title.isEmpty, preset.customEmojiId > 0, !description.isEmpty else { return nil }
+            let signature = "\(preset.customEmojiId)\n\(description)"
+            guard seen.insert(signature).inserted else { return nil }
+            return BotVerificationUserPreset(
+                id: preset.id,
+                title: title,
+                customEmojiId: preset.customEmojiId,
+                description: description
+            )
+        }
+    }
+
     private static func loadCustomLevelRatingConfigs() -> [String: CustomLevelRatingPatchConfig] {
         let decoder = JSONDecoder()
         return Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
@@ -1280,6 +1410,46 @@ final class PatchgramViewModel: ObservableObject {
         return (botVerificationConfigs[rule.id] ?? BotVerificationPatchConfig.defaultConfig).normalized
     }
 
+    private func botVerificationPresetOptions(including config: BotVerificationPatchConfig? = nil) -> [BotVerificationPresetOption] {
+        var options = [
+            BotVerificationPresetOption(
+                title: BotVerificationPreset.scaredCat.label,
+                customEmojiId: BotVerificationPatchConfig.scaredCatEmojiId,
+                description: BotVerificationPatchConfig.scaredCatDescription,
+                isScaredCat: true
+            )
+        ]
+
+        for preset in botVerificationUserPresets {
+            options.append(
+                BotVerificationPresetOption(
+                    title: preset.normalizedTitle,
+                    customEmojiId: preset.customEmojiId,
+                    description: preset.normalizedDescription,
+                    isScaredCat: false
+                )
+            )
+        }
+
+        if let config = config?.normalized,
+           config.preset == .custom,
+           !options.contains(where: {
+               $0.customEmojiId == config.customEmojiId
+                   && $0.description == config.description
+           }) {
+            options.append(
+                BotVerificationPresetOption(
+                    title: config.displayPresetLabel,
+                    customEmojiId: config.customEmojiId,
+                    description: config.description,
+                    isScaredCat: false
+                )
+            )
+        }
+
+        return options
+    }
+
     private func customLevelRatingConfig(for rule: BinaryPatchRule) -> CustomLevelRatingPatchConfig? {
         guard rule.kind == .customLevelRating else { return nil }
         return (customLevelRatingConfigs[rule.id] ?? CustomLevelRatingPatchConfig.defaultConfig).normalized
@@ -1289,6 +1459,67 @@ final class PatchgramViewModel: ObservableObject {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(config.normalized) {
             UserDefaults.standard.set(data, forKey: Self.botVerificationDefaultsPrefix + ruleId)
+        }
+    }
+
+    private static var botVerificationUserPresetsURL: URL {
+        let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return baseURL
+            .appendingPathComponent("Patchgram", isDirectory: true)
+            .appendingPathComponent(botVerificationPresetsFileName)
+    }
+
+    private func storeBotVerificationUserPresets() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do {
+            let url = Self.botVerificationUserPresetsURL
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let normalized = botVerificationUserPresets.map {
+                BotVerificationUserPreset(
+                    id: $0.id,
+                    title: $0.normalizedTitle,
+                    customEmojiId: $0.customEmojiId,
+                    description: $0.normalizedDescription
+                )
+            }
+            let data = try encoder.encode(normalized)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            statusMessage = "Could not save bot verification presets: \(error.localizedDescription)"
+        }
+    }
+
+    private func migrateSavedBotVerificationConfigsIntoUserPresets() {
+        var changed = false
+        for config in botVerificationConfigs.values {
+            let normalized = config.normalized
+            guard normalized.preset == .custom,
+                  normalized.customEmojiId > 0,
+                  !normalized.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  normalized.customEmojiId != BotVerificationPatchConfig.scaredCatEmojiId
+                    || normalized.description != BotVerificationPatchConfig.scaredCatDescription,
+                  !botVerificationUserPresets.contains(where: { $0.matchesConfig(normalized) }) else {
+                continue
+            }
+            botVerificationUserPresets.append(
+                BotVerificationUserPreset(
+                    id: UUID(),
+                    title: normalized.displayPresetLabel == BotVerificationPreset.custom.label
+                        ? "Imported verification"
+                        : normalized.displayPresetLabel,
+                    customEmojiId: normalized.customEmojiId,
+                    description: normalized.description
+                )
+            )
+            changed = true
+        }
+        if changed {
+            storeBotVerificationUserPresets()
         }
     }
 
@@ -1446,9 +1677,10 @@ final class PatchgramViewModel: ObservableObject {
     ) -> BotVerificationPatchConfig? {
         guard rule.kind == .botVerification else { return nil }
         let current = botVerificationConfig(for: rule) ?? BotVerificationPatchConfig.defaultConfig
+        let presetOptions = botVerificationPresetOptions(including: current)
         let alert = NSAlert()
         alert.messageText = rule.title
-        alert.informativeText = "Choose who receives the local bot verification and which verification details to use."
+        alert.informativeText = "Choose who receives the local bot verification and which verification preset to use."
         alert.addButton(withTitle: actionTitle)
         alert.addButton(withTitle: "Cancel")
 
@@ -1458,7 +1690,7 @@ final class PatchgramViewModel: ObservableObject {
         let rowHeight: CGFloat = 26
         let rowGap: CGFloat = 10
         let width = controlX + controlWidth
-        let height: CGFloat = rowHeight * 4 + rowGap * 3
+        let height: CGFloat = rowHeight * 2 + rowGap
         let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
 
         func addLabel(_ title: String, row: Int) -> NSTextField {
@@ -1488,104 +1720,35 @@ final class PatchgramViewModel: ObservableObject {
 
         _ = addLabel("Verification", row: 1)
         let presetPopup = NSPopUpButton(frame: rowFrame(1), pullsDown: false)
-        for preset in BotVerificationPreset.allCases {
-            presetPopup.addItem(withTitle: preset.label)
-            presetPopup.lastItem?.representedObject = preset.rawValue
+        for (index, option) in presetOptions.enumerated() {
+            presetPopup.addItem(withTitle: option.title)
+            presetPopup.lastItem?.representedObject = NSNumber(value: index)
         }
-        if let index = BotVerificationPreset.allCases.firstIndex(of: current.preset) {
+        if let index = presetOptions.firstIndex(where: { option in
+            option.customEmojiId == current.customEmojiId
+                && option.description == current.description
+        }) {
             presetPopup.selectItem(at: index)
         }
         container.addSubview(presetPopup)
-
-        _ = addLabel("custom_emoji_id", row: 2)
-        let emojiField = NSTextField(frame: rowFrame(2))
-        emojiField.stringValue = String(current.customEmojiId)
-        emojiField.placeholderString = String(BotVerificationPatchConfig.scaredCatEmojiId)
-        container.addSubview(emojiField)
-
-        _ = addLabel("description", row: 3)
-        let descriptionField = NSTextField(frame: rowFrame(3))
-        descriptionField.stringValue = current.description
-        descriptionField.placeholderString = BotVerificationPatchConfig.scaredCatDescription
-        container.addSubview(descriptionField)
-
-        var lastCustomEmoji = current.preset == .custom
-            ? String(current.customEmojiId)
-            : String(BotVerificationPatchConfig.scaredCatEmojiId)
-        var lastCustomDescription = current.preset == .custom
-            ? current.description
-            : BotVerificationPatchConfig.scaredCatDescription
-
-        func selectedPreset() -> BotVerificationPreset {
-            let presetRaw = presetPopup.selectedItem?.representedObject as? String
-            return presetRaw.flatMap(BotVerificationPreset.init(rawValue:)) ?? .scaredCat
-        }
-
-        func setFieldsEditable(_ editable: Bool) {
-            for field in [emojiField, descriptionField] {
-                field.isEditable = editable
-                field.isSelectable = true
-                field.drawsBackground = editable
-                field.textColor = editable ? .controlTextColor : .secondaryLabelColor
-            }
-        }
-
-        func refreshPresetFields() {
-            switch selectedPreset() {
-            case .scaredCat:
-                if emojiField.isEditable {
-                    lastCustomEmoji = emojiField.stringValue
-                    lastCustomDescription = descriptionField.stringValue
-                }
-                emojiField.stringValue = String(BotVerificationPatchConfig.scaredCatEmojiId)
-                descriptionField.stringValue = BotVerificationPatchConfig.scaredCatDescription
-                setFieldsEditable(false)
-            case .custom:
-                emojiField.stringValue = lastCustomEmoji
-                descriptionField.stringValue = lastCustomDescription
-                setFieldsEditable(true)
-            }
-        }
-
-        let presetActionTarget = PopupClosureTarget(refreshPresetFields)
-        presetPopup.target = presetActionTarget
-        presetPopup.action = #selector(PopupClosureTarget.perform(_:))
-        refreshPresetFields()
 
         alert.accessoryView = container
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
 
         let targetRaw = targetPopup.selectedItem?.representedObject as? String
-        let presetRaw = presetPopup.selectedItem?.representedObject as? String
         let targetMode = targetRaw.flatMap(BotVerificationTargetMode.init(rawValue:)) ?? .all
-        let preset = presetRaw.flatMap(BotVerificationPreset.init(rawValue:)) ?? .scaredCat
-
-        if preset == .scaredCat {
-            return BotVerificationPatchConfig(
-                targetMode: targetMode,
-                preset: preset,
-                customEmojiId: BotVerificationPatchConfig.scaredCatEmojiId,
-                description: BotVerificationPatchConfig.scaredCatDescription
-            )
-        }
-
-        let emojiText = emojiField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let description = descriptionField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let emojiId = UInt64(emojiText), emojiId > 0 else {
-            statusMessage = "Enter a valid custom_emoji_id."
-            return nil
-        }
-        guard !description.isEmpty else {
-            statusMessage = "Enter a bot verification description."
-            return nil
-        }
+        let presetIndex = (presetPopup.selectedItem?.representedObject as? NSNumber)?.intValue ?? 0
+        let selectedOption = presetOptions.indices.contains(presetIndex)
+            ? presetOptions[presetIndex]
+            : presetOptions[0]
 
         return BotVerificationPatchConfig(
             targetMode: targetMode,
-            preset: preset,
-            customEmojiId: emojiId,
-            description: description
-        )
+            preset: selectedOption.configPreset,
+            customEmojiId: selectedOption.customEmojiId,
+            description: selectedOption.description,
+            presetTitle: selectedOption.isScaredCat ? nil : selectedOption.title
+        ).normalized
     }
 
     private func promptForCustomLevelRatingConfig(

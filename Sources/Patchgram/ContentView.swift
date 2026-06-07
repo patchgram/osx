@@ -29,6 +29,9 @@ struct ContentView: View {
                 secondaryButton: .cancel()
             )
         }
+        .sheet(isPresented: $viewModel.isShowingBotVerificationSettings) {
+            BotVerificationSettingsView(viewModel: viewModel)
+        }
     }
 }
 
@@ -225,6 +228,8 @@ private struct RuleList: View {
                             viewModel.setSubpatch(ruleId: ruleId, subpatchId: subpatchId, enabled: enabled)
                         } onUpdate: {
                             viewModel.updateAppliedPatch(for: row)
+                        } onSettings: {
+                            viewModel.showBotVerificationSettings()
                         }
                     }
                 }
@@ -241,6 +246,7 @@ private struct BinaryRuleCard: View {
     let onToggle: @MainActor @Sendable (Bool) -> Void
     let onSubpatchToggle: @MainActor @Sendable (String, String, Bool) -> Void
     let onUpdate: @MainActor @Sendable () -> Void
+    let onSettings: @MainActor @Sendable () -> Void
     @State private var showsSubpatches = false
 
     var body: some View {
@@ -260,6 +266,17 @@ private struct BinaryRuleCard: View {
                 Spacer()
                 HStack(alignment: .center, spacing: 10) {
                     UpdatePatchButton(title: row.updateButtonTitle, isDisabled: isWorking, action: onUpdate)
+                    if row.status.rule.kind == .botVerification {
+                        Button {
+                            onSettings()
+                        } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        .help("Manage bot verification presets")
+                        .disabled(isWorking)
+                    }
                     Toggle("", isOn: Binding(
                         get: { row.desiredEnabled },
                         set: { value in onToggle(value) }
@@ -321,6 +338,156 @@ private struct BinaryRuleCard: View {
             }
         }
         .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.6)
+        }
+    }
+}
+
+private struct BotVerificationSettingsView: View {
+    @ObservedObject var viewModel: PatchgramViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var customEmojiId = ""
+    @State private var description = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Label("Bot Verification Settings", systemImage: "checkmark.seal")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Done", systemImage: "checkmark")
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(18)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Presets")
+                            .font(.headline)
+                        BotVerificationPresetRow(
+                            title: BotVerificationPreset.scaredCat.label,
+                            customEmojiId: BotVerificationPatchConfig.scaredCatEmojiId,
+                            description: BotVerificationPatchConfig.scaredCatDescription,
+                            isBuiltIn: true,
+                            onDelete: nil
+                        )
+                        ForEach(viewModel.botVerificationUserPresets) { preset in
+                            BotVerificationPresetRow(
+                                title: preset.normalizedTitle,
+                                customEmojiId: preset.customEmojiId,
+                                description: preset.normalizedDescription,
+                                isBuiltIn: false,
+                                onDelete: {
+                                    viewModel.deleteBotVerificationUserPreset(preset)
+                                }
+                            )
+                        }
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Add Preset")
+                            .font(.headline)
+                        TextField("Name", text: $title)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("custom_emoji_id", text: $customEmojiId)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("description", text: $description)
+                            .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Spacer()
+                            Button {
+                                guard viewModel.addBotVerificationUserPreset(
+                                    title: title,
+                                    customEmojiIdText: customEmojiId,
+                                    description: description
+                                ) else {
+                                    return
+                                }
+                                title = ""
+                                customEmojiId = ""
+                                description = ""
+                            } label: {
+                                Label("Add", systemImage: "plus")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(viewModel.isWorking)
+                        }
+                    }
+                }
+                .padding(18)
+            }
+        }
+        .frame(width: 520, height: 520)
+    }
+}
+
+private struct BotVerificationPresetRow: View {
+    let title: String
+    let customEmojiId: UInt64
+    let description: String
+    let isBuiltIn: Bool
+    let onDelete: (() -> Void)?
+    @State private var isConfirmingDelete = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                    if isBuiltIn {
+                        Text("Built-in")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    }
+                }
+                Text("custom_emoji_id: \(customEmojiId)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Text("description: \(description)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            if let onDelete {
+                Button(role: .destructive) {
+                    isConfirmingDelete = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .alert("Delete preset?", isPresented: $isConfirmingDelete) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Delete", role: .destructive) {
+                        onDelete()
+                    }
+                } message: {
+                    Text("This preset will be removed from Bot verification choices.")
+                }
+            }
+        }
+        .padding(10)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {

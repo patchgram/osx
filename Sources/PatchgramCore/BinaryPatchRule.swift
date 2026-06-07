@@ -78,28 +78,42 @@ public struct BotVerificationPatchConfig: Codable, Hashable, Sendable {
         targetMode: .all,
         preset: .scaredCat,
         customEmojiId: scaredCatEmojiId,
-        description: scaredCatDescription
+        description: scaredCatDescription,
+        presetTitle: nil
     )
 
     public let targetMode: BotVerificationTargetMode
     public let preset: BotVerificationPreset
     public let customEmojiId: UInt64
     public let description: String
+    public let presetTitle: String?
 
     public init(
         targetMode: BotVerificationTargetMode,
         preset: BotVerificationPreset,
         customEmojiId: UInt64,
-        description: String
+        description: String,
+        presetTitle: String? = nil
     ) {
         self.targetMode = targetMode
         self.preset = preset
         self.customEmojiId = customEmojiId
         self.description = description
+        self.presetTitle = presetTitle
     }
 
     public var displayValue: String {
-        "\(targetMode.label) - \(preset.label)"
+        "\(targetMode.label) - \(displayPresetLabel)"
+    }
+
+    public var displayPresetLabel: String {
+        switch preset {
+        case .scaredCat:
+            return BotVerificationPreset.scaredCat.label
+        case .custom:
+            let title = presetTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return title.isEmpty ? BotVerificationPreset.custom.label : title
+        }
     }
 
     public var normalized: BotVerificationPatchConfig {
@@ -109,14 +123,17 @@ public struct BotVerificationPatchConfig: Codable, Hashable, Sendable {
                 targetMode: targetMode,
                 preset: preset,
                 customEmojiId: Self.scaredCatEmojiId,
-                description: Self.scaredCatDescription
+                description: Self.scaredCatDescription,
+                presetTitle: nil
             )
         case .custom:
+            let title = presetTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
             return BotVerificationPatchConfig(
                 targetMode: targetMode,
                 preset: preset,
                 customEmojiId: customEmojiId,
-                description: description
+                description: description,
+                presetTitle: title?.isEmpty == true ? nil : title
             )
         }
     }
@@ -1295,7 +1312,7 @@ public enum BinaryPatchRuleDefinitions {
             methodName: "UserData::setBotVerifyDetails / ChannelData::setBotVerifyDetails",
             constructorId: "botVerification#f93cd45c",
             kind: .botVerification,
-            summary: "Installs a local runtime hook for Telegram's bot verification details. Choose who receives the local bot verification and which custom emoji/description to use.",
+            summary: "Installs a local runtime hook for Telegram's bot verification details. Choose who receives the local bot verification and which preset to use.",
             disabledBehavior: "Removes the Patchgram runtime hook and restores Telegram's original executable entry point.",
             riskNote: "This is a local client-side runtime patch. It does not change Telegram server-side verification state.",
             supportedBuildNote: unsupportedBuild,
