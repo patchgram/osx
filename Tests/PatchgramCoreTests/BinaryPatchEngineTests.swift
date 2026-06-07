@@ -78,6 +78,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.bot_verification"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.custom_level_rating"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.hide_self_phone"))
+        XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.self_identity_override"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.no_premium_anim"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.disable_spoilers"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.sensitive_blur"))
@@ -708,6 +709,102 @@ final class BinaryPatchEngineTests: XCTestCase {
 
         let statuses = try engine.statuses(appURL: appURL, rules: [rule])
         XCTAssertEqual(statuses.first?.state, .applied)
+    }
+
+    func testSelfIdentityRuntimeHookPersistsConfig() throws {
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.self_identity_override"))
+        let config = SelfIdentityPatchConfig(phone: "+15551234567", userId: "987654321")
+
+        let applyReport = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    selfIdentityConfig: config
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+
+        XCTAssertTrue(applyReport.changedExecutable)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: wrappedExecutableURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeHookDylibURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeConfigURL.path))
+        let configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"selfIdentityOverrideEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"selfIdentityOverridePhone\" : \"+15551234567\""))
+        XCTAssertTrue(configJSON.contains("\"selfIdentityOverrideUserId\" : \"987654321\""))
+
+        let statuses = try engine.statuses(
+            appURL: appURL,
+            rules: [rule],
+            selfIdentityConfigs: [rule.id: config]
+        )
+        XCTAssertEqual(statuses.first?.state, .applied)
+
+        let staleStatuses = try engine.statuses(
+            appURL: appURL,
+            rules: [rule],
+            selfIdentityConfigs: [rule.id: SelfIdentityPatchConfig(phone: "+15550000000", userId: "111")]
+        )
+        XCTAssertEqual(staleStatuses.first?.state, .partial)
+    }
+
+    func testSelfIdentityRuntimeConfigUsesEmptyStringsForOriginalValues() throws {
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.self_identity_override"))
+
+        _ = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    selfIdentityConfig: SelfIdentityPatchConfig(phone: "", userId: "")
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+
+        let configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"selfIdentityOverridePhone\" : \"\""))
+        XCTAssertTrue(configJSON.contains("\"selfIdentityOverrideUserId\" : \"\""))
+    }
+
+    func testSelfIdentityConfigDecodesLegacyNumericUserId() throws {
+        let numeric = Data(#"{"phone":"+15551234567","userId":987654321}"#.utf8)
+        let zero = Data(#"{"phone":"","userId":0}"#.utf8)
+        let decoder = JSONDecoder()
+
+        let numericConfig = try decoder.decode(SelfIdentityPatchConfig.self, from: numeric)
+        let zeroConfig = try decoder.decode(SelfIdentityPatchConfig.self, from: zero)
+
+        XCTAssertEqual(numericConfig.normalized.userId, "987654321")
+        XCTAssertEqual(zeroConfig.normalized.userId, "")
+    }
+
+    func testRuntimeHookSourceCompilesWithSelfIdentityOverride() throws {
+        let engine = BinaryPatchEngine()
+        let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.self_identity_override"))
+
+        let report = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    selfIdentityConfig: SelfIdentityPatchConfig(phone: "+15551234567", userId: "987654321")
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+
+        XCTAssertTrue(report.changedExecutable)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeHookDylibURL.path))
+        let dylib = try Data(contentsOf: runtimeHookDylibURL)
+        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_20260607_SELF_IDENTITY_SELF_PROFILE_ID".utf8)))
     }
 
     private var executableURL: URL {

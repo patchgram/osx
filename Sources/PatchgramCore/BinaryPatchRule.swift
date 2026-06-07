@@ -11,6 +11,7 @@ public enum BinaryPatchRuleKind: String, Codable, Sendable {
     case botVerification
     case customLevelRating
     case hideSelfPhone
+    case selfIdentityOverride
     case runtimeMemory
 }
 
@@ -179,6 +180,57 @@ public struct CustomLevelRatingPatchConfig: Codable, Hashable, Sendable {
             rating: max(0, rating),
             currentLevelRating: max(0, currentLevelRating),
             nextLevelRating: max(0, nextLevelRating)
+        )
+    }
+}
+
+public struct SelfIdentityPatchConfig: Codable, Hashable, Sendable {
+    public static let defaultConfig = SelfIdentityPatchConfig(
+        phone: "+10000000000",
+        userId: ""
+    )
+
+    public let phone: String
+    public let userId: String
+
+    public init(phone: String, userId: String) {
+        self.phone = phone
+        self.userId = userId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case phone
+        case userId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        phone = try container.decodeIfPresent(String.self, forKey: .phone) ?? ""
+        if let stringUserId = try? container.decode(String.self, forKey: .userId) {
+            userId = stringUserId
+        } else if let numericUserId = try? container.decode(UInt64.self, forKey: .userId) {
+            userId = numericUserId == 0 ? "" : String(numericUserId)
+        } else {
+            userId = ""
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(phone, forKey: .phone)
+        try container.encode(userId, forKey: .userId)
+    }
+
+    public var displayValue: String {
+        let phoneValue = normalized.phone.isEmpty ? "unchanged phone" : normalized.phone
+        let userIdValue = normalized.userId.isEmpty ? "unchanged id" : "id \(normalized.userId)"
+        return "\(phoneValue), \(userIdValue)"
+    }
+
+    public var normalized: SelfIdentityPatchConfig {
+        SelfIdentityPatchConfig(
+            phone: phone.trimmingCharacters(in: .whitespacesAndNewlines),
+            userId: userId.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
 }
@@ -1339,6 +1391,18 @@ public enum BinaryPatchRuleDefinitions {
             summary: "Installs a local runtime hook that returns an empty profile phone value for your own user, causing Telegram Desktop to omit the mobile phone row in the self-profile.",
             disabledBehavior: "Keeps Telegram's original profile phone value handling.",
             riskNote: "This is a local client-side display patch. It does not change your Telegram account phone number or privacy settings.",
+            supportedBuildNote: unsupportedBuild,
+            replacements: []
+        ),
+        BinaryPatchRule(
+            id: "binary.visual.self_identity_override",
+            title: "Self identity override",
+            methodName: "UserData::phone / local display user id",
+            constructorId: "local self identity",
+            kind: .selfIdentityOverride,
+            summary: "Installs a local runtime hook that overrides the phone string stored on your own UserData and provides a local display-only user id for Patchgram visual details.",
+            disabledBehavior: "Keeps Telegram's original self phone and user id display values.",
+            riskNote: "This is a local client-side display patch. It does not change your Telegram account phone, real PeerId, authorization, or server state.",
             supportedBuildNote: unsupportedBuild,
             replacements: []
         ),

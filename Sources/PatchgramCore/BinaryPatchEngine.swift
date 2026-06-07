@@ -51,6 +51,7 @@ private struct BinaryPatchManifest: Codable {
     var parameterValues: [String: UInt64] = [:]
     var botVerificationConfigs: [String: BotVerificationPatchConfig] = [:]
     var customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:]
+    var selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:]
     var enabledAlternativeGroups: [String: [String]] = [:]
 
     init(
@@ -59,6 +60,7 @@ private struct BinaryPatchManifest: Codable {
         parameterValues: [String: UInt64] = [:],
         botVerificationConfigs: [String: BotVerificationPatchConfig] = [:],
         customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:],
+        selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         enabledAlternativeGroups: [String: [String]] = [:]
     ) {
         self.updatedAt = updatedAt
@@ -66,6 +68,7 @@ private struct BinaryPatchManifest: Codable {
         self.parameterValues = parameterValues
         self.botVerificationConfigs = botVerificationConfigs
         self.customLevelRatingConfigs = customLevelRatingConfigs
+        self.selfIdentityConfigs = selfIdentityConfigs
         self.enabledAlternativeGroups = enabledAlternativeGroups
     }
 
@@ -75,6 +78,7 @@ private struct BinaryPatchManifest: Codable {
         case parameterValues
         case botVerificationConfigs
         case customLevelRatingConfigs
+        case selfIdentityConfigs
         case enabledAlternativeGroups
     }
 
@@ -90,6 +94,10 @@ private struct BinaryPatchManifest: Codable {
         customLevelRatingConfigs = try container.decodeIfPresent(
             [String: CustomLevelRatingPatchConfig].self,
             forKey: .customLevelRatingConfigs
+        ) ?? [:]
+        selfIdentityConfigs = try container.decodeIfPresent(
+            [String: SelfIdentityPatchConfig].self,
+            forKey: .selfIdentityConfigs
         ) ?? [:]
         enabledAlternativeGroups = try container.decodeIfPresent(
             [String: [String]].self,
@@ -114,6 +122,9 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let customLevelRatingCurrentLevelRating: Int32
     let customLevelRatingNextLevelRating: Int32
     let hideSelfPhoneEnabled: Bool
+    let selfIdentityOverrideEnabled: Bool
+    let selfIdentityOverridePhone: String
+    let selfIdentityOverrideUserId: String
     let visualPeerBadgeEnabled: Bool
     let visualPeerBadgeValue: UInt64
     let noPremiumAnimEnabled: Bool
@@ -147,6 +158,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
     public let parameterValue: UInt64?
     public let botVerificationConfig: BotVerificationPatchConfig?
     public let customLevelRatingConfig: CustomLevelRatingPatchConfig?
+    public let selfIdentityConfig: SelfIdentityPatchConfig?
     public let enabledAlternativeGroups: Set<String>?
 
     public init(
@@ -155,6 +167,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         parameterValue: UInt64? = nil,
         botVerificationConfig: BotVerificationPatchConfig? = nil,
         customLevelRatingConfig: CustomLevelRatingPatchConfig? = nil,
+        selfIdentityConfig: SelfIdentityPatchConfig? = nil,
         enabledAlternativeGroups: Set<String>? = nil
     ) {
         self.rule = rule
@@ -162,6 +175,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         self.parameterValue = parameterValue
         self.botVerificationConfig = botVerificationConfig
         self.customLevelRatingConfig = customLevelRatingConfig
+        self.selfIdentityConfig = selfIdentityConfig
         self.enabledAlternativeGroups = enabledAlternativeGroups
     }
 }
@@ -211,6 +225,7 @@ public final class BinaryPatchEngine {
     private static let botVerificationRuleId = "binary.visual.bot_verification"
     private static let customLevelRatingRuleId = "binary.visual.custom_level_rating"
     private static let hideSelfPhoneRuleId = "binary.visual.hide_self_phone"
+    private static let selfIdentityOverrideRuleId = "binary.visual.self_identity_override"
     private static let visualPeerBadgeRuleId = "binary.visual.peer_badge"
     private static let noPremiumAnimRuleId = "binary.visual.no_premium_anim"
     private static let disableSpoilersRuleId = "binary.visual.disable_spoilers"
@@ -245,6 +260,7 @@ public final class BinaryPatchEngine {
         messageSettingsRuleId,
         localPremiumRuleId,
         visualPeerBadgeRuleId,
+        selfIdentityOverrideRuleId,
         noPremiumAnimRuleId,
         disableSpoilersRuleId,
         sensitiveBlurRuleId,
@@ -256,6 +272,7 @@ public final class BinaryPatchEngine {
         botVerificationRuleId,
         customLevelRatingRuleId,
         hideSelfPhoneRuleId,
+        selfIdentityOverrideRuleId,
         visualPeerBadgeRuleId,
         scheduledSendRuleId,
         sensitiveBlurRuleId
@@ -275,7 +292,7 @@ public final class BinaryPatchEngine {
     private static let deprecatedBotVerificationRuntimeConfigName = "PatchgramBotVerification.json"
     private static let legacyRuntimeHookDylibName = "PatchgramDeletedIconHook.dylib"
     private static let legacyRuntimeHookSourceName = "PatchgramDeletedIconHook.c"
-    private static let runtimeHookBuildMarker = "PATCHGRAM_RUNTIME_BUILD_20260607_NO_PHONE_ON_ADD_DIAGNOSTICS"
+    private static let runtimeHookBuildMarker = "PATCHGRAM_RUNTIME_BUILD_20260607_SELF_IDENTITY_SELF_PROFILE_ID"
     private static let patchLogName = "PatchgramPatch.log"
     private static let hookLogName = "PatchgramHook.log"
 
@@ -341,7 +358,8 @@ public final class BinaryPatchEngine {
         rules: [BinaryPatchRule] = BinaryPatchRuleCatalog.rules,
         parameterValues: [String: UInt64] = [:],
         botVerificationConfigs: [String: BotVerificationPatchConfig] = [:],
-        customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:]
+        customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:],
+        selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:]
     ) throws -> [BinaryRuleStatus] {
         let inspection = try inspect(appURL: appURL)
         let manifest = try readManifest(appURL: appURL)
@@ -357,7 +375,8 @@ public final class BinaryPatchEngine {
                     matchCache: matchCache,
                     parameterValue: parameterValues[rule.id],
                     requestedBotVerificationConfig: botVerificationConfigs[rule.id],
-                    requestedCustomLevelRatingConfig: customLevelRatingConfigs[rule.id]
+                    requestedCustomLevelRatingConfig: customLevelRatingConfigs[rule.id],
+                    requestedSelfIdentityConfig: selfIdentityConfigs[rule.id]
                 )
             }
             return status(
@@ -385,6 +404,11 @@ public final class BinaryPatchEngine {
                     : "Not recorded in Patchgram manifest."
             } else if rule.kind == .customLevelRating,
                       let config = manifest.customLevelRatingConfigs[rule.id] {
+                detail = state.isEnabled
+                    ? "Recorded in Patchgram manifest: \(config.displayValue)."
+                    : "Not recorded in Patchgram manifest."
+            } else if rule.kind == .selfIdentityOverride,
+                      let config = manifest.selfIdentityConfigs[rule.id] {
                 detail = state.isEnabled
                     ? "Recorded in Patchgram manifest: \(config.displayValue)."
                     : "Not recorded in Patchgram manifest."
@@ -425,6 +449,10 @@ public final class BinaryPatchEngine {
         try readManifest(appURL: appURL)?.customLevelRatingConfigs ?? [:]
     }
 
+    public func manifestSelfIdentityConfigs(appURL: URL) throws -> [String: SelfIdentityPatchConfig] {
+        try readManifest(appURL: appURL)?.selfIdentityConfigs ?? [:]
+    }
+
     public func appendDiagnosticLog(_ message: String, appURL: URL) {
         appendPatchLog(message, appURL: appURL)
     }
@@ -448,6 +476,7 @@ public final class BinaryPatchEngine {
         parameterValues: [String: UInt64] = [:],
         botVerificationConfigs: [String: BotVerificationPatchConfig] = [:],
         customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:],
+        selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         signAfterPatch: Bool = true
     ) throws -> BinaryPatchApplicationReport {
         let changes = try desired
@@ -461,7 +490,8 @@ public final class BinaryPatchEngine {
                     enabled: enabled,
                     parameterValue: parameterValues[rule.id],
                     botVerificationConfig: botVerificationConfigs[rule.id],
-                    customLevelRatingConfig: customLevelRatingConfigs[rule.id]
+                    customLevelRatingConfig: customLevelRatingConfigs[rule.id],
+                    selfIdentityConfig: selfIdentityConfigs[rule.id]
                 )
             }
         return try applyRuleChanges(changes, appURL: appURL, signAfterPatch: signAfterPatch)
@@ -589,6 +619,7 @@ public final class BinaryPatchEngine {
         parameterValue: UInt64? = nil,
         botVerificationConfig: BotVerificationPatchConfig? = nil,
         customLevelRatingConfig: CustomLevelRatingPatchConfig? = nil,
+        selfIdentityConfig: SelfIdentityPatchConfig? = nil,
         signAfterPatch: Bool = true
     ) throws -> BinaryPatchApplicationReport {
         let inspection = try inspect(appURL: appURL)
@@ -632,7 +663,8 @@ public final class BinaryPatchEngine {
                 enabled: enabled,
                 parameterValue: parameterValue,
                 botVerificationConfig: botVerificationConfig,
-                customLevelRatingConfig: customLevelRatingConfig
+                customLevelRatingConfig: customLevelRatingConfig,
+                selfIdentityConfig: selfIdentityConfig
             )
             let nextManifest = try manifest(
                 appURL: appURL,
@@ -650,7 +682,8 @@ public final class BinaryPatchEngine {
                     enabled: enabled,
                     parameterValue: parameterValue,
                     botVerificationConfig: botVerificationConfig,
-                    customLevelRatingConfig: customLevelRatingConfig
+                    customLevelRatingConfig: customLevelRatingConfig,
+                    selfIdentityConfig: selfIdentityConfig
                 )
             ]
         )
@@ -849,7 +882,8 @@ public final class BinaryPatchEngine {
         matchCache: BinaryPatternMatchCache,
         parameterValue: UInt64?,
         requestedBotVerificationConfig: BotVerificationPatchConfig?,
-        requestedCustomLevelRatingConfig: CustomLevelRatingPatchConfig?
+        requestedCustomLevelRatingConfig: CustomLevelRatingPatchConfig?,
+        requestedSelfIdentityConfig: SelfIdentityPatchConfig?
     ) -> BinaryRuleStatus {
         let manifestEnabled = manifest?.enabledRuleIds.contains(rule.id) == true
         let installed = runtimeHookInstalled(for: inspection)
@@ -863,6 +897,11 @@ public final class BinaryPatchEngine {
                 ?? CustomLevelRatingPatchConfig.defaultConfig
         ).normalized
         let ratingConfig = (requestedCustomLevelRatingConfig ?? manifestCustomLevelRatingConfig).normalized
+        let manifestSelfIdentityConfig = (
+            manifest?.selfIdentityConfigs[rule.id]
+                ?? SelfIdentityPatchConfig.defaultConfig
+        ).normalized
+        let selfIdentityConfig = (requestedSelfIdentityConfig ?? manifestSelfIdentityConfig).normalized
 
         if Self.runtimeMemoryPatchRuleIds.contains(rule.id),
            !manifestEnabled,
@@ -886,6 +925,8 @@ public final class BinaryPatchEngine {
             installedDetail = "Runtime hook installed: \(ratingConfig.displayValue)."
         } else if rule.kind == .hideSelfPhone {
             installedDetail = "Runtime hook installed."
+        } else if rule.kind == .selfIdentityOverride {
+            installedDetail = "Runtime hook installed: \(selfIdentityConfig.displayValue)."
         } else if let parameter = rule.parameter {
             let value = parameterValue
                 ?? manifest?.parameterValues[rule.id]
@@ -912,6 +953,15 @@ public final class BinaryPatchEngine {
                     rule: rule,
                     state: .partial,
                     detail: "Runtime hook is installed with a different custom level rating config."
+                )
+            }
+            if rule.kind == .selfIdentityOverride,
+               let requestedSelfIdentityConfig,
+               requestedSelfIdentityConfig.normalized != manifestSelfIdentityConfig {
+                return BinaryRuleStatus(
+                    rule: rule,
+                    state: .partial,
+                    detail: "Runtime hook is installed with a different self identity config."
                 )
             }
             if let parameterValue,
@@ -1523,6 +1573,10 @@ public final class BinaryPatchEngine {
             manifest.customLevelRatingConfigs[Self.customLevelRatingRuleId]
                 ?? CustomLevelRatingPatchConfig.defaultConfig
         ).normalized
+        let identityConfig = (
+            manifest.selfIdentityConfigs[Self.selfIdentityOverrideRuleId]
+                ?? SelfIdentityPatchConfig.defaultConfig
+        ).normalized
         let visualPeerBadgeRule = BinaryPatchRuleCatalog.rule(id: Self.visualPeerBadgeRuleId)
         let tonRule = BinaryPatchRuleCatalog.rule(id: Self.customTonRuleId)
         let starsRule = BinaryPatchRuleCatalog.rule(id: Self.customStarsRuleId)
@@ -1542,6 +1596,9 @@ public final class BinaryPatchEngine {
             customLevelRatingCurrentLevelRating: ratingConfig.currentLevelRating,
             customLevelRatingNextLevelRating: ratingConfig.nextLevelRating,
             hideSelfPhoneEnabled: enabled.contains(Self.hideSelfPhoneRuleId),
+            selfIdentityOverrideEnabled: enabled.contains(Self.selfIdentityOverrideRuleId),
+            selfIdentityOverridePhone: identityConfig.phone,
+            selfIdentityOverrideUserId: identityConfig.userId,
             visualPeerBadgeEnabled: enabled.contains(Self.visualPeerBadgeRuleId),
             visualPeerBadgeValue: manifest.parameterValues[Self.visualPeerBadgeRuleId]
                 ?? visualPeerBadgeRule?.parameter?.defaultValue
@@ -1781,6 +1838,8 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_PHONE_OR_HIDDEN_VALUE_MAP_VMADDR 0x10557c90cULL
         #define PATCHGRAM_MESSAGES_SEND_MESSAGE_SERIALIZE_VMADDR 0x103d35b74ULL
         #define PATCHGRAM_MESSAGES_SEND_MEDIA_SERIALIZE_VMADDR 0x101f98694ULL
+        #define PATCHGRAM_FORMAT_COUNT_DECIMAL_VMADDR 0x101aea7b8ULL
+        #define PATCHGRAM_PROFILE_PEER_ID_TEXT_RETURN_VMADDR 0x10542febcULL
         #define PATCHGRAM_INLINE_HOOK_SIZE 16
         #define PATCHGRAM_PEER_ID_OFFSET 0x8
         #define PATCHGRAM_USER_FLAGS_OFFSET 0x218
@@ -1807,6 +1866,8 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_PEER_ID_TYPE_SHIFT 48
         #define PATCHGRAM_MAX_DESCRIPTION_UTF8 1024
         #define PATCHGRAM_MAX_DESCRIPTION_UTF16 512
+        #define PATCHGRAM_MAX_PHONE_UTF8 128
+        #define PATCHGRAM_MAX_PHONE_UTF16 64
         #define PATCHGRAM_GENERATED_DETAILS_SIZE 0x80
         #define PATCHGRAM_MAX_MEMORY_PATCH_OCCURRENCES 16
         #define PATCHGRAM_MAX_TRACKED_USER_PEERS 1024
@@ -1841,11 +1902,16 @@ public final class BinaryPatchEngine {
         static uint64_t g_self_user_id = 0;
         static uint16_t g_configured_description_utf16[PATCHGRAM_MAX_DESCRIPTION_UTF16] = {0};
         static int64_t g_configured_description_utf16_size = 0;
+        static uint16_t g_configured_self_phone_utf16[PATCHGRAM_MAX_PHONE_UTF16] = {0};
+        static int64_t g_configured_self_phone_utf16_size = 0;
+        uint64_t g_configured_self_display_user_id = 0;
+        uintptr_t g_profile_peer_id_text_return = 0;
         static uint8_t g_generated_user_details[PATCHGRAM_GENERATED_DETAILS_SIZE] = {0};
         static uint8_t g_generated_channel_details[PATCHGRAM_GENERATED_DETAILS_SIZE] = {0};
         static bool g_bot_verification_enabled = false;
         static bool g_custom_level_rating_enabled = false;
         static bool g_hide_self_phone_enabled = false;
+        static bool g_self_identity_override_enabled = false;
         static bool g_visual_peer_badge_enabled = false;
         static bool g_force_offline_enabled = false;
         static bool g_open_links_without_warning_enabled = false;
@@ -1909,6 +1975,7 @@ public final class BinaryPatchEngine {
         static uint32_t g_bot_verify_should_patch_logs = 0;
         static uint32_t g_hide_self_phone_logs = 0;
         static uint32_t g_hide_self_phone_field_logs = 0;
+        static uint32_t g_self_identity_phone_logs = 0;
         static uint32_t g_level_rating_logs = 0;
         static uint32_t g_scheduled_send_logs = 0;
         static void *g_tracked_user_peers[PATCHGRAM_MAX_TRACKED_USER_PEERS] = {0};
@@ -1932,6 +1999,7 @@ public final class BinaryPatchEngine {
         static PatchgramPhoneOrHiddenValueMapFn g_original_phone_or_hidden_value_map = NULL;
         static PatchgramMessagesSerializeFn g_original_messages_send_message_serialize = NULL;
         static PatchgramMessagesSerializeFn g_original_messages_send_media_serialize = NULL;
+        void *g_original_format_count_decimal = NULL;
 
         enum PatchgramTargetMode {
             PatchgramTargetAll,
@@ -2040,6 +2108,33 @@ public final class BinaryPatchEngine {
                 size,
                 false,
                 VM_PROT_READ | VM_PROT_EXECUTE
+            );
+        }
+
+        __attribute__((naked))
+        static void patchgram_format_count_decimal(void) {
+            __asm__ volatile(
+                "stp x15, x16, [sp, #-16]!\n"
+                "adrp x15, _g_configured_self_display_user_id@PAGE\n"
+                "ldr x15, [x15, _g_configured_self_display_user_id@PAGEOFF]\n"
+                "cbz x15, 1f\n"
+                "adrp x16, _g_profile_peer_id_text_return@PAGE\n"
+                "ldr x16, [x16, _g_profile_peer_id_text_return@PAGEOFF]\n"
+                "cmp x30, x16\n"
+                "b.ne 1f\n"
+                "adrp x16, _g_self_user_id@PAGE\n"
+                "ldr x16, [x16, _g_self_user_id@PAGEOFF]\n"
+                "cbz x16, 1f\n"
+                "cmp x1, x16\n"
+                "b.ne 1f\n"
+                "mov x1, x15\n"
+                "1:\n"
+                "adrp x15, _g_original_format_count_decimal@PAGE\n"
+                "ldr x15, [x15, _g_original_format_count_decimal@PAGEOFF]\n"
+                "ldp x15, x16, [sp], #16\n"
+                "adrp x16, _g_original_format_count_decimal@PAGE\n"
+                "ldr x16, [x16, _g_original_format_count_decimal@PAGEOFF]\n"
+                "br x16\n"
             );
         }
 
@@ -2430,6 +2525,14 @@ public final class BinaryPatchEngine {
                 description,
                 g_configured_description_utf16,
                 PATCHGRAM_MAX_DESCRIPTION_UTF16
+            );
+        }
+
+        static void patchgram_configure_self_phone(const char *phone) {
+            g_configured_self_phone_utf16_size = (int64_t)patchgram_utf8_to_utf16(
+                phone,
+                g_configured_self_phone_utf16,
+                PATCHGRAM_MAX_PHONE_UTF16
             );
         }
 
@@ -3232,12 +3335,17 @@ public final class BinaryPatchEngine {
             char target_mode[64];
             char rating_target_mode[64];
             char description[PATCHGRAM_MAX_DESCRIPTION_UTF8];
+            char self_phone[PATCHGRAM_MAX_PHONE_UTF8];
+            char self_user_id[64];
             patchgram_json_string(json, "botVerificationTargetMode", target_mode, sizeof(target_mode));
             patchgram_json_string(json, "customLevelRatingTargetMode", rating_target_mode, sizeof(rating_target_mode));
             patchgram_json_string(json, "botVerificationDescription", description, sizeof(description));
+            patchgram_json_string(json, "selfIdentityOverridePhone", self_phone, sizeof(self_phone));
+            patchgram_json_string(json, "selfIdentityOverrideUserId", self_user_id, sizeof(self_user_id));
             g_bot_verification_enabled = patchgram_json_bool(json, "botVerificationEnabled", false);
             g_custom_level_rating_enabled = patchgram_json_bool(json, "customLevelRatingEnabled", false);
             g_hide_self_phone_enabled = patchgram_json_bool(json, "hideSelfPhoneEnabled", false);
+            g_self_identity_override_enabled = patchgram_json_bool(json, "selfIdentityOverrideEnabled", false);
             g_visual_peer_badge_enabled = patchgram_json_bool(json, "visualPeerBadgeEnabled", false);
             g_force_offline_enabled = patchgram_json_bool(json, "forceOfflineEnabled", false);
             g_open_links_without_warning_enabled = patchgram_json_bool(json, "openLinksWithoutWarningEnabled", false);
@@ -3268,12 +3376,16 @@ public final class BinaryPatchEngine {
             g_custom_level_rating_current_level_rating = (int32_t)patchgram_json_i64(json, "customLevelRatingCurrentLevelRating", 0);
             g_custom_level_rating_next_level_rating = (int32_t)patchgram_json_i64(json, "customLevelRatingNextLevelRating", 2000);
             g_configured_icon_id = patchgram_json_u64(json, "botVerificationCustomEmojiId", 0);
+            g_configured_self_display_user_id = self_user_id[0]
+                ? strtoull(self_user_id, NULL, 10)
+                : 0;
             patchgram_set_target_mode(target_mode);
             g_level_rating_target_mode = patchgram_parse_target_mode(rating_target_mode);
             patchgram_configure_description(description);
+            patchgram_configure_self_phone(self_phone);
             patchgram_refresh_config_mtime(config_path, NULL);
             patchgram_log(
-                "CONFIG %s botVerification=%d targetMode=%s customEmojiId=%llu description=%s descriptionUtf16Length=%lld customLevelRating=%d:%s level=%d rating=%d current=%d next=%d hideSelfPhone=%d visualPeerBadge=%d:%llu forceOffline=%d openLinks=%d noPhoneOnAdd=%d callbackHover=%d customTon=%d:%llu customStars=%d:%llu blockTyping=%d blockRead=%d messageSettings=%d typing=%d readReceipts=%d localDrafts=%d localPremium=%d noPremiumAnim=%d disableSpoilers=%d scheduledSend=%d sensitiveBlur=%d hideStories=%d disableAds=%d telegramAds=%d proxySponsor=%d image=%s",
+                "CONFIG %s botVerification=%d targetMode=%s customEmojiId=%llu description=%s descriptionUtf16Length=%lld customLevelRating=%d:%s level=%d rating=%d current=%d next=%d hideSelfPhone=%d selfIdentity=%d phoneUtf16Length=%lld displayUserId=%llu visualPeerBadge=%d:%llu forceOffline=%d openLinks=%d noPhoneOnAdd=%d callbackHover=%d customTon=%d:%llu customStars=%d:%llu blockTyping=%d blockRead=%d messageSettings=%d typing=%d readReceipts=%d localDrafts=%d localPremium=%d noPremiumAnim=%d disableSpoilers=%d scheduledSend=%d sensitiveBlur=%d hideStories=%d disableAds=%d telegramAds=%d proxySponsor=%d image=%s",
                 reason ? reason : "load",
                 g_bot_verification_enabled ? 1 : 0,
                 target_mode,
@@ -3287,6 +3399,9 @@ public final class BinaryPatchEngine {
                 (int)g_custom_level_rating_current_level_rating,
                 (int)g_custom_level_rating_next_level_rating,
                 g_hide_self_phone_enabled ? 1 : 0,
+                g_self_identity_override_enabled ? 1 : 0,
+                (long long)g_configured_self_phone_utf16_size,
+                (unsigned long long)g_configured_self_display_user_id,
                 g_visual_peer_badge_enabled ? 1 : 0,
                 (unsigned long long)g_visual_peer_badge_value,
                 g_force_offline_enabled ? 1 : 0,
@@ -3368,6 +3483,7 @@ public final class BinaryPatchEngine {
         static const char *patchgram_target_mode_name(void);
         static const char *patchgram_target_mode_value_name(enum PatchgramTargetMode target_mode);
         static bool patchgram_peer_is_self_user(void *peer);
+        static uint64_t patchgram_display_user_id_for_peer(void *peer);
         static bool patchgram_should_patch_peer_for_mode(
             void *peer,
             bool hook_is_user,
@@ -3376,7 +3492,9 @@ public final class BinaryPatchEngine {
         );
         static void patchgram_track_user_data_peer(void *peer, const char *source);
         static void patchgram_clear_self_phone_field(void *peer, const char *source);
+        static void patchgram_write_self_phone_field(void *peer, const char *source);
         static void patchgram_write_custom_level_rating(void *peer, const char *source);
+        static void patchgram_apply_raw_qstring(uint8_t *destination, const uint16_t *text, int64_t size);
 
         static uint64_t patchgram_details_u64(void *details, size_t offset) {
             if (!details) {
@@ -3497,6 +3615,7 @@ public final class BinaryPatchEngine {
             }
             patchgram_record_self_user_id(peer, flags, "UserData::setFlags.after");
             patchgram_track_user_data_peer(peer, "UserData::setFlags.after");
+            patchgram_write_self_phone_field(peer, "UserData::setFlags.after");
             patchgram_clear_self_phone_field(peer, "UserData::setFlags.after");
             patchgram_write_custom_level_rating(peer, "UserData::setFlags.after");
         }
@@ -3561,6 +3680,34 @@ public final class BinaryPatchEngine {
             memset(value, 0, PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE);
         }
 
+        static void patchgram_write_self_phone_field(void *peer, const char *source) {
+            if (!g_self_identity_override_enabled
+                || g_configured_self_phone_utf16_size <= 0
+                || !patchgram_peer_is_self_user(peer)) {
+                return;
+            }
+            void *phone = (uint8_t *)peer + PATCHGRAM_USER_PHONE_OFFSET;
+            const int64_t before_size = patchgram_qstring_size_at(phone);
+            patchgram_apply_raw_qstring(
+                phone,
+                g_configured_self_phone_utf16,
+                g_configured_self_phone_utf16_size
+            );
+            if (g_self_identity_phone_logs < 48) {
+                g_self_identity_phone_logs++;
+                patchgram_log(
+                    "SELF IDENTITY phone wrote source=%s raw_peer=0x%llx peer_id=%llu displayUserId=%llu beforeSize=%lld afterSize=%lld known_self=%llu",
+                    source ? source : "unknown",
+                    (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
+                    (unsigned long long)patchgram_user_id_from_peer(peer),
+                    (unsigned long long)g_configured_self_display_user_id,
+                    (long long)before_size,
+                    (long long)patchgram_qstring_size_at(phone),
+                    (unsigned long long)g_self_user_id
+                );
+            }
+        }
+
         static void patchgram_clear_self_phone_field(void *peer, const char *source) {
             if (!g_hide_self_phone_enabled || !patchgram_peer_is_self_user(peer)) {
                 return;
@@ -3587,6 +3734,8 @@ public final class BinaryPatchEngine {
             const bool hide = g_hide_self_phone_enabled && patchgram_peer_is_self_user(peer);
             if (hide) {
                 patchgram_clear_self_phone_field(peer, "PhoneOrHiddenValue.before");
+            } else {
+                patchgram_write_self_phone_field(peer, "PhoneOrHiddenValue.before");
             }
             if (g_original_phone_or_hidden_value_map) {
                 g_original_phone_or_hidden_value_map(value, input);
@@ -3661,6 +3810,15 @@ public final class BinaryPatchEngine {
                 return true;
             }
             return patchgram_user_is_self(peer);
+        }
+
+        static uint64_t patchgram_display_user_id_for_peer(void *peer) {
+            if (g_self_identity_override_enabled
+                && g_configured_self_display_user_id != 0
+                && patchgram_peer_is_self_user(peer)) {
+                return g_configured_self_display_user_id;
+            }
+            return patchgram_user_id_from_peer(peer);
         }
 
         static bool patchgram_should_patch_peer_for_mode(
@@ -3759,9 +3917,11 @@ public final class BinaryPatchEngine {
                 return false;
             }
             uint8_t *bytes = (uint8_t *)details;
-            uint64_t bot_id = g_self_user_id;
+            uint64_t bot_id = g_self_identity_override_enabled && g_configured_self_display_user_id != 0
+                ? g_configured_self_display_user_id
+                : g_self_user_id;
             if (!bot_id && is_self) {
-                bot_id = patchgram_user_id_from_peer(peer);
+                bot_id = patchgram_display_user_id_for_peer(peer);
             }
             memcpy(bytes + PATCHGRAM_DETAILS_ICON_ID_OFFSET, &g_configured_icon_id, sizeof(g_configured_icon_id));
             patchgram_apply_plain_text_entities(bytes + PATCHGRAM_DETAILS_DESCRIPTION_OFFSET);
@@ -3774,7 +3934,7 @@ public final class BinaryPatchEngine {
                     "BOT VERIFY applied peer=%p raw_peer=0x%llx peer_id=%llu hook_is_user=%d raw_type=%u raw_is_user=%d is_self=%d bot_id=%llu icon_id=%llu descriptionUtf16Length=%lld targetMode=%s",
                     peer,
                     (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
-                    (unsigned long long)patchgram_user_id_from_peer(peer),
+                    (unsigned long long)patchgram_display_user_id_for_peer(peer),
                     is_user ? 1 : 0,
                     (unsigned)patchgram_peer_type_from_peer(peer),
                     patchgram_peer_is_user_peer(peer) ? 1 : 0,
@@ -3828,6 +3988,7 @@ public final class BinaryPatchEngine {
                 g_original_user_set_bot_verify_details(peer, details);
             }
             if (patchgram_peer_is_user_peer(peer)) {
+                patchgram_write_self_phone_field(peer, "UserData::setBotVerifyDetails.after");
                 patchgram_clear_self_phone_field(peer, "UserData::setBotVerifyDetails.after");
                 patchgram_write_custom_level_rating(peer, "UserData::setBotVerifyDetails.after");
             }
@@ -3926,6 +4087,7 @@ public final class BinaryPatchEngine {
             }
             pthread_mutex_unlock(&g_tracked_user_peers_mutex);
             for (size_t index = 0; index < count; index++) {
+                patchgram_write_self_phone_field(peers[index], source ? source : "tracked");
                 patchgram_clear_self_phone_field(peers[index], source ? source : "tracked");
                 patchgram_write_custom_level_rating(peers[index], source ? source : "tracked");
             }
@@ -4044,6 +4206,14 @@ public final class BinaryPatchEngine {
                 0xff, 0xc3, 0x03, 0xd1, 0xfa, 0x67, 0x0a, 0xa9,
                 0xf8, 0x5f, 0x0b, 0xa9, 0xf6, 0x57, 0x0c, 0xa9
             };
+            static const uint8_t format_count_decimal_expected[] = {
+                0x09, 0x00, 0x40, 0xf9, 0x2a, 0x19, 0x40, 0xb9,
+                0x0b, 0x04, 0x80, 0x52, 0x65, 0x15, 0x2a, 0x0a
+            };
+
+            g_profile_peer_id_text_return = (uintptr_t)patchgram_resolve_vmaddr(
+                PATCHGRAM_PROFILE_PEER_ID_TEXT_RETURN_VMADDR
+            );
 
             const bool user_flags_hook = patchgram_install_inline_hook(
                 patchgram_resolve_vmaddr(PATCHGRAM_USER_SET_FLAGS_VMADDR),
@@ -4093,14 +4263,23 @@ public final class BinaryPatchEngine {
                 (void **)&g_original_messages_send_media_serialize,
                 "MTPmessages_SendMedia::serialize"
             );
+            const bool profile_id_text_hook = patchgram_install_inline_hook(
+                patchgram_resolve_vmaddr(PATCHGRAM_FORMAT_COUNT_DECIMAL_VMADDR),
+                patchgram_format_count_decimal,
+                format_count_decimal_expected,
+                sizeof(format_count_decimal_expected),
+                &g_original_format_count_decimal,
+                "Lang::FormatCountDecimal"
+            );
             patchgram_log(
-                "READY hooks userFlags=%d starsRating=direct user=%d channel=%d phone=%d scheduledSendMessage=%d scheduledSendMedia=%d",
+                "READY hooks userFlags=%d starsRating=direct user=%d channel=%d phone=%d scheduledSendMessage=%d scheduledSendMedia=%d profileIdText=%d",
                 user_flags_hook ? 1 : 0,
                 user_hook ? 1 : 0,
                 channel_hook ? 1 : 0,
                 phone_hook ? 1 : 0,
                 g_scheduled_send_message_hook_installed ? 1 : 0,
-                g_scheduled_send_media_hook_installed ? 1 : 0
+                g_scheduled_send_media_hook_installed ? 1 : 0,
+                profile_id_text_hook ? 1 : 0
             );
         }
 
@@ -4291,6 +4470,7 @@ public final class BinaryPatchEngine {
         var parameters = manifest.parameterValues
         var botVerificationConfigs = manifest.botVerificationConfigs
         var customLevelRatingConfigs = manifest.customLevelRatingConfigs
+        var selfIdentityConfigs = manifest.selfIdentityConfigs
         var enabledAlternativeGroups = manifest.enabledAlternativeGroups
 
         for change in changes {
@@ -4318,11 +4498,19 @@ public final class BinaryPatchEngine {
                             ?? CustomLevelRatingPatchConfig.defaultConfig
                     ).normalized
                 }
+                if change.rule.kind == .selfIdentityOverride {
+                    selfIdentityConfigs[change.rule.id] = (
+                        change.selfIdentityConfig
+                            ?? selfIdentityConfigs[change.rule.id]
+                            ?? SelfIdentityPatchConfig.defaultConfig
+                    ).normalized
+                }
             } else {
                 enabled.remove(change.rule.id)
                 parameters.removeValue(forKey: change.rule.id)
                 botVerificationConfigs.removeValue(forKey: change.rule.id)
                 customLevelRatingConfigs.removeValue(forKey: change.rule.id)
+                selfIdentityConfigs.removeValue(forKey: change.rule.id)
                 enabledAlternativeGroups.removeValue(forKey: change.rule.id)
             }
         }
@@ -4332,6 +4520,7 @@ public final class BinaryPatchEngine {
         manifest.parameterValues = parameters.filter { enabled.contains($0.key) }
         manifest.botVerificationConfigs = botVerificationConfigs.filter { enabled.contains($0.key) }
         manifest.customLevelRatingConfigs = customLevelRatingConfigs.filter { enabled.contains($0.key) }
+        manifest.selfIdentityConfigs = selfIdentityConfigs.filter { enabled.contains($0.key) }
         manifest.enabledAlternativeGroups = enabledAlternativeGroups.filter { enabled.contains($0.key) }
         return manifest
     }
@@ -4360,7 +4549,8 @@ public final class BinaryPatchEngine {
             enabledRuleIds: enabled,
             parameterValues: parameterValues.filter { enabled.contains($0.key) },
             botVerificationConfigs: [:],
-            customLevelRatingConfigs: [:]
+            customLevelRatingConfigs: [:],
+            selfIdentityConfigs: [:]
         )
         try writeManifest(manifest, appURL: appURL)
     }

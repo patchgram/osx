@@ -9,6 +9,7 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         "binary.visual.bot_verification",
         "binary.visual.custom_level_rating",
         "binary.visual.hide_self_phone",
+        "binary.visual.self_identity_override",
         "binary.visual.peer_badge",
         "binary.visual.no_premium_anim",
         "binary.visual.disable_spoilers",
@@ -33,6 +34,7 @@ struct BinaryRuleRowState: Identifiable, Hashable {
     var parameterValue: UInt64?
     var botVerificationConfig: BotVerificationPatchConfig?
     var customLevelRatingConfig: CustomLevelRatingPatchConfig?
+    var selfIdentityConfig: SelfIdentityPatchConfig?
     var subpatches: [BinarySubpatchRowState] = []
 
     var patchDeliveryLabel: String {
@@ -50,6 +52,9 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         if status.rule.kind == .customLevelRating {
             return customLevelRatingConfig?.displayValue
         }
+        if status.rule.kind == .selfIdentityOverride {
+            return selfIdentityConfig?.displayValue
+        }
         guard let parameter = status.rule.parameter, let parameterValue else { return nil }
         return parameter.displayValue(parameterValue)
     }
@@ -58,14 +63,16 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         (desiredEnabled && status.state == .partial)
             || (status.state == .applied && (status.rule.parameter != nil
                 || status.rule.kind == .botVerification
-                || status.rule.kind == .customLevelRating))
+                || status.rule.kind == .customLevelRating
+                || status.rule.kind == .selfIdentityOverride))
     }
 
     var updateButtonTitle: String? {
         guard canUpdateAppliedPatch else { return nil }
         return (status.rule.parameter == nil
             && status.rule.kind != .botVerification
-            && status.rule.kind != .customLevelRating) ? "Update" : "Change"
+            && status.rule.kind != .customLevelRating
+            && status.rule.kind != .selfIdentityOverride) ? "Update" : "Change"
     }
 
     var needsApply: Bool {
@@ -188,12 +195,14 @@ final class PatchgramViewModel: ObservableObject {
     @Published var botVerificationUserPresets: [BotVerificationUserPreset] = []
     @Published var isShowingBotVerificationSettings = false
     @Published var customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:]
+    @Published var selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:]
     @Published var writeAccessAlert: WriteAccessAlert?
 
     private let binaryEngine = BinaryPatchEngine()
     private static let binaryParameterDefaultsPrefix = "Patchgram.binaryParameter."
     private static let botVerificationDefaultsPrefix = "Patchgram.botVerificationConfig."
     private static let customLevelRatingDefaultsPrefix = "Patchgram.customLevelRatingConfig."
+    private static let selfIdentityDefaultsPrefix = "Patchgram.selfIdentityConfig."
     private static let botVerificationPresetsFileName = "BotVerificationPresets.json"
     private static let appConfigDesiredSubpatchIdsKey = "Patchgram.appConfigSubpatches.desired"
     private static let appConfigAppliedSubpatchIdsKey = "Patchgram.appConfigSubpatches.applied"
@@ -214,6 +223,7 @@ final class PatchgramViewModel: ObservableObject {
         "binary.visual.bot_verification",
         "binary.visual.custom_level_rating",
         "binary.visual.hide_self_phone",
+        "binary.visual.self_identity_override",
         "binary.visual.peer_badge",
         "binary.visual.no_premium_anim",
         "binary.visual.disable_spoilers",
@@ -268,6 +278,7 @@ final class PatchgramViewModel: ObservableObject {
         botVerificationUserPresets = Self.loadBotVerificationUserPresets()
         botVerificationConfigs = Self.loadBotVerificationConfigs()
         customLevelRatingConfigs = Self.loadCustomLevelRatingConfigs()
+        selfIdentityConfigs = Self.loadSelfIdentityConfigs()
         desiredAppConfigSubpatchIds = Self.loadAppConfigSubpatchIds(
             key: Self.appConfigDesiredSubpatchIdsKey,
             defaultValue: Set(Self.appConfigSubpatchDefinitions.map(\.id))
@@ -401,6 +412,10 @@ final class PatchgramViewModel: ObservableObject {
             if !manifestCustomLevelRatingConfigs.isEmpty {
                 customLevelRatingConfigs.merge(manifestCustomLevelRatingConfigs) { _, manifestValue in manifestValue }
             }
+            let manifestSelfIdentityConfigs = try binaryEngine.manifestSelfIdentityConfigs(appURL: appURL)
+            if !manifestSelfIdentityConfigs.isEmpty {
+                selfIdentityConfigs.merge(manifestSelfIdentityConfigs) { _, manifestValue in manifestValue }
+            }
             let statuses: [BinaryRuleStatus]
             let statusRules = rulesForStatus()
             let manifestStatuses = try binaryEngine.manifestStatuses(appURL: appURL, rules: statusRules)
@@ -412,7 +427,8 @@ final class PatchgramViewModel: ObservableObject {
                     rules: statusRules,
                     parameterValues: binaryParameterValuesForEngine(),
                     botVerificationConfigs: botVerificationConfigsForEngine(),
-                    customLevelRatingConfigs: customLevelRatingConfigsForEngine()
+                    customLevelRatingConfigs: customLevelRatingConfigsForEngine(),
+                    selfIdentityConfigs: selfIdentityConfigsForEngine()
                 )
             }
             applyAppInspection(inspection, statuses: statuses, quick: quick)
@@ -516,6 +532,7 @@ final class PatchgramViewModel: ObservableObject {
                 parameterValue: parameterValue(for: $0.rule),
                 botVerificationConfig: botVerificationConfig(for: $0.rule),
                 customLevelRatingConfig: customLevelRatingConfig(for: $0.rule),
+                selfIdentityConfig: selfIdentityConfig(for: $0.rule),
                 subpatches: subpatches
             )
         }
@@ -569,6 +586,11 @@ final class PatchgramViewModel: ObservableObject {
             customLevelRatingConfigs[row.id] = config
             binaryRows[index].customLevelRatingConfig = config
             storeCustomLevelRatingConfig(config, for: row.id)
+        } else if enabled, row.status.rule.kind == .selfIdentityOverride {
+            guard let config = promptForSelfIdentityConfig(for: row.status.rule, actionTitle: "Enable") else { return }
+            selfIdentityConfigs[row.id] = config
+            binaryRows[index].selfIdentityConfig = config
+            storeSelfIdentityConfig(config, for: row.id)
         } else if enabled, let value = promptForParameterIfNeeded(for: row.status.rule, actionTitle: "Enable") {
             binaryParameterValues[row.id] = value
             binaryRows[index].parameterValue = value
@@ -610,6 +632,7 @@ final class PatchgramViewModel: ObservableObject {
         let nextParameterValue: UInt64?
         let nextBotVerificationConfig: BotVerificationPatchConfig?
         let nextCustomLevelRatingConfig: CustomLevelRatingPatchConfig?
+        let nextSelfIdentityConfig: SelfIdentityPatchConfig?
         if row.status.rule.kind == .botVerification {
             guard let config = promptForBotVerificationConfig(for: row.status.rule, actionTitle: "Update") else { return }
             botVerificationConfigs[row.id] = config
@@ -620,6 +643,7 @@ final class PatchgramViewModel: ObservableObject {
             nextParameterValue = nil
             nextBotVerificationConfig = config
             nextCustomLevelRatingConfig = nil
+            nextSelfIdentityConfig = nil
         } else if row.status.rule.kind == .customLevelRating {
             guard let config = promptForCustomLevelRatingConfig(for: row.status.rule, actionTitle: "Update") else { return }
             customLevelRatingConfigs[row.id] = config
@@ -630,6 +654,18 @@ final class PatchgramViewModel: ObservableObject {
             nextParameterValue = nil
             nextBotVerificationConfig = nil
             nextCustomLevelRatingConfig = config
+            nextSelfIdentityConfig = nil
+        } else if row.status.rule.kind == .selfIdentityOverride {
+            guard let config = promptForSelfIdentityConfig(for: row.status.rule, actionTitle: "Update") else { return }
+            selfIdentityConfigs[row.id] = config
+            storeSelfIdentityConfig(config, for: row.id)
+            if let index = binaryRows.firstIndex(where: { $0.id == row.id }) {
+                binaryRows[index].selfIdentityConfig = config
+            }
+            nextParameterValue = nil
+            nextBotVerificationConfig = nil
+            nextCustomLevelRatingConfig = nil
+            nextSelfIdentityConfig = config
         } else if row.status.rule.parameter != nil {
             guard let value = promptForParameterIfNeeded(for: row.status.rule, actionTitle: "Update") else { return }
             binaryParameterValues[row.id] = value
@@ -640,10 +676,12 @@ final class PatchgramViewModel: ObservableObject {
             nextParameterValue = value
             nextBotVerificationConfig = nil
             nextCustomLevelRatingConfig = nil
+            nextSelfIdentityConfig = nil
         } else {
             nextParameterValue = parameterValue(for: row.status.rule)
             nextBotVerificationConfig = botVerificationConfig(for: row.status.rule)
             nextCustomLevelRatingConfig = customLevelRatingConfig(for: row.status.rule)
+            nextSelfIdentityConfig = selfIdentityConfig(for: row.status.rule)
         }
         beginOperation("Updating \(row.status.rule.title)...")
         do {
@@ -664,6 +702,7 @@ final class PatchgramViewModel: ObservableObject {
                 parameterValue: nextParameterValue,
                 botVerificationConfig: nextBotVerificationConfig,
                 customLevelRatingConfig: nextCustomLevelRatingConfig,
+                selfIdentityConfig: nextSelfIdentityConfig,
                 signAfterPatch: !liveRuntimeUpdate
             )
             lastChangedFiles = report.changedExecutable ? changedFiles(for: row.status.rule) : []
@@ -673,7 +712,8 @@ final class PatchgramViewModel: ObservableObject {
                 enabled: true,
                 patchedParameterValue: nextParameterValue,
                 patchedBotVerificationConfig: nextBotVerificationConfig,
-                patchedCustomLevelRatingConfig: nextCustomLevelRatingConfig
+                patchedCustomLevelRatingConfig: nextCustomLevelRatingConfig,
+                patchedSelfIdentityConfig: nextSelfIdentityConfig
             )
             setOperationProgress(0.90, message: liveRuntimeUpdate ? "Runtime config updated." : "Opening selected app...")
             _ = closeMessage
@@ -709,6 +749,7 @@ final class PatchgramViewModel: ObservableObject {
                 parameterValue: parameterValue(for: rule),
                 botVerificationConfig: botVerificationConfig(for: rule),
                 customLevelRatingConfig: customLevelRatingConfig(for: rule),
+                selfIdentityConfig: selfIdentityConfig(for: rule),
                 enabledAlternativeGroups: alternativeGroupsForChange($0)
             )
         }
@@ -738,6 +779,7 @@ final class PatchgramViewModel: ObservableObject {
                     patchedParameterValue: change.parameterValue,
                     patchedBotVerificationConfig: change.botVerificationConfig,
                     patchedCustomLevelRatingConfig: change.customLevelRatingConfig,
+                    patchedSelfIdentityConfig: change.selfIdentityConfig,
                     enabledAlternativeGroups: change.enabledAlternativeGroups
                 )
             }
@@ -795,6 +837,7 @@ final class PatchgramViewModel: ObservableObject {
                     patchedParameterValue: nil,
                     patchedBotVerificationConfig: nil,
                     patchedCustomLevelRatingConfig: nil,
+                    patchedSelfIdentityConfig: nil,
                     enabledAlternativeGroups: change.enabledAlternativeGroups
                 )
             }
@@ -837,6 +880,7 @@ final class PatchgramViewModel: ObservableObject {
         patchedParameterValue: UInt64?,
         patchedBotVerificationConfig: BotVerificationPatchConfig?,
         patchedCustomLevelRatingConfig: CustomLevelRatingPatchConfig?,
+        patchedSelfIdentityConfig: SelfIdentityPatchConfig?,
         enabledAlternativeGroups: Set<String>? = nil
     ) {
         guard let index = binaryRows.firstIndex(where: { $0.id == rule.id }) else { return }
@@ -858,6 +902,10 @@ final class PatchgramViewModel: ObservableObject {
         binaryRows[index].customLevelRatingConfig = enabled
             ? storedCustomLevelRatingConfig
             : (patchedCustomLevelRatingConfig ?? storedCustomLevelRatingConfig)
+        let storedSelfIdentityConfig = selfIdentityConfig(for: displayRule)
+        binaryRows[index].selfIdentityConfig = enabled
+            ? storedSelfIdentityConfig
+            : (patchedSelfIdentityConfig ?? storedSelfIdentityConfig)
         if Self.compositeFeatureRuleIds.contains(displayRule.id) {
             if enabled {
                 let appliedIds = subpatchIds(forAlternativeGroups: enabledAlternativeGroups, ruleId: displayRule.id)
@@ -887,6 +935,7 @@ final class PatchgramViewModel: ObservableObject {
             binaryRows[index].desiredEnabled = false
             binaryRows[index].botVerificationConfig = botVerificationConfig(for: rule)
             binaryRows[index].customLevelRatingConfig = customLevelRatingConfig(for: rule)
+            binaryRows[index].selfIdentityConfig = selfIdentityConfig(for: rule)
             if Self.compositeFeatureRuleIds.contains(rule.id) {
                 binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
             }
@@ -1065,6 +1114,7 @@ final class PatchgramViewModel: ObservableObject {
                 parameterValue: parameterValue(for: $0),
                 botVerificationConfig: botVerificationConfig(for: $0),
                 customLevelRatingConfig: customLevelRatingConfig(for: $0),
+                selfIdentityConfig: selfIdentityConfig(for: $0),
                 subpatches: subpatchRows(for: BinaryRuleStatus(rule: $0, state: .unavailable, detail: "No app selected."))
             )
         }
@@ -1348,6 +1398,18 @@ final class PatchgramViewModel: ObservableObject {
         })
     }
 
+    private static func loadSelfIdentityConfigs() -> [String: SelfIdentityPatchConfig] {
+        let decoder = JSONDecoder()
+        return Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
+            guard rule.kind == .selfIdentityOverride else { return nil }
+            let key = selfIdentityDefaultsPrefix + rule.id
+            let saved = UserDefaults.standard
+                .data(forKey: key)
+                .flatMap { try? decoder.decode(SelfIdentityPatchConfig.self, from: $0) }
+            return (rule.id, (saved ?? SelfIdentityPatchConfig.defaultConfig).normalized)
+        })
+    }
+
     private static func loadAppConfigSubpatchIds(key: String, defaultValue: Set<String>) -> Set<String> {
         loadSubpatchIds(key: key, knownIds: Set(appConfigSubpatchDefinitions.map(\.id)), defaultValue: defaultValue)
     }
@@ -1396,6 +1458,13 @@ final class PatchgramViewModel: ObservableObject {
     private func customLevelRatingConfigsForEngine() -> [String: CustomLevelRatingPatchConfig] {
         Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
             guard rule.kind == .customLevelRating, let config = customLevelRatingConfig(for: rule) else { return nil }
+            return (rule.id, config)
+        })
+    }
+
+    private func selfIdentityConfigsForEngine() -> [String: SelfIdentityPatchConfig] {
+        Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
+            guard rule.kind == .selfIdentityOverride, let config = selfIdentityConfig(for: rule) else { return nil }
             return (rule.id, config)
         })
     }
@@ -1455,10 +1524,22 @@ final class PatchgramViewModel: ObservableObject {
         return (customLevelRatingConfigs[rule.id] ?? CustomLevelRatingPatchConfig.defaultConfig).normalized
     }
 
+    private func selfIdentityConfig(for rule: BinaryPatchRule) -> SelfIdentityPatchConfig? {
+        guard rule.kind == .selfIdentityOverride else { return nil }
+        return (selfIdentityConfigs[rule.id] ?? SelfIdentityPatchConfig.defaultConfig).normalized
+    }
+
     private func storeBotVerificationConfig(_ config: BotVerificationPatchConfig, for ruleId: String) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(config.normalized) {
             UserDefaults.standard.set(data, forKey: Self.botVerificationDefaultsPrefix + ruleId)
+        }
+    }
+
+    private func storeSelfIdentityConfig(_ config: SelfIdentityPatchConfig, for ruleId: String) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(config.normalized) {
+            UserDefaults.standard.set(data, forKey: Self.selfIdentityDefaultsPrefix + ruleId)
         }
     }
 
@@ -1841,6 +1922,70 @@ final class PatchgramViewModel: ObservableObject {
             currentLevelRating: currentLevelRating,
             nextLevelRating: nextLevelRating
         ).normalized
+    }
+
+    private func promptForSelfIdentityConfig(
+        for rule: BinaryPatchRule,
+        actionTitle: String
+    ) -> SelfIdentityPatchConfig? {
+        guard rule.kind == .selfIdentityOverride else { return nil }
+        let current = selfIdentityConfig(for: rule) ?? SelfIdentityPatchConfig.defaultConfig
+        let alert = NSAlert()
+        alert.messageText = rule.title
+        alert.informativeText = "Enter local phone and user id values. Leave a field empty to keep Telegram's original value."
+        alert.addButton(withTitle: actionTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let labelWidth: CGFloat = 92
+        let controlX = labelWidth + 12
+        let controlWidth: CGFloat = 260
+        let rowHeight: CGFloat = 26
+        let rowGap: CGFloat = 10
+        let width = controlX + controlWidth
+        let height: CGFloat = rowHeight * 2 + rowGap
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+
+        func addLabel(_ title: String, row: Int) {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap + 3
+            let label = NSTextField(labelWithString: title + ":")
+            label.alignment = .right
+            label.frame = NSRect(x: 0, y: y, width: labelWidth, height: 20)
+            container.addSubview(label)
+        }
+
+        func rowFrame(_ row: Int) -> NSRect {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap
+            return NSRect(x: controlX, y: y, width: controlWidth, height: rowHeight)
+        }
+
+        addLabel("Phone", row: 0)
+        let phoneField = NSTextField(frame: rowFrame(0))
+        phoneField.stringValue = current.phone
+        phoneField.placeholderString = "+10000000000"
+        container.addSubview(phoneField)
+
+        addLabel("User id", row: 1)
+        let userIdField = NSTextField(frame: rowFrame(1))
+        userIdField.stringValue = current.userId
+        userIdField.placeholderString = "Original"
+        container.addSubview(userIdField)
+
+        alert.accessoryView = container
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        let phone = phoneField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let userIdText = userIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard phone.count <= 64 else {
+            statusMessage = "Enter a phone value up to 64 characters."
+            return nil
+        }
+        if !userIdText.isEmpty,
+           (UInt64(userIdText) == nil || UInt64(userIdText)! > 0x0000ffffffffffff) {
+            statusMessage = "Enter a valid user id from 0 to 281474976710655."
+            return nil
+        }
+
+        return SelfIdentityPatchConfig(phone: phone, userId: userIdText).normalized
     }
 
     private static func durationString(since start: Date) -> String {
