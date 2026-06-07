@@ -6,6 +6,7 @@ APP="$ROOT/.build/Patchgram.app"
 EXECUTABLE="$ROOT/.build/release/patchgram"
 LOGO="$ROOT/Sources/Patchgram/Resources/PatchgramLogo.svg"
 TELEGRAM_LOGO="$ROOT/Sources/Patchgram/Resources/TelegramLogo.svg"
+APP_ICON_SVG_SOURCE="$ROOT/assets/PatchgramAppIcon.svg"
 RESOURCE_BUNDLE="$ROOT/.build/release/Patchgram_Patchgram.bundle"
 SWIFTPM_CACHE="$ROOT/.build/swiftpm-cache"
 SWIFTPM_CONFIG="$ROOT/.build/swiftpm-config"
@@ -47,6 +48,7 @@ swift build \
 
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
+rm -f "$APP/Contents/Resources/PatchgramLogo.png"
 cp "$EXECUTABLE" "$APP/Contents/MacOS/Patchgram"
 cp "$LOGO" "$APP/Contents/Resources/PatchgramLogo.svg"
 cp "$TELEGRAM_LOGO" "$APP/Contents/Resources/TelegramLogo.svg"
@@ -57,14 +59,18 @@ fi
 
 rm -rf "$ICON_WORK"
 mkdir -p "$ICONSET"
-{
-  printf '%s\n' '<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">'
-  printf '%s\n' '<defs><linearGradient id="bg" x1="168" y1="112" x2="856" y2="912" gradientUnits="userSpaceOnUse"><stop stop-color="#37C7FF"/><stop offset="0.55" stop-color="#249BEF"/><stop offset="1" stop-color="#1572D2"/></linearGradient></defs>'
-  printf '%s\n' '<rect x="80" y="80" width="864" height="864" rx="200" fill="url(#bg)"/>'
-  printf '%s\n' '<svg x="132" y="132" width="760" height="760" viewBox="190 190 690 690">'
-  sed -n '/<path /p' "$LOGO"
-  printf '%s\n' '</svg></svg>'
-} > "$ICON_SVG"
+if [ -f "$APP_ICON_SVG_SOURCE" ]; then
+  cp "$APP_ICON_SVG_SOURCE" "$ICON_SVG"
+else
+  {
+    printf '%s\n' '<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    printf '%s\n' '<defs><linearGradient id="bg" x1="168" y1="112" x2="856" y2="912" gradientUnits="userSpaceOnUse"><stop stop-color="#37C7FF"/><stop offset="0.55" stop-color="#249BEF"/><stop offset="1" stop-color="#1572D2"/></linearGradient></defs>'
+    printf '%s\n' '<rect x="80" y="80" width="864" height="864" rx="200" fill="url(#bg)"/>'
+    printf '%s\n' '<svg x="132" y="132" width="760" height="760" viewBox="190 190 690 690">'
+    sed -n '/<path /p' "$LOGO"
+    printf '%s\n' '</svg></svg>'
+  } > "$ICON_SVG"
+fi
 
 if /usr/bin/qlmanage -t -s 1024 -o "$ICON_WORK" "$ICON_SVG" >/dev/null 2>&1 && [ -f "$ICON_PNG" ]; then
   /usr/bin/sips -z 16 16 "$ICON_PNG" --out "$ICONSET/icon_16x16.png" >/dev/null
@@ -98,9 +104,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.7</string>
+  <string>1.0.0</string>
   <key>CFBundleVersion</key>
-  <string>8</string>
+  <string>10</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSHighResolutionCapable</key>

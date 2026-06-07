@@ -919,7 +919,7 @@ private struct TelegramIcon: View {
     }()
 }
 
-private func appResourceURLs(named name: String, extension fileExtension: String) -> [URL?] {
+func appResourceURLs(named name: String, extension fileExtension: String) -> [URL?] {
     let resourceURL = Bundle.main.resourceURL
     return [
         Bundle.main.url(forResource: name, withExtension: fileExtension),
