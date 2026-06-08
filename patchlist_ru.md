@@ -23,8 +23,8 @@
 | Don't share phone when adding contacts | `dylib` | Не даёт Telegram Desktop отправлять флаг исключения приватности номера при добавлении контакта. |
 | 999 accounts | `binary` | Поднимает локальный лимит аккаунтов в Telegram Desktop до 999. |
 | Show bot callback-data on hover | `dylib` | Показывает callback-data inline-кнопок бота при наведении/копировании текста кнопки. |
-| Disable Premium, Stars, TON & Gifts | `binary` | Отключает выбранные monetization-разделы и запросы: Premium, Stars, TON, Gifts, boosts, paid reactions, emoji statuses и части app config. |
-| Custom account settings | `dylib` | Общий патч локальной кастомизации аккаунта: балансы, бейджи, Premium, верификация, номер, userID, канал в профиле и Fragment phone. |
+| Disable Premium, Stars, TON & Gifts | `dylib` | Отключает выбранные monetization-разделы и запросы через runtime: Premium, Stars, TON, Gifts, boosts, paid reactions, emoji statuses и части app config. |
+| Custom account settings | `dylib` | Общий патч локальной кастомизации аккаунта: балансы, бейджи, Premium, верификация, номер, userID, канал в профиле, Fragment phone и кастомные юзернеймы. |
 | Disable premium effects | `dylib` | Отключает локальный запуск Premium-эффектов и анимаций стикеров. |
 | Disable media spoilers | `dylib` | Показывает фото/видео со спойлером сразу, без локального блюра. |
 | Sensitive blur | `dylib` | Отключает локальный блюр sensitive-контента. |
@@ -68,6 +68,7 @@
 | Custom userID | Визуально заменяет отображаемый userID локально. Пустая строка означает оригинальный ID. |
 | Local attached channel | Визуально прикрепляет другой канал по channel ID. Чтобы он корректно отображался у тебя в клиенте, сначала нужно открыть/прогрузить этот канал в Telegram Desktop. |
 | Fragment phone | Локально делает отображаемый номер коллекционным и позволяет задать свои значения `fragment.collectibleInfo`. |
+| Custom list usernames | Локально заменяет список юзернеймов в твоём профиле. Юзернейм можно сделать обычным или collectible, а для collectible задать свои значения `fragment.collectibleInfo`. |
 
 ## Подпатчи Disable Ads
 

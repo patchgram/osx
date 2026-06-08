@@ -10,6 +10,7 @@ public final class BinaryVisualPatchModule: BinaryPatchRuleModule {
             "binary.visual.self_identity_override",
             "binary.visual.local_personal_channel",
             "binary.visual.fragment_phone",
+            "binary.visual.custom_list_usernames",
             "binary.visual.no_premium_anim",
             "binary.visual.disable_spoilers"
         ])

@@ -59,6 +59,7 @@ private struct BinaryPatchManifest: Codable {
     var selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:]
     var localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:]
     var fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:]
+    var customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:]
     var messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
     var enabledAlternativeGroups: [String: [String]] = [:]
 
@@ -71,6 +72,7 @@ private struct BinaryPatchManifest: Codable {
         selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:],
         fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
+        customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:],
         messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:],
         enabledAlternativeGroups: [String: [String]] = [:]
     ) {
@@ -82,6 +84,7 @@ private struct BinaryPatchManifest: Codable {
         self.selfIdentityConfigs = selfIdentityConfigs
         self.localPersonalChannelConfigs = localPersonalChannelConfigs
         self.fragmentPhoneConfigs = fragmentPhoneConfigs
+        self.customListUsernamesConfigs = customListUsernamesConfigs
         self.messageFactCheckConfigs = messageFactCheckConfigs
         self.enabledAlternativeGroups = enabledAlternativeGroups
     }
@@ -95,6 +98,7 @@ private struct BinaryPatchManifest: Codable {
         case selfIdentityConfigs
         case localPersonalChannelConfigs
         case fragmentPhoneConfigs
+        case customListUsernamesConfigs
         case messageFactCheckConfigs
         case enabledAlternativeGroups
     }
@@ -123,6 +127,10 @@ private struct BinaryPatchManifest: Codable {
         fragmentPhoneConfigs = try container.decodeIfPresent(
             [String: FragmentPhonePatchConfig].self,
             forKey: .fragmentPhoneConfigs
+        ) ?? [:]
+        customListUsernamesConfigs = try container.decodeIfPresent(
+            [String: CustomListUsernamesPatchConfig].self,
+            forKey: .customListUsernamesConfigs
         ) ?? [:]
         messageFactCheckConfigs = try container.decodeIfPresent(
             [String: MessageFactCheckPatchConfig].self,
@@ -171,6 +179,8 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let fragmentPhoneCryptoCurrency: String
     let fragmentPhoneCryptoAmount: Int64
     let fragmentPhoneUrl: String
+    let customListUsernamesEnabled: Bool
+    let customListUsernamesPayload: String
     let visualPeerBadgeEnabled: Bool
     let visualPeerBadgeValue: UInt64
     let noPremiumAnimEnabled: Bool
@@ -195,6 +205,15 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let messageFactCheckHash: Int64
     let messageFactCheckNeedCheck: Bool
     let localPremiumEnabled: Bool
+    let disableMonetizationEnabled: Bool
+    let disableMonetizationAppConfigEnabled: Bool
+    let disableMonetizationPremiumUIEnabled: Bool
+    let disableMonetizationGiftsEnabled: Bool
+    let disableMonetizationPaidReactionsEnabled: Bool
+    let disableMonetizationEmojiStatusesEnabled: Bool
+    let disableMonetizationStarsTonCollectiblesEnabled: Bool
+    let disableMonetizationBoostsEnabled: Bool
+    let disableMonetizationReadReceiptsEnabled: Bool
     let scheduledSendEnabled: Bool
     let sensitiveBlurEnabled: Bool
     let hideStoriesEnabled: Bool
@@ -212,6 +231,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
     public let selfIdentityConfig: SelfIdentityPatchConfig?
     public let localPersonalChannelConfig: LocalPersonalChannelPatchConfig?
     public let fragmentPhoneConfig: FragmentPhonePatchConfig?
+    public let customListUsernamesConfig: CustomListUsernamesPatchConfig?
     public let messageFactCheckConfig: MessageFactCheckPatchConfig?
     public let enabledAlternativeGroups: Set<String>?
 
@@ -224,6 +244,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         selfIdentityConfig: SelfIdentityPatchConfig? = nil,
         localPersonalChannelConfig: LocalPersonalChannelPatchConfig? = nil,
         fragmentPhoneConfig: FragmentPhonePatchConfig? = nil,
+        customListUsernamesConfig: CustomListUsernamesPatchConfig? = nil,
         messageFactCheckConfig: MessageFactCheckPatchConfig? = nil,
         enabledAlternativeGroups: Set<String>? = nil
     ) {
@@ -235,6 +256,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         self.selfIdentityConfig = selfIdentityConfig
         self.localPersonalChannelConfig = localPersonalChannelConfig
         self.fragmentPhoneConfig = fragmentPhoneConfig
+        self.customListUsernamesConfig = customListUsernamesConfig
         self.messageFactCheckConfig = messageFactCheckConfig
         self.enabledAlternativeGroups = enabledAlternativeGroups
     }
@@ -288,6 +310,7 @@ public final class BinaryPatchEngine {
     private static let selfIdentityOverrideRuleId = "binary.visual.self_identity_override"
     private static let localPersonalChannelRuleId = "binary.visual.local_personal_channel"
     private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
+    private static let customListUsernamesRuleId = "binary.visual.custom_list_usernames"
     private static let visualPeerBadgeRuleId = "binary.visual.peer_badge"
     private static let noPremiumAnimRuleId = "binary.visual.no_premium_anim"
     private static let disableSpoilersRuleId = "binary.visual.disable_spoilers"
@@ -305,6 +328,7 @@ public final class BinaryPatchEngine {
     private static let messageLocalDraftsAlternativeGroup = "messages.drafts.local_only"
     private static let scheduledSendAlternativeGroup = "messages.scheduled_send.local"
     private static let messageFactCheckAlternativeGroup = "messages.fact_check.local"
+    private static let disableMonetizationRuleId = "binary.config.disable_monetization"
     private static let localPremiumRuleId = "binary.premium.local"
     private static let scheduledSendRuleId = "binary.messages.scheduled_send"
     private static let sensitiveBlurRuleId = "binary.visual.sensitive_blur"
@@ -321,6 +345,7 @@ public final class BinaryPatchEngine {
         blockTypingRuleId,
         blockReadMessagesRuleId,
         messageSettingsRuleId,
+        disableMonetizationRuleId,
         localPremiumRuleId,
         visualPeerBadgeRuleId,
         selfIdentityOverrideRuleId,
@@ -338,6 +363,7 @@ public final class BinaryPatchEngine {
         selfIdentityOverrideRuleId,
         localPersonalChannelRuleId,
         fragmentPhoneRuleId,
+        customListUsernamesRuleId,
         visualPeerBadgeRuleId,
         scheduledSendRuleId,
         sensitiveBlurRuleId
@@ -350,6 +376,41 @@ public final class BinaryPatchEngine {
     private static func isMessageReadReceiptsAlternativeGroup(_ group: String) -> Bool {
         group.hasPrefix(messageReadReceiptsAlternativeGroupPrefix)
     }
+
+    private static func disableMonetizationSubpatchId(for group: String) -> String {
+        if group == "help.getAppConfig.constructor" {
+            return "app_config"
+        }
+        if group == "api.who_read_exists.chat_threshold.default_100" {
+            return "read_receipts"
+        }
+        if group.contains("paidReaction")
+            || group.contains("reaction_paid")
+            || group.contains("allowed_reactions.paid")
+            || group.contains("message_reactions.skip_empty") {
+            return "paid_reactions"
+        }
+        if group.contains("boost") {
+            return "boosts"
+        }
+        if group.contains("gift") || group.contains("Gift") {
+            return "gifts"
+        }
+        if group.contains("emoji_status")
+            || group.contains("EmojiStatus")
+            || group.contains("main_menu.status")
+            || group.contains("AvailableEffects") {
+            return "emoji_statuses"
+        }
+        if group.contains("stars")
+            || group.contains("Stars")
+            || group.contains("ton")
+            || group.contains("nft")
+            || group.contains("collectible") {
+            return "stars_ton_collectibles"
+        }
+        return "premium_ui"
+    }
     private static let botVerificationRuntimeHookDylibName = "Patchgram.dylib"
     private static let deprecatedBotVerificationRuntimeHookDylibName = "PatchgramBotVerificationHook.dylib"
     private static let deprecatedBotVerificationRuntimeHookSourceName = "PatchgramBotVerificationHook.c"
@@ -357,7 +418,7 @@ public final class BinaryPatchEngine {
     private static let deprecatedBotVerificationRuntimeConfigName = "PatchgramBotVerification.json"
     private static let legacyRuntimeHookDylibName = "PatchgramDeletedIconHook.dylib"
     private static let legacyRuntimeHookSourceName = "PatchgramDeletedIconHook.c"
-    private static let runtimeHookBuildMarker = "PATCHGRAM_RUNTIME_BUILD_20260608_FACT_CHECK_EARLY_LAYOUT_READY"
+    private static let runtimeHookBuildMarker = "PATCHGRAM_RUNTIME_BUILD_20260609_DISABLE_MONETIZATION_RUNTIME"
     private static let patchLogName = "PatchgramPatch.log"
     private static let hookLogName = "PatchgramHook.log"
 
@@ -383,6 +444,10 @@ public final class BinaryPatchEngine {
         guard let executableName = info["CFBundleExecutable"] as? String, !executableName.isEmpty else {
             throw PatchgramError.invalidAppBundle(appURL.path)
         }
+        let bundleIdentifier = info["CFBundleIdentifier"] as? String ?? "unknown.bundle"
+        guard bundleIdentifier == "com.tdesktop.Telegram" else {
+            throw PatchgramError.unsupportedAppBundle(bundleIdentifier)
+        }
         let executableURL = appURL.appendingPathComponent("Contents/MacOS/")
             .appendingPathComponent(executableName)
         guard fileManager.fileExists(atPath: executableURL.path) else {
@@ -391,7 +456,7 @@ public final class BinaryPatchEngine {
         let preliminaryInspection = AppInspection(
             appURL: appURL,
             executableURL: executableURL,
-            bundleIdentifier: info["CFBundleIdentifier"] as? String ?? "unknown.bundle",
+            bundleIdentifier: bundleIdentifier,
             bundleVersion: (info["CFBundleShortVersionString"] as? String)
                 ?? (info["CFBundleVersion"] as? String)
                 ?? "unknown",
@@ -427,6 +492,7 @@ public final class BinaryPatchEngine {
         selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:],
         fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
+        customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:],
         messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
     ) throws -> [BinaryRuleStatus] {
         let inspection = try inspect(appURL: appURL)
@@ -447,6 +513,7 @@ public final class BinaryPatchEngine {
                     requestedSelfIdentityConfig: selfIdentityConfigs[rule.id],
                     requestedLocalPersonalChannelConfig: localPersonalChannelConfigs[rule.id],
                     requestedFragmentPhoneConfig: fragmentPhoneConfigs[rule.id],
+                    requestedCustomListUsernamesConfig: customListUsernamesConfigs[rule.id],
                     requestedMessageFactCheckConfig: messageFactCheckConfigs[rule.id]
                 )
             }
@@ -490,6 +557,11 @@ public final class BinaryPatchEngine {
                     : "Not recorded in Patchgram manifest."
             } else if rule.kind == .fragmentPhone,
                       let config = manifest.fragmentPhoneConfigs[rule.id] {
+                detail = state.isEnabled
+                    ? "Recorded in Patchgram manifest: \(config.displayValue)."
+                    : "Not recorded in Patchgram manifest."
+            } else if rule.kind == .customListUsernames,
+                      let config = manifest.customListUsernamesConfigs[rule.id] {
                 detail = state.isEnabled
                     ? "Recorded in Patchgram manifest: \(config.displayValue)."
                     : "Not recorded in Patchgram manifest."
@@ -548,6 +620,10 @@ public final class BinaryPatchEngine {
         try readManifest(appURL: appURL)?.fragmentPhoneConfigs ?? [:]
     }
 
+    public func manifestCustomListUsernamesConfigs(appURL: URL) throws -> [String: CustomListUsernamesPatchConfig] {
+        try readManifest(appURL: appURL)?.customListUsernamesConfigs ?? [:]
+    }
+
     public func manifestMessageFactCheckConfigs(appURL: URL) throws -> [String: MessageFactCheckPatchConfig] {
         try readManifest(appURL: appURL)?.messageFactCheckConfigs ?? [:]
     }
@@ -578,6 +654,7 @@ public final class BinaryPatchEngine {
         selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:],
         fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
+        customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:],
         messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:],
         signAfterPatch: Bool = true
     ) throws -> BinaryPatchApplicationReport {
@@ -596,6 +673,7 @@ public final class BinaryPatchEngine {
                     selfIdentityConfig: selfIdentityConfigs[rule.id],
                     localPersonalChannelConfig: localPersonalChannelConfigs[rule.id],
                     fragmentPhoneConfig: fragmentPhoneConfigs[rule.id],
+                    customListUsernamesConfig: customListUsernamesConfigs[rule.id],
                     messageFactCheckConfig: messageFactCheckConfigs[rule.id]
                 )
             }
@@ -732,6 +810,7 @@ public final class BinaryPatchEngine {
         selfIdentityConfig: SelfIdentityPatchConfig? = nil,
         localPersonalChannelConfig: LocalPersonalChannelPatchConfig? = nil,
         fragmentPhoneConfig: FragmentPhonePatchConfig? = nil,
+        customListUsernamesConfig: CustomListUsernamesPatchConfig? = nil,
         messageFactCheckConfig: MessageFactCheckPatchConfig? = nil,
         signAfterPatch: Bool = true
     ) throws -> BinaryPatchApplicationReport {
@@ -780,6 +859,7 @@ public final class BinaryPatchEngine {
                 selfIdentityConfig: selfIdentityConfig,
                 localPersonalChannelConfig: localPersonalChannelConfig,
                 fragmentPhoneConfig: fragmentPhoneConfig,
+                customListUsernamesConfig: customListUsernamesConfig,
                 messageFactCheckConfig: messageFactCheckConfig
             )
             let nextManifest = try manifest(
@@ -803,6 +883,7 @@ public final class BinaryPatchEngine {
                     selfIdentityConfig: selfIdentityConfig,
                     localPersonalChannelConfig: localPersonalChannelConfig,
                     fragmentPhoneConfig: fragmentPhoneConfig,
+                    customListUsernamesConfig: customListUsernamesConfig,
                     messageFactCheckConfig: messageFactCheckConfig
                 )
             ]
@@ -1007,6 +1088,7 @@ public final class BinaryPatchEngine {
         requestedSelfIdentityConfig: SelfIdentityPatchConfig?,
         requestedLocalPersonalChannelConfig: LocalPersonalChannelPatchConfig?,
         requestedFragmentPhoneConfig: FragmentPhonePatchConfig?,
+        requestedCustomListUsernamesConfig: CustomListUsernamesPatchConfig?,
         requestedMessageFactCheckConfig: MessageFactCheckPatchConfig?
     ) -> BinaryRuleStatus {
         let manifestEnabled = manifest?.enabledRuleIds.contains(rule.id) == true
@@ -1039,6 +1121,13 @@ public final class BinaryPatchEngine {
         ).normalized
         let fragmentPhoneConfig = (
             requestedFragmentPhoneConfig ?? manifestFragmentPhoneConfig
+        ).normalized
+        let manifestCustomListUsernamesConfig = (
+            manifest?.customListUsernamesConfigs[rule.id]
+                ?? CustomListUsernamesPatchConfig.defaultConfig
+        ).normalized
+        let customListUsernamesConfig = (
+            requestedCustomListUsernamesConfig ?? manifestCustomListUsernamesConfig
         ).normalized
         let manifestMessageFactCheckConfig = (
             manifest?.messageFactCheckConfigs[rule.id]
@@ -1076,6 +1165,8 @@ public final class BinaryPatchEngine {
             installedDetail = "Runtime hook installed: \(localPersonalChannelConfig.displayValue)."
         } else if rule.kind == .fragmentPhone {
             installedDetail = "Runtime hook installed: \(fragmentPhoneConfig.displayValue)."
+        } else if rule.kind == .customListUsernames {
+            installedDetail = "Runtime hook installed: \(customListUsernamesConfig.displayValue)."
         } else if rule.id == Self.messageSettingsRuleId,
                   manifest?.enabledAlternativeGroups[rule.id]?.contains(Self.messageFactCheckAlternativeGroup) == true {
             installedDetail = "Runtime memory patch installed: \(messageFactCheckConfig.displayValue)."
@@ -1132,6 +1223,15 @@ public final class BinaryPatchEngine {
                     rule: rule,
                     state: .partial,
                     detail: "Runtime hook is installed with a different Fragment phone config."
+                )
+            }
+            if rule.kind == .customListUsernames,
+               let requestedCustomListUsernamesConfig,
+               requestedCustomListUsernamesConfig.normalized != manifestCustomListUsernamesConfig {
+                return BinaryRuleStatus(
+                    rule: rule,
+                    state: .partial,
+                    detail: "Runtime hook is installed with a different custom usernames config."
                 )
             }
             if rule.id == Self.messageSettingsRuleId,
@@ -1751,6 +1851,10 @@ public final class BinaryPatchEngine {
             for: Self.disableAdsRuleId,
             manifest: manifest
         )
+        let monetizationGroups = enabledAlternativeGroups(
+            for: Self.disableMonetizationRuleId,
+            manifest: manifest
+        )
         let botConfig = (
             manifest.botVerificationConfigs[Self.botVerificationRuleId]
                 ?? BotVerificationPatchConfig.defaultConfig
@@ -1774,6 +1878,10 @@ public final class BinaryPatchEngine {
         let fragmentPhoneConfig = (
             manifest.fragmentPhoneConfigs[Self.fragmentPhoneRuleId]
                 ?? FragmentPhonePatchConfig.defaultConfig
+        ).normalized
+        let customListUsernamesConfig = (
+            manifest.customListUsernamesConfigs[Self.customListUsernamesRuleId]
+                ?? CustomListUsernamesPatchConfig.defaultConfig
         ).normalized
         let messageFactCheckConfig = (
             manifest.messageFactCheckConfigs[Self.messageSettingsRuleId]
@@ -1820,6 +1928,8 @@ public final class BinaryPatchEngine {
             fragmentPhoneCryptoCurrency: fragmentPhoneConfig.cryptoCurrency,
             fragmentPhoneCryptoAmount: fragmentPhoneConfig.cryptoAmount,
             fragmentPhoneUrl: fragmentPhoneConfig.url,
+            customListUsernamesEnabled: enabled.contains(Self.customListUsernamesRuleId),
+            customListUsernamesPayload: customListUsernamesConfig.runtimePayload,
             visualPeerBadgeEnabled: enabled.contains(Self.visualPeerBadgeRuleId),
             visualPeerBadgeValue: manifest.parameterValues[Self.visualPeerBadgeRuleId]
                 ?? visualPeerBadgeRule?.parameter?.defaultValue
@@ -1850,6 +1960,23 @@ public final class BinaryPatchEngine {
             messageFactCheckHash: messageFactCheckConfig.hash,
             messageFactCheckNeedCheck: messageFactCheckConfig.needCheck,
             localPremiumEnabled: enabled.contains(Self.localPremiumRuleId),
+            disableMonetizationEnabled: enabled.contains(Self.disableMonetizationRuleId),
+            disableMonetizationAppConfigEnabled: enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "app_config" },
+            disableMonetizationPremiumUIEnabled: enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "premium_ui" },
+            disableMonetizationGiftsEnabled: enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "gifts" },
+            disableMonetizationPaidReactionsEnabled: enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "paid_reactions" },
+            disableMonetizationEmojiStatusesEnabled: enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "emoji_statuses" },
+            disableMonetizationStarsTonCollectiblesEnabled: enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "stars_ton_collectibles" },
+            disableMonetizationBoostsEnabled: enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "boosts" },
+            disableMonetizationReadReceiptsEnabled: enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "read_receipts" },
             scheduledSendEnabled: enabled.contains(Self.scheduledSendRuleId)
                 || (enabled.contains(Self.messageSettingsRuleId)
                     && messageGroups.contains(Self.scheduledSendAlternativeGroup)),
@@ -2052,6 +2179,8 @@ public final class BinaryPatchEngine {
         #include <mach-o/dyld.h>
         #include <mach/mach.h>
         #include <mach/mach_vm.h>
+        #include <ctype.h>
+        #include <dlfcn.h>
         #include <pthread.h>
         #include <stdbool.h>
         #include <stdarg.h>
@@ -2083,6 +2212,7 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_PROFILE_PEER_ID_TEXT_RETURN_VMADDR 0x10542febcULL
         #define PATCHGRAM_INLINE_HOOK_SIZE 16
         #define PATCHGRAM_PEER_ID_OFFSET 0x8
+        #define PATCHGRAM_USER_USERNAME_INFO_OFFSET 0x268
         #define PATCHGRAM_USER_FLAGS_OFFSET 0x218
         #define PATCHGRAM_USER_PHONE_OFFSET 0x288
         #define PATCHGRAM_USER_STARS_RATING_OFFSET 0x2c0
@@ -2113,6 +2243,11 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_MAX_PHONE_UTF16 64
         #define PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8 256
         #define PATCHGRAM_MAX_FRAGMENT_PHONE_UTF8 128
+        #define PATCHGRAM_MAX_USERNAME_UTF8 4096
+        #define PATCHGRAM_MAX_USERNAME_UTF16 4096
+        #define PATCHGRAM_MAX_CUSTOM_USERNAMES 32
+        #define PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET 0x0
+        #define PATCHGRAM_USERNAME_INFO_EDITABLE_INDEX_OFFSET 0x18
         #define PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF8 1024
         #define PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF16 1024
         #define PATCHGRAM_MAX_FACT_CHECK_COUNTRY_UTF16 256
@@ -2122,6 +2257,7 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS 64
         #define PATCHGRAM_MAX_TRACKED_FACT_CHECK_REQUESTS 64
         #define PATCHGRAM_MAX_FORCED_FACT_CHECK_ITEMS 4096
+        #define PATCHGRAM_MAX_USERNAME_TL_REPLACEMENTS 16
         #define PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION 8
         #define PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET 0x30
         #define PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET 0x20
@@ -2134,11 +2270,23 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_SESSION_DATA_RECEIVED_END_OFFSET 0x128
         #define PATCHGRAM_TL_FRAGMENT_GET_COLLECTIBLE_INFO 0xbe1e85baU
         #define PATCHGRAM_TL_INPUT_COLLECTIBLE_PHONE 0xa2e214a4U
+        #define PATCHGRAM_TL_INPUT_COLLECTIBLE_USERNAME 0xe39460a9U
         #define PATCHGRAM_TL_FRAGMENT_COLLECTIBLE_INFO 0x6ebdff91U
         #define PATCHGRAM_TL_MESSAGES_GET_FACT_CHECK 0xb9cdc5eeU
         #define PATCHGRAM_TL_FACT_CHECK 0xb89bfccfU
         #define PATCHGRAM_TL_TEXT_WITH_ENTITIES 0x751f3146U
         #define PATCHGRAM_TL_VECTOR 0x1cb5c415U
+        #define PATCHGRAM_TL_ACCOUNT_CHECK_USERNAME 0x2714d86cU
+        #define PATCHGRAM_TL_ACCOUNT_UPDATE_USERNAME 0x3e0bdd7cU
+        #define PATCHGRAM_TL_ACCOUNT_REORDER_USERNAMES 0xef500eabU
+        #define PATCHGRAM_TL_ACCOUNT_TOGGLE_USERNAME 0x58d6b376U
+        #define PATCHGRAM_TL_USERS_GET_USERS 0x0d91a548U
+        #define PATCHGRAM_TL_USERS_GET_FULL_USER 0xb60f5918U
+        #define PATCHGRAM_TL_USER 0x31774388U
+        #define PATCHGRAM_TL_USER_FULL 0x06cbe645U
+        #define PATCHGRAM_TL_USERS_USER_FULL 0x3b6d152eU
+        #define PATCHGRAM_TL_UPDATE_USER_NAME 0xa7848924U
+        #define PATCHGRAM_TL_USERNAME 0xb4073647U
         #define PATCHGRAM_MESSAGE_FACTCHECK_TEXT_OFFSET 0x0
         #define PATCHGRAM_MESSAGE_FACTCHECK_COUNTRY_OFFSET 0x30
         #define PATCHGRAM_MESSAGE_FACTCHECK_HASH_OFFSET 0x48
@@ -2189,6 +2337,7 @@ public final class BinaryPatchEngine {
         static bool g_custom_user_id_enabled = false;
         static bool g_local_personal_channel_enabled = false;
         static bool g_fragment_phone_enabled = false;
+        static bool g_custom_list_usernames_enabled = false;
         static bool g_visual_peer_badge_enabled = false;
         static bool g_force_offline_enabled = false;
         static bool g_open_links_without_warning_enabled = false;
@@ -2203,6 +2352,15 @@ public final class BinaryPatchEngine {
         static bool g_message_local_drafts_enabled = false;
         static bool g_message_fact_check_enabled = false;
         static bool g_local_premium_enabled = false;
+        static bool g_disable_monetization_enabled = false;
+        static bool g_disable_monetization_app_config_enabled = false;
+        static bool g_disable_monetization_premium_ui_enabled = false;
+        static bool g_disable_monetization_gifts_enabled = false;
+        static bool g_disable_monetization_paid_reactions_enabled = false;
+        static bool g_disable_monetization_emoji_statuses_enabled = false;
+        static bool g_disable_monetization_stars_ton_collectibles_enabled = false;
+        static bool g_disable_monetization_boosts_enabled = false;
+        static bool g_disable_monetization_read_receipts_enabled = false;
         static bool g_no_premium_anim_enabled = false;
         static bool g_disable_spoilers_enabled = false;
         static bool g_scheduled_send_enabled = false;
@@ -2225,6 +2383,27 @@ public final class BinaryPatchEngine {
         static char g_fragment_phone_crypto_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8] = {0};
         static char g_fragment_phone_url[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8] = {0};
         static char g_fragment_phone_self_phone_utf8[PATCHGRAM_MAX_FRAGMENT_PHONE_UTF8] = {0};
+        struct PatchgramUsernameConfigEntry {
+            char username[PATCHGRAM_MAX_USERNAME_UTF8];
+            bool collectible;
+            int32_t purchase_date;
+            int64_t amount;
+            int64_t crypto_amount;
+            char currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
+            char crypto_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
+            char url[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
+            uint16_t username_utf16[PATCHGRAM_MAX_USERNAME_UTF16];
+            int64_t username_utf16_size;
+        };
+        static struct PatchgramUsernameConfigEntry g_custom_username_entries[PATCHGRAM_MAX_CUSTOM_USERNAMES] = {0};
+        static size_t g_custom_username_entry_count = 0;
+        static uint8_t *g_custom_username_vector_items = NULL;
+        static size_t g_custom_username_vector_count = 0;
+        static int32_t g_custom_username_vector_editable_index = -2;
+        static struct PatchgramUsernameConfigEntry g_original_username_entries[PATCHGRAM_MAX_CUSTOM_USERNAMES] = {0};
+        static size_t g_original_username_entry_count = 0;
+        static int32_t g_original_username_editable_index = -1;
+        static bool g_original_usernames_captured = false;
         static char g_message_fact_check_text[PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF8] = {0};
         static char g_message_fact_check_country[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8] = {0};
         static uint16_t g_message_fact_check_text_utf16[PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF16] = {0};
@@ -2255,6 +2434,15 @@ public final class BinaryPatchEngine {
         static bool g_previous_message_local_drafts_enabled = false;
         static bool g_previous_message_fact_check_enabled = false;
         static bool g_previous_local_premium_enabled = false;
+        static bool g_previous_disable_monetization_enabled = false;
+        static bool g_previous_disable_monetization_app_config_enabled = false;
+        static bool g_previous_disable_monetization_premium_ui_enabled = false;
+        static bool g_previous_disable_monetization_gifts_enabled = false;
+        static bool g_previous_disable_monetization_paid_reactions_enabled = false;
+        static bool g_previous_disable_monetization_emoji_statuses_enabled = false;
+        static bool g_previous_disable_monetization_stars_ton_collectibles_enabled = false;
+        static bool g_previous_disable_monetization_boosts_enabled = false;
+        static bool g_previous_disable_monetization_read_receipts_enabled = false;
         static bool g_previous_no_premium_anim_enabled = false;
         static bool g_previous_disable_spoilers_enabled = false;
         static bool g_previous_scheduled_send_enabled = false;
@@ -2279,6 +2467,12 @@ public final class BinaryPatchEngine {
         static uint32_t g_fragment_phone_request_logs = 0;
         static uint32_t g_fragment_phone_request_skip_logs = 0;
         static uint32_t g_fragment_phone_response_logs = 0;
+        static uint32_t g_custom_usernames_logs = 0;
+        static uint32_t g_custom_username_request_logs = 0;
+        static uint32_t g_custom_username_response_logs = 0;
+        static uint32_t g_custom_username_tl_request_diag_logs = 0;
+        static uint32_t g_custom_username_tl_response_diag_logs = 0;
+        static uint32_t g_custom_username_tl_patch_logs = 0;
         static uint32_t g_message_fact_check_request_logs = 0;
         static uint32_t g_message_fact_check_request_skip_logs = 0;
         static uint32_t g_message_fact_check_response_logs = 0;
@@ -2291,7 +2485,11 @@ public final class BinaryPatchEngine {
         static void *g_tracked_user_peers[PATCHGRAM_MAX_TRACKED_USER_PEERS] = {0};
         static size_t g_tracked_user_peer_count = 0;
         static pthread_mutex_t g_tracked_user_peers_mutex = PTHREAD_MUTEX_INITIALIZER;
-        static int32_t g_fragment_phone_request_ids[PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS] = {0};
+        struct PatchgramCollectibleRequest {
+            int32_t request_id;
+            char username[PATCHGRAM_MAX_USERNAME_UTF8];
+        };
+        static struct PatchgramCollectibleRequest g_fragment_phone_request_ids[PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS] = {0};
         static pthread_mutex_t g_fragment_phone_request_ids_mutex = PTHREAD_MUTEX_INITIALIZER;
         struct PatchgramFactCheckRequest {
             int32_t request_id;
@@ -2305,6 +2503,12 @@ public final class BinaryPatchEngine {
         };
         static struct PatchgramForcedFactCheckItem g_forced_fact_check_items[PATCHGRAM_MAX_FORCED_FACT_CHECK_ITEMS] = {0};
         static pthread_mutex_t g_forced_fact_check_items_mutex = PTHREAD_MUTEX_INITIALIZER;
+        struct PatchgramTLRange {
+            size_t start;
+            size_t end;
+            size_t flags2_word_index;
+            bool inserts_missing_field;
+        };
 
         typedef void (*PatchgramSetBotVerifyDetailsFn)(void *, void *);
         typedef void (*PatchgramPhoneOrHiddenValueMapFn)(void *, void *);
@@ -2317,6 +2521,7 @@ public final class BinaryPatchEngine {
         typedef void (*PatchgramDataFactchecksRequestForFn)(void *, void *);
         typedef void (*PatchgramHistoryItemSetFactcheckFn)(void *, void *);
         typedef void (*PatchgramHistoryItemCreateViewFn)(void *, void *, void *, void *);
+        typedef void *(*PatchgramCxxOperatorNewFn)(size_t);
         struct PatchgramStarsRating {
             int32_t level;
             int32_t stars;
@@ -2337,6 +2542,7 @@ public final class BinaryPatchEngine {
         static PatchgramDataFactchecksRequestForFn g_original_data_factchecks_request_for = NULL;
         static PatchgramHistoryItemSetFactcheckFn g_history_item_set_factcheck = NULL;
         static PatchgramHistoryItemCreateViewFn g_original_history_item_create_view = NULL;
+        static PatchgramCxxOperatorNewFn g_cxx_operator_new = NULL;
         void *g_original_format_count_decimal = NULL;
 
         enum PatchgramTargetMode {
@@ -2400,6 +2606,13 @@ public final class BinaryPatchEngine {
             }
             const size_t prefix_length = strlen(prefix);
             return strncmp(string, prefix, prefix_length) == 0;
+        }
+
+        static bool patchgram_string_contains(const char *string, const char *needle) {
+            if (!string || !needle) {
+                return false;
+            }
+            return strstr(string, needle) != NULL;
         }
 
         static bool patchgram_is_telegram_executable_image(const char *name) {
@@ -2902,6 +3115,118 @@ public final class BinaryPatchEngine {
             );
         }
 
+        static void *patchgram_cxx_operator_new(size_t byte_count) {
+            if (byte_count == 0) {
+                return NULL;
+            }
+            if (!g_cxx_operator_new) {
+                g_cxx_operator_new = (PatchgramCxxOperatorNewFn)dlsym(RTLD_DEFAULT, "_Znwm");
+            }
+            if (!g_cxx_operator_new) {
+                g_cxx_operator_new = (PatchgramCxxOperatorNewFn)dlsym(RTLD_DEFAULT, "__Znwm");
+            }
+            if (!g_cxx_operator_new) {
+                if (g_custom_usernames_logs < 96) {
+                    g_custom_usernames_logs++;
+                    patchgram_log("CUSTOM USERNAMES skip reason=missing-cxx-operator-new");
+                }
+                return NULL;
+            }
+            return g_cxx_operator_new(byte_count);
+        }
+
+        static bool patchgram_username_equal(const char *lhs, const char *rhs) {
+            if (!lhs || !rhs) {
+                return false;
+            }
+            while (*lhs && *rhs) {
+                if (tolower((unsigned char)*lhs) != tolower((unsigned char)*rhs)) {
+                    return false;
+                }
+                lhs++;
+                rhs++;
+            }
+            return *lhs == '\0' && *rhs == '\0';
+        }
+
+        static struct PatchgramUsernameConfigEntry *patchgram_custom_username_entry(const char *username) {
+            if (!username || !username[0]) {
+                return NULL;
+            }
+            for (size_t i = 0; i < g_custom_username_entry_count; i++) {
+                if (patchgram_username_equal(g_custom_username_entries[i].username, username)) {
+                    return &g_custom_username_entries[i];
+                }
+            }
+            return NULL;
+        }
+
+        static void patchgram_configure_custom_username_entry_utf16(struct PatchgramUsernameConfigEntry *entry) {
+            if (!entry) {
+                return;
+            }
+            entry->username_utf16_size = (int64_t)patchgram_utf8_to_utf16(
+                entry->username,
+                entry->username_utf16,
+                PATCHGRAM_MAX_USERNAME_UTF16
+            );
+        }
+
+        static void patchgram_configure_custom_usernames_payload(char *payload) {
+            memset(g_custom_username_entries, 0, sizeof(g_custom_username_entries));
+            g_custom_username_entry_count = 0;
+            g_custom_username_vector_items = NULL;
+            g_custom_username_vector_count = 0;
+            g_custom_username_vector_editable_index = -2;
+            if (!payload || !payload[0]) {
+                return;
+            }
+            char *line = payload;
+            while (line && *line && g_custom_username_entry_count < PATCHGRAM_MAX_CUSTOM_USERNAMES) {
+                char *next = strchr(line, '\n');
+                if (next) {
+                    *next = '\0';
+                    next++;
+                }
+                char *fields[8] = {0};
+                size_t field_count = 0;
+                char *cursor = line;
+                while (cursor && field_count < 8) {
+                    fields[field_count++] = cursor;
+                    char *separator = strchr(cursor, '|');
+                    if (!separator) {
+                        break;
+                    }
+                    *separator = '\0';
+                    cursor = separator + 1;
+                }
+                if (field_count >= 8 && fields[0] && fields[0][0]) {
+                    struct PatchgramUsernameConfigEntry *entry = &g_custom_username_entries[g_custom_username_entry_count];
+                    snprintf(entry->username, sizeof(entry->username), "%s", fields[0]);
+                    entry->collectible = fields[1] && strcmp(fields[1], "1") == 0;
+                    entry->purchase_date = (int32_t)strtol(fields[2] ? fields[2] : "0", NULL, 10);
+                    snprintf(entry->currency, sizeof(entry->currency), "%s", fields[3] ? fields[3] : "USD");
+                    entry->amount = strtoll(fields[4] ? fields[4] : "0", NULL, 10);
+                    snprintf(entry->crypto_currency, sizeof(entry->crypto_currency), "%s", fields[5] ? fields[5] : "TON");
+                    entry->crypto_amount = strtoll(fields[6] ? fields[6] : "0", NULL, 10);
+                    snprintf(entry->url, sizeof(entry->url), "%s", fields[7] ? fields[7] : "");
+                    patchgram_configure_custom_username_entry_utf16(entry);
+                    if (entry->username_utf16_size > 0) {
+                        g_custom_username_entry_count++;
+                    }
+                }
+                line = next;
+            }
+            if (g_custom_usernames_logs < 24) {
+                g_custom_usernames_logs++;
+                patchgram_log(
+                    "CUSTOM USERNAMES parsed count=%zu enabled=%d",
+                    g_custom_username_entry_count,
+                    g_custom_list_usernames_enabled ? 1 : 0
+                );
+            }
+        }
+
         static const char *patchgram_main_image_name(void) {
             uint32_t count = _dyld_image_count();
             for (uint32_t index = 0; index < count; index++) {
@@ -3086,6 +3411,45 @@ public final class BinaryPatchEngine {
             return false;
         }
 
+        static bool patchgram_disable_monetization_group_enabled(const char *alternative_group) {
+            if (!g_disable_monetization_enabled || !alternative_group) {
+                return false;
+            }
+            if (strcmp(alternative_group, "help.getAppConfig.constructor") == 0) {
+                return g_disable_monetization_app_config_enabled;
+            }
+            if (strcmp(alternative_group, "api.who_read_exists.chat_threshold.default_100") == 0) {
+                return g_disable_monetization_read_receipts_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "paidReaction")
+                    || patchgram_string_contains(alternative_group, "reaction_paid")
+                    || patchgram_string_contains(alternative_group, "allowed_reactions.paid")
+                    || patchgram_string_contains(alternative_group, "message_reactions.skip_empty")) {
+                return g_disable_monetization_paid_reactions_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "boost")) {
+                return g_disable_monetization_boosts_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "gift")
+                    || patchgram_string_contains(alternative_group, "Gift")) {
+                return g_disable_monetization_gifts_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "emoji_status")
+                    || patchgram_string_contains(alternative_group, "EmojiStatus")
+                    || patchgram_string_contains(alternative_group, "main_menu.status")
+                    || patchgram_string_contains(alternative_group, "AvailableEffects")) {
+                return g_disable_monetization_emoji_statuses_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "stars")
+                    || patchgram_string_contains(alternative_group, "Stars")
+                    || patchgram_string_contains(alternative_group, "ton")
+                    || patchgram_string_contains(alternative_group, "nft")
+                    || patchgram_string_contains(alternative_group, "collectible")) {
+                return g_disable_monetization_stars_ton_collectibles_enabled;
+            }
+            return g_disable_monetization_premium_ui_enabled;
+        }
+
         static bool patchgram_rule_enabled(const struct PatchgramMemoryPatch *patch) {
             if (!patch) {
                 return false;
@@ -3135,6 +3499,9 @@ public final class BinaryPatchEngine {
                 }
                 return g_message_settings_enabled;
             }
+            if (strcmp(rule_id, "binary.config.disable_monetization") == 0) {
+                return patchgram_disable_monetization_group_enabled(alternative_group);
+            }
             if (strcmp(rule_id, "binary.premium.local") == 0) {
                 return g_local_premium_enabled;
             }
@@ -3163,6 +3530,45 @@ public final class BinaryPatchEngine {
                 return g_no_phone_on_add_enabled;
             }
             return false;
+        }
+
+        static bool patchgram_disable_monetization_group_previously_enabled(const char *alternative_group) {
+            if (!g_previous_disable_monetization_enabled || !alternative_group) {
+                return false;
+            }
+            if (strcmp(alternative_group, "help.getAppConfig.constructor") == 0) {
+                return g_previous_disable_monetization_app_config_enabled;
+            }
+            if (strcmp(alternative_group, "api.who_read_exists.chat_threshold.default_100") == 0) {
+                return g_previous_disable_monetization_read_receipts_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "paidReaction")
+                    || patchgram_string_contains(alternative_group, "reaction_paid")
+                    || patchgram_string_contains(alternative_group, "allowed_reactions.paid")
+                    || patchgram_string_contains(alternative_group, "message_reactions.skip_empty")) {
+                return g_previous_disable_monetization_paid_reactions_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "boost")) {
+                return g_previous_disable_monetization_boosts_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "gift")
+                    || patchgram_string_contains(alternative_group, "Gift")) {
+                return g_previous_disable_monetization_gifts_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "emoji_status")
+                    || patchgram_string_contains(alternative_group, "EmojiStatus")
+                    || patchgram_string_contains(alternative_group, "main_menu.status")
+                    || patchgram_string_contains(alternative_group, "AvailableEffects")) {
+                return g_previous_disable_monetization_emoji_statuses_enabled;
+            }
+            if (patchgram_string_contains(alternative_group, "stars")
+                    || patchgram_string_contains(alternative_group, "Stars")
+                    || patchgram_string_contains(alternative_group, "ton")
+                    || patchgram_string_contains(alternative_group, "nft")
+                    || patchgram_string_contains(alternative_group, "collectible")) {
+                return g_previous_disable_monetization_stars_ton_collectibles_enabled;
+            }
+            return g_previous_disable_monetization_premium_ui_enabled;
         }
 
         static bool patchgram_rule_previously_enabled(const char *rule_id, const char *alternative_group) {
@@ -3207,6 +3613,9 @@ public final class BinaryPatchEngine {
                     return g_previous_message_settings_enabled && g_previous_message_fact_check_enabled;
                 }
                 return g_previous_message_settings_enabled;
+            }
+            if (strcmp(rule_id, "binary.config.disable_monetization") == 0) {
+                return patchgram_disable_monetization_group_previously_enabled(alternative_group);
             }
             if (strcmp(rule_id, "binary.premium.local") == 0) {
                 return g_previous_local_premium_enabled;
@@ -3253,6 +3662,15 @@ public final class BinaryPatchEngine {
             g_previous_message_local_drafts_enabled = g_message_local_drafts_enabled;
             g_previous_message_fact_check_enabled = g_message_fact_check_enabled;
             g_previous_local_premium_enabled = g_local_premium_enabled;
+            g_previous_disable_monetization_enabled = g_disable_monetization_enabled;
+            g_previous_disable_monetization_app_config_enabled = g_disable_monetization_app_config_enabled;
+            g_previous_disable_monetization_premium_ui_enabled = g_disable_monetization_premium_ui_enabled;
+            g_previous_disable_monetization_gifts_enabled = g_disable_monetization_gifts_enabled;
+            g_previous_disable_monetization_paid_reactions_enabled = g_disable_monetization_paid_reactions_enabled;
+            g_previous_disable_monetization_emoji_statuses_enabled = g_disable_monetization_emoji_statuses_enabled;
+            g_previous_disable_monetization_stars_ton_collectibles_enabled = g_disable_monetization_stars_ton_collectibles_enabled;
+            g_previous_disable_monetization_boosts_enabled = g_disable_monetization_boosts_enabled;
+            g_previous_disable_monetization_read_receipts_enabled = g_disable_monetization_read_receipts_enabled;
             g_previous_no_premium_anim_enabled = g_no_premium_anim_enabled;
             g_previous_disable_spoilers_enabled = g_disable_spoilers_enabled;
             g_previous_scheduled_send_enabled = g_scheduled_send_enabled;
@@ -3719,6 +4137,7 @@ public final class BinaryPatchEngine {
             char fragment_phone_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
             char fragment_phone_crypto_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
             char fragment_phone_url[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
+            char custom_list_usernames_payload[PATCHGRAM_MAX_CUSTOM_USERNAMES * 8192];
             char message_fact_check_text[PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF8];
             char message_fact_check_country[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
             patchgram_json_string(json, "botVerificationTargetMode", target_mode, sizeof(target_mode));
@@ -3734,6 +4153,7 @@ public final class BinaryPatchEngine {
             patchgram_json_string(json, "fragmentPhoneCurrency", fragment_phone_currency, sizeof(fragment_phone_currency));
             patchgram_json_string(json, "fragmentPhoneCryptoCurrency", fragment_phone_crypto_currency, sizeof(fragment_phone_crypto_currency));
             patchgram_json_string(json, "fragmentPhoneUrl", fragment_phone_url, sizeof(fragment_phone_url));
+            patchgram_json_string(json, "customListUsernamesPayload", custom_list_usernames_payload, sizeof(custom_list_usernames_payload));
             patchgram_json_string(json, "messageFactCheckText", message_fact_check_text, sizeof(message_fact_check_text));
             patchgram_json_string(json, "messageFactCheckCountry", message_fact_check_country, sizeof(message_fact_check_country));
             if (!self_phone_target_mode[0]) {
@@ -3756,6 +4176,7 @@ public final class BinaryPatchEngine {
             g_custom_user_id_enabled = patchgram_json_bool(json, "customUserIdEnabled", g_self_identity_override_enabled);
             g_local_personal_channel_enabled = patchgram_json_bool(json, "localPersonalChannelEnabled", false);
             g_fragment_phone_enabled = patchgram_json_bool(json, "fragmentPhoneEnabled", false);
+            g_custom_list_usernames_enabled = patchgram_json_bool(json, "customListUsernamesEnabled", false);
             g_visual_peer_badge_enabled = patchgram_json_bool(json, "visualPeerBadgeEnabled", false);
             g_force_offline_enabled = patchgram_json_bool(json, "forceOfflineEnabled", false);
             g_open_links_without_warning_enabled = patchgram_json_bool(json, "openLinksWithoutWarningEnabled", false);
@@ -3770,6 +4191,15 @@ public final class BinaryPatchEngine {
             g_message_local_drafts_enabled = patchgram_json_bool(json, "messageLocalDraftsEnabled", false);
             g_message_fact_check_enabled = patchgram_json_bool(json, "messageFactCheckEnabled", false);
             g_local_premium_enabled = patchgram_json_bool(json, "localPremiumEnabled", false);
+            g_disable_monetization_enabled = patchgram_json_bool(json, "disableMonetizationEnabled", false);
+            g_disable_monetization_app_config_enabled = patchgram_json_bool(json, "disableMonetizationAppConfigEnabled", g_disable_monetization_enabled);
+            g_disable_monetization_premium_ui_enabled = patchgram_json_bool(json, "disableMonetizationPremiumUIEnabled", g_disable_monetization_enabled);
+            g_disable_monetization_gifts_enabled = patchgram_json_bool(json, "disableMonetizationGiftsEnabled", g_disable_monetization_enabled);
+            g_disable_monetization_paid_reactions_enabled = patchgram_json_bool(json, "disableMonetizationPaidReactionsEnabled", g_disable_monetization_enabled);
+            g_disable_monetization_emoji_statuses_enabled = patchgram_json_bool(json, "disableMonetizationEmojiStatusesEnabled", g_disable_monetization_enabled);
+            g_disable_monetization_stars_ton_collectibles_enabled = patchgram_json_bool(json, "disableMonetizationStarsTonCollectiblesEnabled", g_disable_monetization_enabled);
+            g_disable_monetization_boosts_enabled = patchgram_json_bool(json, "disableMonetizationBoostsEnabled", g_disable_monetization_enabled);
+            g_disable_monetization_read_receipts_enabled = patchgram_json_bool(json, "disableMonetizationReadReceiptsEnabled", g_disable_monetization_enabled);
             g_no_premium_anim_enabled = patchgram_json_bool(json, "noPremiumAnimEnabled", false);
             g_disable_spoilers_enabled = patchgram_json_bool(json, "disableSpoilersEnabled", false);
             g_scheduled_send_enabled = patchgram_json_bool(json, "scheduledSendEnabled", false);
@@ -3811,9 +4241,10 @@ public final class BinaryPatchEngine {
             patchgram_configure_description(description);
             patchgram_configure_self_phone(self_phone);
             patchgram_configure_fact_check_text(g_message_fact_check_text, g_message_fact_check_country);
+            patchgram_configure_custom_usernames_payload(custom_list_usernames_payload);
             patchgram_refresh_config_mtime(config_path, NULL);
             patchgram_log(
-                "CONFIG %s botVerification=%d targetMode=%s customEmojiId=%llu description=%s descriptionUtf16Length=%lld customLevelRating=%d:%s level=%d rating=%d current=%d next=%d hideSelfPhone=%d selfIdentity=%d customPhone=%d:%s phoneUtf16Length=%lld customUserId=%d:%s displayUserId=%llu personalChannel=%d:%s:%llu:%d reference=%s fragmentPhone=%d:%s date=%d amount=%lld currency=%s cryptoAmount=%lld cryptoCurrency=%s url=%s visualPeerBadge=%d:%llu forceOffline=%d openLinks=%d noPhoneOnAdd=%d callbackHover=%d customTon=%d:%llu customStars=%d:%llu blockTyping=%d blockRead=%d messageSettings=%d typing=%d readReceipts=%d localDrafts=%d factCheck=%d factCheckText=%s factCheckCountry=%s factCheckHash=%lld factCheckNeedCheck=%d localPremium=%d noPremiumAnim=%d disableSpoilers=%d scheduledSend=%d sensitiveBlur=%d hideStories=%d disableAds=%d telegramAds=%d proxySponsor=%d image=%s",
+                "CONFIG %s botVerification=%d targetMode=%s customEmojiId=%llu description=%s descriptionUtf16Length=%lld customLevelRating=%d:%s level=%d rating=%d current=%d next=%d hideSelfPhone=%d selfIdentity=%d customPhone=%d:%s phoneUtf16Length=%lld customUserId=%d:%s displayUserId=%llu personalChannel=%d:%s:%llu:%d reference=%s fragmentPhone=%d:%s date=%d amount=%lld currency=%s cryptoAmount=%lld cryptoCurrency=%s url=%s customUsernames=%d count=%zu visualPeerBadge=%d:%llu forceOffline=%d openLinks=%d noPhoneOnAdd=%d callbackHover=%d customTon=%d:%llu customStars=%d:%llu blockTyping=%d blockRead=%d messageSettings=%d typing=%d readReceipts=%d localDrafts=%d factCheck=%d factCheckText=%s factCheckCountry=%s factCheckHash=%lld factCheckNeedCheck=%d localPremium=%d disableMonetization=%d appConfig=%d premiumUI=%d gifts=%d paidReactions=%d emojiStatuses=%d starsTonCollectibles=%d boosts=%d monetizationReadReceipts=%d noPremiumAnim=%d disableSpoilers=%d scheduledSend=%d sensitiveBlur=%d hideStories=%d disableAds=%d telegramAds=%d proxySponsor=%d image=%s",
                 reason ? reason : "load",
                 g_bot_verification_enabled ? 1 : 0,
                 target_mode,
@@ -3847,6 +4278,8 @@ public final class BinaryPatchEngine {
                 (long long)g_fragment_phone_crypto_amount,
                 g_fragment_phone_crypto_currency,
                 g_fragment_phone_url,
+                g_custom_list_usernames_enabled ? 1 : 0,
+                g_custom_username_entry_count,
                 g_visual_peer_badge_enabled ? 1 : 0,
                 (unsigned long long)g_visual_peer_badge_value,
                 g_force_offline_enabled ? 1 : 0,
@@ -3869,6 +4302,15 @@ public final class BinaryPatchEngine {
                 (long long)g_message_fact_check_hash,
                 g_message_fact_check_need_check ? 1 : 0,
                 g_local_premium_enabled ? 1 : 0,
+                g_disable_monetization_enabled ? 1 : 0,
+                g_disable_monetization_app_config_enabled ? 1 : 0,
+                g_disable_monetization_premium_ui_enabled ? 1 : 0,
+                g_disable_monetization_gifts_enabled ? 1 : 0,
+                g_disable_monetization_paid_reactions_enabled ? 1 : 0,
+                g_disable_monetization_emoji_statuses_enabled ? 1 : 0,
+                g_disable_monetization_stars_ton_collectibles_enabled ? 1 : 0,
+                g_disable_monetization_boosts_enabled ? 1 : 0,
+                g_disable_monetization_read_receipts_enabled ? 1 : 0,
                 g_no_premium_anim_enabled ? 1 : 0,
                 g_disable_spoilers_enabled ? 1 : 0,
                 g_scheduled_send_enabled ? 1 : 0,
@@ -3946,6 +4388,7 @@ public final class BinaryPatchEngine {
         static void patchgram_write_self_phone_field(void *peer, const char *source);
         static void patchgram_write_custom_level_rating(void *peer, const char *source);
         static void patchgram_write_local_personal_channel(void *peer, const char *source);
+        static void patchgram_apply_custom_usernames(void *peer, const char *source);
         static void patchgram_apply_raw_qstring(uint8_t *destination, const uint16_t *text, int64_t size);
         static void patchgram_configure_fact_check_text(const char *text, const char *country);
 
@@ -4220,38 +4663,64 @@ public final class BinaryPatchEngine {
             );
         }
 
-        static void patchgram_track_fragment_phone_request(int32_t request_id) {
+        static void patchgram_track_fragment_phone_request(int32_t request_id, const char *username) {
             if (request_id <= 0) {
                 return;
             }
             pthread_mutex_lock(&g_fragment_phone_request_ids_mutex);
             size_t empty_index = PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS;
             for (size_t i = 0; i < PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS; i++) {
-                if (g_fragment_phone_request_ids[i] == request_id) {
+                if (g_fragment_phone_request_ids[i].request_id == request_id) {
+                    snprintf(
+                        g_fragment_phone_request_ids[i].username,
+                        sizeof(g_fragment_phone_request_ids[i].username),
+                        "%s",
+                        username ? username : ""
+                    );
                     pthread_mutex_unlock(&g_fragment_phone_request_ids_mutex);
                     return;
                 }
-                if (g_fragment_phone_request_ids[i] == 0 && empty_index == PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS) {
+                if (g_fragment_phone_request_ids[i].request_id == 0
+                    && empty_index == PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS) {
                     empty_index = i;
                 }
             }
             if (empty_index != PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS) {
-                g_fragment_phone_request_ids[empty_index] = request_id;
+                g_fragment_phone_request_ids[empty_index].request_id = request_id;
+                snprintf(
+                    g_fragment_phone_request_ids[empty_index].username,
+                    sizeof(g_fragment_phone_request_ids[empty_index].username),
+                    "%s",
+                    username ? username : ""
+                );
             } else {
-                g_fragment_phone_request_ids[0] = request_id;
+                g_fragment_phone_request_ids[0].request_id = request_id;
+                snprintf(
+                    g_fragment_phone_request_ids[0].username,
+                    sizeof(g_fragment_phone_request_ids[0].username),
+                    "%s",
+                    username ? username : ""
+                );
             }
             pthread_mutex_unlock(&g_fragment_phone_request_ids_mutex);
         }
 
-        static bool patchgram_take_fragment_phone_request(int32_t request_id) {
+        static bool patchgram_take_fragment_phone_request(int32_t request_id, char *username, size_t username_capacity) {
             if (request_id <= 0) {
                 return false;
+            }
+            if (username && username_capacity > 0) {
+                username[0] = '\0';
             }
             bool found = false;
             pthread_mutex_lock(&g_fragment_phone_request_ids_mutex);
             for (size_t i = 0; i < PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS; i++) {
-                if (g_fragment_phone_request_ids[i] == request_id) {
-                    g_fragment_phone_request_ids[i] = 0;
+                if (g_fragment_phone_request_ids[i].request_id == request_id) {
+                    if (username && username_capacity > 0) {
+                        snprintf(username, username_capacity, "%s", g_fragment_phone_request_ids[i].username);
+                    }
+                    g_fragment_phone_request_ids[i].request_id = 0;
+                    g_fragment_phone_request_ids[i].username[0] = '\0';
                     found = true;
                     break;
                 }
@@ -4334,6 +4803,55 @@ public final class BinaryPatchEngine {
             return true;
         }
 
+        static bool patchgram_tl_read_string_ascii_next(
+            const uint8_t *buffer,
+            size_t length,
+            size_t offset,
+            char *destination,
+            size_t capacity,
+            size_t *next_offset
+        ) {
+            if (next_offset) {
+                *next_offset = offset;
+            }
+            if (!buffer || !destination || capacity == 0 || offset >= length) {
+                return false;
+            }
+            destination[0] = '\0';
+            const size_t prefix_offset = offset;
+            size_t size = buffer[offset++];
+            size_t prefix = 1;
+            if (size == 254) {
+                if (offset + 3 > length) {
+                    return false;
+                }
+                size = (size_t)buffer[offset]
+                    | ((size_t)buffer[offset + 1] << 8)
+                    | ((size_t)buffer[offset + 2] << 16);
+                offset += 3;
+                prefix = 4;
+            }
+            if (offset + size > length) {
+                return false;
+            }
+            const size_t copied = (size + 1 < capacity) ? size : (capacity - 1);
+            memcpy(destination, buffer + offset, copied);
+            destination[copied] = '\0';
+            offset += size;
+            const size_t padding = (4 - ((prefix + size) & 3)) & 3;
+            if (offset + padding > length) {
+                return false;
+            }
+            offset += padding;
+            if (offset <= prefix_offset) {
+                return false;
+            }
+            if (next_offset) {
+                *next_offset = offset;
+            }
+            return true;
+        }
+
         static bool patchgram_tl_read_i32_at(
             const uint8_t *buffer,
             size_t length,
@@ -4345,6 +4863,976 @@ public final class BinaryPatchEngine {
             }
             memcpy(value_out, buffer + offset, sizeof(int32_t));
             return true;
+        }
+
+        static bool patchgram_tl_read_u64_at(
+            const uint8_t *buffer,
+            size_t length,
+            size_t offset,
+            uint64_t *value_out
+        ) {
+            if (!buffer || !value_out || offset + sizeof(uint64_t) > length) {
+                return false;
+            }
+            memcpy(value_out, buffer + offset, sizeof(uint64_t));
+            return true;
+        }
+
+        static const char *patchgram_tl_username_method_name(uint32_t constructor) {
+            switch (constructor) {
+            case PATCHGRAM_TL_ACCOUNT_CHECK_USERNAME:
+                return "account.checkUsername";
+            case PATCHGRAM_TL_ACCOUNT_UPDATE_USERNAME:
+                return "account.updateUsername";
+            case PATCHGRAM_TL_ACCOUNT_REORDER_USERNAMES:
+                return "account.reorderUsernames";
+            case PATCHGRAM_TL_ACCOUNT_TOGGLE_USERNAME:
+                return "account.toggleUsername";
+            case PATCHGRAM_TL_USERS_GET_USERS:
+                return "users.getUsers";
+            case PATCHGRAM_TL_USERS_GET_FULL_USER:
+                return "users.getFullUser";
+            default:
+                return NULL;
+            }
+        }
+
+        static void patchgram_log_tl_words(
+            const char *prefix,
+            int32_t request_id,
+            const uint32_t *words,
+            int64_t word_count
+        ) {
+            if (!prefix || !words || word_count <= 0) {
+                return;
+            }
+            char buffer[512];
+            size_t used = 0;
+            const size_t limit = (word_count < 28) ? (size_t)word_count : 28;
+            for (size_t i = 0; i < limit; i++) {
+                int written = snprintf(
+                    buffer + used,
+                    sizeof(buffer) - used,
+                    "%s%zu:%08x",
+                    (i == 0) ? "" : " ",
+                    i,
+                    words[i]
+                );
+                if (written <= 0) {
+                    break;
+                }
+                if ((size_t)written >= sizeof(buffer) - used) {
+                    used = sizeof(buffer) - 1;
+                    break;
+                }
+                used += (size_t)written;
+            }
+            buffer[sizeof(buffer) - 1] = '\0';
+            patchgram_log(
+                "%s requestId=%d wordCount=%lld words=%s%s",
+                prefix,
+                (int)request_id,
+                (long long)word_count,
+                buffer,
+                ((int64_t)limit < word_count) ? " ..." : ""
+            );
+        }
+
+        static void patchgram_append_diag_text(char *buffer, size_t capacity, const char *text) {
+            if (!buffer || capacity == 0 || !text) {
+                return;
+            }
+            const size_t used = strlen(buffer);
+            if (used + 1 >= capacity) {
+                return;
+            }
+            snprintf(buffer + used, capacity - used, "%s", text);
+        }
+
+        static void patchgram_append_diag_username_list(
+            char *buffer,
+            size_t capacity,
+            const char *username,
+            int32_t flags
+        ) {
+            if (!buffer || capacity == 0 || !username) {
+                return;
+            }
+            char item[PATCHGRAM_MAX_USERNAME_UTF8 + 64];
+            snprintf(
+                item,
+                sizeof(item),
+                "%s@%s(flags=%d editable=%d active=%d)",
+                buffer[0] ? ", " : "",
+                username,
+                (int)flags,
+                (flags & 1) ? 1 : 0,
+                (flags & 2) ? 1 : 0
+            );
+            patchgram_append_diag_text(buffer, capacity, item);
+        }
+
+        static void patchgram_log_tl_string_vector(
+            const char *prefix,
+            int32_t request_id,
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t offset
+        ) {
+            if (!prefix || !bytes || offset + sizeof(uint32_t) * 2 > byte_count) {
+                return;
+            }
+            uint32_t constructor = 0;
+            int32_t count = 0;
+            memcpy(&constructor, bytes + offset, sizeof(constructor));
+            memcpy(&count, bytes + offset + sizeof(uint32_t), sizeof(count));
+            if (constructor != PATCHGRAM_TL_VECTOR || count < 0 || count > 64) {
+                patchgram_log(
+                    "%s requestId=%d vector=invalid constructor=%08x count=%d offset=%zu",
+                    prefix,
+                    (int)request_id,
+                    constructor,
+                    (int)count,
+                    offset
+                );
+                return;
+            }
+            char joined[512] = {0};
+            size_t cursor = offset + sizeof(uint32_t) * 2;
+            for (int32_t i = 0; i < count && i < 12; i++) {
+                char value[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+                size_t next = cursor;
+                if (!patchgram_tl_read_string_ascii_next(bytes, byte_count, cursor, value, sizeof(value), &next)) {
+                    patchgram_append_diag_text(joined, sizeof(joined), joined[0] ? ", <bad-string>" : "<bad-string>");
+                    break;
+                }
+                if (joined[0]) {
+                    patchgram_append_diag_text(joined, sizeof(joined), ", ");
+                }
+                patchgram_append_diag_text(joined, sizeof(joined), value);
+                cursor = next;
+            }
+            patchgram_log(
+                "%s requestId=%d vectorCount=%d values=[%s]%s",
+                prefix,
+                (int)request_id,
+                (int)count,
+                joined,
+                count > 12 ? " ..." : ""
+            );
+        }
+
+        static void patchgram_log_tl_username_vector(
+            const char *prefix,
+            int32_t request_id,
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t offset
+        ) {
+            if (!prefix || !bytes || offset + sizeof(uint32_t) * 2 > byte_count) {
+                return;
+            }
+            uint32_t constructor = 0;
+            int32_t count = 0;
+            memcpy(&constructor, bytes + offset, sizeof(constructor));
+            memcpy(&count, bytes + offset + sizeof(uint32_t), sizeof(count));
+            if (constructor != PATCHGRAM_TL_VECTOR || count < 0 || count > 64) {
+                patchgram_log(
+                    "%s requestId=%d vector=invalid constructor=%08x count=%d offset=%zu",
+                    prefix,
+                    (int)request_id,
+                    constructor,
+                    (int)count,
+                    offset
+                );
+                return;
+            }
+            char joined[768] = {0};
+            size_t cursor = offset + sizeof(uint32_t) * 2;
+            for (int32_t i = 0; i < count && i < 12; i++) {
+                uint32_t username_constructor = 0;
+                int32_t flags = 0;
+                if (cursor + sizeof(uint32_t) * 2 > byte_count) {
+                    patchgram_append_diag_text(joined, sizeof(joined), joined[0] ? ", <truncated>" : "<truncated>");
+                    break;
+                }
+                memcpy(&username_constructor, bytes + cursor, sizeof(username_constructor));
+                memcpy(&flags, bytes + cursor + sizeof(uint32_t), sizeof(flags));
+                if (username_constructor != PATCHGRAM_TL_USERNAME) {
+                    char item[64];
+                    snprintf(
+                        item,
+                        sizeof(item),
+                        "%s<unexpected:%08x>",
+                        joined[0] ? ", " : "",
+                        username_constructor
+                    );
+                    patchgram_append_diag_text(joined, sizeof(joined), item);
+                    break;
+                }
+                char username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+                size_t next = cursor + sizeof(uint32_t) * 2;
+                if (!patchgram_tl_read_string_ascii_next(bytes, byte_count, next, username, sizeof(username), &next)) {
+                    patchgram_append_diag_text(joined, sizeof(joined), joined[0] ? ", <bad-username>" : "<bad-username>");
+                    break;
+                }
+                patchgram_append_diag_username_list(joined, sizeof(joined), username, flags);
+                cursor = next;
+            }
+            patchgram_log(
+                "%s requestId=%d vectorCount=%d values=[%s]%s",
+                prefix,
+                (int)request_id,
+                (int)count,
+                joined,
+                count > 12 ? " ..." : ""
+            );
+        }
+
+        static void patchgram_log_custom_username_request_tl(void *request_ref, int64_t ms_can_wait) {
+            if (!request_ref || g_custom_username_tl_request_diag_logs >= 160) {
+                return;
+            }
+            void *request_data = NULL;
+            memcpy(&request_data, request_ref, sizeof(request_data));
+            if (!request_data) {
+                return;
+            }
+            uint32_t *words = NULL;
+            int64_t word_count = 0;
+            memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+            memcpy(&word_count, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+            if (!words || word_count <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) {
+                return;
+            }
+            int32_t request_id = 0;
+            memcpy(&request_id, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(request_id));
+            const uint8_t *bytes = (const uint8_t *)words;
+            const size_t byte_count = (size_t)word_count * sizeof(uint32_t);
+            const size_t max_scan = (word_count < 256) ? (size_t)word_count : 256;
+            for (size_t i = PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION; i < max_scan; i++) {
+                const uint32_t constructor = words[i];
+                const char *method = patchgram_tl_username_method_name(constructor);
+                if (!method) {
+                    continue;
+                }
+                g_custom_username_tl_request_diag_logs++;
+                patchgram_log(
+                    "CUSTOM USERNAMES TL request method=%s constructor=%08x requestId=%d index=%zu words=%lld msCanWait=%lld enabled=%d configured=%zu",
+                    method,
+                    constructor,
+                    (int)request_id,
+                    i,
+                    (long long)word_count,
+                    (long long)ms_can_wait,
+                    g_custom_list_usernames_enabled ? 1 : 0,
+                    g_custom_username_entry_count
+                );
+                patchgram_log_tl_words("CUSTOM USERNAMES TL request dump", request_id, words, word_count);
+                if (constructor == PATCHGRAM_TL_ACCOUNT_CHECK_USERNAME
+                    || constructor == PATCHGRAM_TL_ACCOUNT_UPDATE_USERNAME
+                    || constructor == PATCHGRAM_TL_ACCOUNT_TOGGLE_USERNAME) {
+                    char username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+                    size_t next = 0;
+                    if (patchgram_tl_read_string_ascii_next(
+                            bytes,
+                            byte_count,
+                            (i + 1) * sizeof(uint32_t),
+                            username,
+                            sizeof(username),
+                            &next)) {
+                        uint32_t active_constructor = 0;
+                        if (constructor == PATCHGRAM_TL_ACCOUNT_TOGGLE_USERNAME
+                            && next + sizeof(active_constructor) <= byte_count) {
+                            memcpy(&active_constructor, bytes + next, sizeof(active_constructor));
+                        }
+                        patchgram_log(
+                            "CUSTOM USERNAMES TL request args method=%s requestId=%d username=%s nextOffset=%zu activeConstructor=%08x",
+                            method,
+                            (int)request_id,
+                            username,
+                            next,
+                            active_constructor
+                        );
+                    }
+                } else if (constructor == PATCHGRAM_TL_ACCOUNT_REORDER_USERNAMES) {
+                    patchgram_log_tl_string_vector(
+                        "CUSTOM USERNAMES TL request reorder",
+                        request_id,
+                        bytes,
+                        byte_count,
+                        (i + 1) * sizeof(uint32_t)
+                    );
+                }
+                if (g_custom_username_tl_request_diag_logs >= 160) {
+                    break;
+                }
+            }
+        }
+
+        static bool patchgram_response_has_custom_username_tl(const uint32_t *words, int64_t word_count) {
+            if (!words || word_count <= 0) {
+                return false;
+            }
+            const size_t max_scan = (word_count < 512) ? (size_t)word_count : 512;
+            for (size_t i = 0; i < max_scan; i++) {
+                switch (words[i]) {
+                case PATCHGRAM_TL_UPDATE_USER_NAME:
+                case PATCHGRAM_TL_USERNAME:
+                case PATCHGRAM_TL_USER:
+                case PATCHGRAM_TL_USER_FULL:
+                case PATCHGRAM_TL_USERS_USER_FULL:
+                    return true;
+                default:
+                    break;
+                }
+            }
+            return false;
+        }
+
+        static void patchgram_log_update_user_name_details(
+            int32_t request_id,
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t word_index
+        ) {
+            uint64_t user_id = 0;
+            patchgram_tl_read_u64_at(bytes, byte_count, (word_index + 1) * sizeof(uint32_t), &user_id);
+            char first_name[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+            char last_name[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+            size_t next = (word_index + 3) * sizeof(uint32_t);
+            patchgram_tl_read_string_ascii_next(bytes, byte_count, next, first_name, sizeof(first_name), &next);
+            patchgram_tl_read_string_ascii_next(bytes, byte_count, next, last_name, sizeof(last_name), &next);
+            patchgram_log(
+                "CUSTOM USERNAMES TL response updateUserName requestId=%d userId=%llu first=%s last=%s vectorOffset=%zu",
+                (int)request_id,
+                (unsigned long long)user_id,
+                first_name,
+                last_name,
+                next
+            );
+            patchgram_log_tl_username_vector(
+                "CUSTOM USERNAMES TL response updateUserName usernames",
+                request_id,
+                bytes,
+                byte_count,
+                next
+            );
+        }
+
+        static uint8_t *patchgram_build_custom_username_tl_vector(size_t *byte_count_out) {
+            if (byte_count_out) {
+                *byte_count_out = 0;
+            }
+            if (!g_custom_list_usernames_enabled || g_custom_username_entry_count == 0) {
+                return NULL;
+            }
+            size_t byte_count = sizeof(uint32_t) + sizeof(int32_t);
+            for (size_t i = 0; i < g_custom_username_entry_count; i++) {
+                byte_count += sizeof(uint32_t) + sizeof(int32_t)
+                    + patchgram_tl_string_length(g_custom_username_entries[i].username);
+            }
+            const size_t padded_count = (byte_count + 3U) & ~(size_t)3U;
+            uint8_t *buffer = (uint8_t *)calloc(padded_count, 1);
+            if (!buffer) {
+                return NULL;
+            }
+            size_t offset = 0;
+            patchgram_tl_write_u32(buffer, &offset, PATCHGRAM_TL_VECTOR);
+            patchgram_tl_write_i32(buffer, &offset, (int32_t)g_custom_username_entry_count);
+            for (size_t i = 0; i < g_custom_username_entry_count; i++) {
+                const int32_t flags = (i == 0) ? 3 : 2;
+                patchgram_tl_write_u32(buffer, &offset, PATCHGRAM_TL_USERNAME);
+                patchgram_tl_write_i32(buffer, &offset, flags);
+                patchgram_tl_write_string(buffer, &offset, g_custom_username_entries[i].username);
+            }
+            if (byte_count_out) {
+                *byte_count_out = padded_count;
+            }
+            return buffer;
+        }
+
+        static bool patchgram_tl_username_object_end(
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t offset,
+            size_t *end_out
+        ) {
+            if (end_out) {
+                *end_out = offset;
+            }
+            if (!bytes || offset + sizeof(uint32_t) * 2 > byte_count) {
+                return false;
+            }
+            uint32_t constructor = 0;
+            memcpy(&constructor, bytes + offset, sizeof(constructor));
+            if (constructor != PATCHGRAM_TL_USERNAME) {
+                return false;
+            }
+            char username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+            size_t next = offset + sizeof(uint32_t) * 2;
+            if (!patchgram_tl_read_string_ascii_next(bytes, byte_count, next, username, sizeof(username), &next)
+                || !username[0]) {
+                return false;
+            }
+            if (end_out) {
+                *end_out = next;
+            }
+            return true;
+        }
+
+        static bool patchgram_tl_skip_string(
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t *offset
+        ) {
+            char ignored[1] = {0};
+            size_t next = offset ? *offset : 0;
+            if (!offset || !patchgram_tl_read_string_ascii_next(bytes, byte_count, *offset, ignored, sizeof(ignored), &next)) {
+                return false;
+            }
+            *offset = next;
+            return true;
+        }
+
+        static bool patchgram_tl_skip_bytes(
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t *offset
+        ) {
+            return patchgram_tl_skip_string(bytes, byte_count, offset);
+        }
+
+        static bool patchgram_tl_skip_u32(size_t byte_count, size_t *offset) {
+            if (!offset || *offset + sizeof(uint32_t) > byte_count) {
+                return false;
+            }
+            *offset += sizeof(uint32_t);
+            return true;
+        }
+
+        static bool patchgram_tl_skip_i64(size_t byte_count, size_t *offset) {
+            if (!offset || *offset + sizeof(int64_t) > byte_count) {
+                return false;
+            }
+            *offset += sizeof(int64_t);
+            return true;
+        }
+
+        static bool patchgram_tl_skip_user_profile_photo(
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t *offset
+        ) {
+            if (!offset || *offset + sizeof(uint32_t) > byte_count) {
+                return false;
+            }
+            uint32_t constructor = 0;
+            memcpy(&constructor, bytes + *offset, sizeof(constructor));
+            *offset += sizeof(uint32_t);
+            if (constructor == 0x4f11bae1U) {
+                return true;
+            }
+            if (constructor != 0x82d1f706U) {
+                return false;
+            }
+            uint32_t flags = 0;
+            if (*offset + sizeof(flags) > byte_count) {
+                return false;
+            }
+            memcpy(&flags, bytes + *offset, sizeof(flags));
+            *offset += sizeof(flags);
+            if (!patchgram_tl_skip_i64(byte_count, offset)) {
+                return false;
+            }
+            if ((flags & (1U << 1)) != 0 && !patchgram_tl_skip_bytes(bytes, byte_count, offset)) {
+                return false;
+            }
+            return patchgram_tl_skip_u32(byte_count, offset);
+        }
+
+        static bool patchgram_tl_skip_user_status(
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t *offset
+        ) {
+            if (!offset || *offset + sizeof(uint32_t) > byte_count) {
+                return false;
+            }
+            uint32_t constructor = 0;
+            memcpy(&constructor, bytes + *offset, sizeof(constructor));
+            *offset += sizeof(uint32_t);
+            switch (constructor) {
+            case 0x09d05049U:
+            case 0x7b197dc8U:
+            case 0x541a1d1aU:
+            case 0x65899777U:
+            case 0xcf7d64b1U:
+                if (constructor == 0x7b197dc8U
+                    || constructor == 0x541a1d1aU
+                    || constructor == 0x65899777U) {
+                    return patchgram_tl_skip_u32(byte_count, offset);
+                }
+                return true;
+            case 0xedb93949U:
+            case 0x8c703fU:
+                return patchgram_tl_skip_u32(byte_count, offset);
+            default:
+                return false;
+            }
+        }
+
+        static bool patchgram_tl_skip_restriction_reason_vector(
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t *offset
+        ) {
+            if (!offset || *offset + sizeof(uint32_t) * 2 > byte_count) {
+                return false;
+            }
+            uint32_t constructor = 0;
+            int32_t count = 0;
+            memcpy(&constructor, bytes + *offset, sizeof(constructor));
+            memcpy(&count, bytes + *offset + sizeof(uint32_t), sizeof(count));
+            if (constructor != PATCHGRAM_TL_VECTOR || count < 0 || count > 64) {
+                return false;
+            }
+            *offset += sizeof(uint32_t) * 2;
+            for (int32_t i = 0; i < count; i++) {
+                uint32_t item_constructor = 0;
+                if (*offset + sizeof(item_constructor) > byte_count) {
+                    return false;
+                }
+                memcpy(&item_constructor, bytes + *offset, sizeof(item_constructor));
+                if (item_constructor != 0xd072acb4U) {
+                    return false;
+                }
+                *offset += sizeof(item_constructor);
+                if (!patchgram_tl_skip_string(bytes, byte_count, offset)
+                    || !patchgram_tl_skip_string(bytes, byte_count, offset)
+                    || !patchgram_tl_skip_string(bytes, byte_count, offset)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        static bool patchgram_tl_skip_emoji_status(
+            const uint8_t *bytes,
+            size_t byte_count,
+            size_t *offset
+        ) {
+            if (!offset || *offset + sizeof(uint32_t) > byte_count) {
+                return false;
+            }
+            uint32_t constructor = 0;
+            memcpy(&constructor, bytes + *offset, sizeof(constructor));
+            *offset += sizeof(uint32_t);
+            if (constructor == 0x2de11aaeU) {
+                return true;
+            }
+            uint32_t flags = 0;
+            if (*offset + sizeof(flags) > byte_count) {
+                return false;
+            }
+            memcpy(&flags, bytes + *offset, sizeof(flags));
+            *offset += sizeof(flags);
+            if (constructor == 0xe7ff068aU) {
+                if (!patchgram_tl_skip_i64(byte_count, offset)) {
+                    return false;
+                }
+                return ((flags & 1U) == 0) || patchgram_tl_skip_u32(byte_count, offset);
+            }
+            if (constructor != 0x7184603bU) {
+                return false;
+            }
+            if (!patchgram_tl_skip_i64(byte_count, offset)
+                || !patchgram_tl_skip_i64(byte_count, offset)
+                || !patchgram_tl_skip_string(bytes, byte_count, offset)
+                || !patchgram_tl_skip_string(bytes, byte_count, offset)
+                || !patchgram_tl_skip_i64(byte_count, offset)
+                || !patchgram_tl_skip_u32(byte_count, offset)
+                || !patchgram_tl_skip_u32(byte_count, offset)
+                || !patchgram_tl_skip_u32(byte_count, offset)
+                || !patchgram_tl_skip_u32(byte_count, offset)) {
+                return false;
+            }
+            return ((flags & 1U) == 0) || patchgram_tl_skip_u32(byte_count, offset);
+        }
+
+        static bool patchgram_find_missing_username_insert_after_user(
+            const uint32_t *words,
+            int64_t word_count,
+            size_t user_word_index,
+            struct PatchgramTLRange *range_out
+        ) {
+            if (range_out) {
+                range_out->start = 0;
+                range_out->end = 0;
+                range_out->flags2_word_index = 0;
+                range_out->inserts_missing_field = false;
+            }
+            if (!words || word_count <= 0 || user_word_index + 5 >= (size_t)word_count) {
+                return false;
+            }
+            const uint8_t *bytes = (const uint8_t *)words;
+            const size_t byte_count = (size_t)word_count * sizeof(uint32_t);
+            const uint32_t flags = words[user_word_index + 1];
+            const uint32_t flags2 = words[user_word_index + 2];
+            if ((flags & (1U << 10)) == 0 || (flags2 & 1U) != 0) {
+                return false;
+            }
+            size_t offset = (user_word_index + 3) * sizeof(uint32_t);
+            if (!patchgram_tl_skip_i64(byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 0)) != 0 && !patchgram_tl_skip_i64(byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 1)) != 0 && !patchgram_tl_skip_string(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 2)) != 0 && !patchgram_tl_skip_string(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 3)) != 0 && !patchgram_tl_skip_string(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 4)) != 0 && !patchgram_tl_skip_string(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 5)) != 0 && !patchgram_tl_skip_user_profile_photo(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 6)) != 0 && !patchgram_tl_skip_user_status(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 14)) != 0 && !patchgram_tl_skip_u32(byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 18)) != 0 && !patchgram_tl_skip_restriction_reason_vector(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 19)) != 0 && !patchgram_tl_skip_string(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 22)) != 0 && !patchgram_tl_skip_string(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if ((flags & (1U << 30)) != 0 && !patchgram_tl_skip_emoji_status(bytes, byte_count, &offset)) {
+                return false;
+            }
+            if (offset > byte_count) {
+                return false;
+            }
+            if (range_out) {
+                range_out->start = offset;
+                range_out->end = offset;
+                range_out->flags2_word_index = user_word_index + 2;
+                range_out->inserts_missing_field = true;
+            }
+            return true;
+        }
+
+        static bool patchgram_find_username_vector_range_after_user(
+            const uint32_t *words,
+            int64_t word_count,
+            size_t user_word_index,
+            struct PatchgramTLRange *range_out,
+            int32_t *count_out
+        ) {
+            if (range_out) {
+                range_out->start = 0;
+                range_out->end = 0;
+                range_out->flags2_word_index = user_word_index + 2;
+                range_out->inserts_missing_field = false;
+            }
+            if (count_out) {
+                *count_out = 0;
+            }
+            if (!words || word_count <= 0 || user_word_index + 5 >= (size_t)word_count) {
+                return false;
+            }
+            const uint8_t *bytes = (const uint8_t *)words;
+            const size_t byte_count = (size_t)word_count * sizeof(uint32_t);
+            const size_t scan_end = ((size_t)word_count < user_word_index + 220)
+                ? (size_t)word_count
+                : user_word_index + 220;
+            for (size_t i = user_word_index + 5; i + 2 < scan_end; i++) {
+                if (words[i] != PATCHGRAM_TL_VECTOR) {
+                    continue;
+                }
+                int32_t count = 0;
+                if (!patchgram_tl_read_i32_at(bytes, byte_count, (i + 1) * sizeof(uint32_t), &count)
+                    || count <= 0
+                    || count > 64) {
+                    continue;
+                }
+                size_t cursor = (i + 2) * sizeof(uint32_t);
+                bool valid = true;
+                for (int32_t item = 0; item < count; item++) {
+                    size_t next = cursor;
+                    if (!patchgram_tl_username_object_end(bytes, byte_count, cursor, &next)) {
+                        valid = false;
+                        break;
+                    }
+                    cursor = next;
+                }
+                if (!valid) {
+                    continue;
+                }
+                if (range_out) {
+                    range_out->start = i * sizeof(uint32_t);
+                    range_out->end = cursor;
+                    range_out->flags2_word_index = user_word_index + 2;
+                    range_out->inserts_missing_field = false;
+                }
+                if (count_out) {
+                    *count_out = count;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        static size_t patchgram_collect_self_username_vector_ranges(
+            const uint32_t *words,
+            int64_t word_count,
+            struct PatchgramTLRange *ranges,
+            int32_t *counts,
+            size_t capacity
+        ) {
+            if (!words || word_count <= 0 || !ranges || capacity == 0) {
+                return 0;
+            }
+            size_t range_count = 0;
+            const size_t max_scan = (word_count < 8192) ? (size_t)word_count : 8192;
+            for (size_t i = 0; i + 5 < max_scan && range_count < capacity; i++) {
+                if (words[i] != PATCHGRAM_TL_USER) {
+                    continue;
+                }
+                const uint32_t flags = words[i + 1];
+                const uint32_t flags2 = words[i + 2];
+                if ((flags & (1U << 10)) == 0 || (flags2 & 1U) == 0) {
+                    continue;
+                }
+                struct PatchgramTLRange range;
+                int32_t old_count = 0;
+                if (!patchgram_find_username_vector_range_after_user(words, word_count, i, &range, &old_count)) {
+                    if (!patchgram_find_missing_username_insert_after_user(words, word_count, i, &range)) {
+                        if (g_custom_username_tl_patch_logs < 96) {
+                            g_custom_username_tl_patch_logs++;
+                            patchgram_log(
+                                "CUSTOM USERNAMES TL patch skipped reason=self-vector-not-found userIndex=%zu flags=%08x flags2=%08x",
+                                i,
+                                flags,
+                                flags2
+                            );
+                        }
+                        continue;
+                    }
+                    old_count = 0;
+                    if (g_custom_username_tl_patch_logs < 96) {
+                        g_custom_username_tl_patch_logs++;
+                        patchgram_log(
+                            "CUSTOM USERNAMES TL patch insert planned userIndex=%zu flags=%08x flags2=%08x insertOffset=%zu",
+                            i,
+                            flags,
+                            flags2,
+                            range.start
+                        );
+                    }
+                }
+                bool duplicate = false;
+                for (size_t existing = 0; existing < range_count; existing++) {
+                    if (ranges[existing].start == range.start) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) {
+                    continue;
+                }
+                ranges[range_count] = range;
+                if (counts) {
+                    counts[range_count] = old_count;
+                }
+                range_count++;
+            }
+            return range_count;
+        }
+
+        static bool patchgram_apply_custom_username_list_response(void *response) {
+            if (!response || !g_custom_list_usernames_enabled || g_custom_username_entry_count == 0) {
+                return false;
+            }
+            int32_t request_id = 0;
+            memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+            uint32_t *words = NULL;
+            int64_t word_count = 0;
+            memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+            memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+            if (!words || word_count <= 0 || !patchgram_response_has_custom_username_tl(words, word_count)) {
+                return false;
+            }
+            struct PatchgramTLRange ranges[PATCHGRAM_MAX_USERNAME_TL_REPLACEMENTS];
+            int32_t old_counts[PATCHGRAM_MAX_USERNAME_TL_REPLACEMENTS] = {0};
+            const size_t range_count = patchgram_collect_self_username_vector_ranges(
+                words,
+                word_count,
+                ranges,
+                old_counts,
+                PATCHGRAM_MAX_USERNAME_TL_REPLACEMENTS
+            );
+            if (range_count == 0) {
+                return false;
+            }
+            size_t replacement_byte_count = 0;
+            uint8_t *replacement = patchgram_build_custom_username_tl_vector(&replacement_byte_count);
+            if (!replacement || replacement_byte_count == 0) {
+                free(replacement);
+                return false;
+            }
+            const uint8_t *old_bytes = (const uint8_t *)words;
+            const size_t old_byte_count = (size_t)word_count * sizeof(uint32_t);
+            size_t new_byte_count = old_byte_count;
+            for (size_t i = 0; i < range_count; i++) {
+                if (ranges[i].end <= ranges[i].start || ranges[i].end > old_byte_count) {
+                    free(replacement);
+                    return false;
+                }
+                new_byte_count = new_byte_count - (ranges[i].end - ranges[i].start) + replacement_byte_count;
+            }
+            new_byte_count = (new_byte_count + 3U) & ~(size_t)3U;
+            uint8_t *new_bytes = (uint8_t *)calloc(new_byte_count, 1);
+            if (!new_bytes) {
+                free(replacement);
+                return false;
+            }
+            size_t source_offset = 0;
+            size_t destination_offset = 0;
+            for (size_t i = 0; i < range_count; i++) {
+                const size_t before_count = ranges[i].start - source_offset;
+                memcpy(new_bytes + destination_offset, old_bytes + source_offset, before_count);
+                destination_offset += before_count;
+                memcpy(new_bytes + destination_offset, replacement, replacement_byte_count);
+                destination_offset += replacement_byte_count;
+                source_offset = ranges[i].end;
+            }
+            if (source_offset < old_byte_count) {
+                memcpy(new_bytes + destination_offset, old_bytes + source_offset, old_byte_count - source_offset);
+                destination_offset += old_byte_count - source_offset;
+            }
+            free(replacement);
+            size_t inserted_count = 0;
+            for (size_t i = 0; i < range_count; i++) {
+                if (!ranges[i].inserts_missing_field) {
+                    continue;
+                }
+                const size_t old_flags2_offset = ranges[i].flags2_word_index * sizeof(uint32_t);
+                size_t new_flags2_offset = old_flags2_offset;
+                for (size_t j = 0; j < range_count; j++) {
+                    if (ranges[j].start > old_flags2_offset) {
+                        break;
+                    }
+                    const size_t old_range_size = ranges[j].end - ranges[j].start;
+                    new_flags2_offset = new_flags2_offset - old_range_size + replacement_byte_count;
+                }
+                if (new_flags2_offset + sizeof(uint32_t) <= new_byte_count) {
+                    uint32_t flags2 = 0;
+                    memcpy(&flags2, new_bytes + new_flags2_offset, sizeof(flags2));
+                    flags2 |= 1U;
+                    memcpy(new_bytes + new_flags2_offset, &flags2, sizeof(flags2));
+                    inserted_count++;
+                }
+            }
+            int64_t new_word_count = (int64_t)(new_byte_count / sizeof(uint32_t));
+            void *data_header = NULL;
+            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_D_OFFSET, &data_header, sizeof(data_header));
+            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, &new_bytes, sizeof(new_bytes));
+            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_word_count, sizeof(new_word_count));
+            if (g_custom_username_tl_patch_logs < 160) {
+                g_custom_username_tl_patch_logs++;
+                patchgram_log(
+                    "CUSTOM USERNAMES TL response substituted requestId=%d replacements=%zu inserted=%zu oldWords=%lld newWords=%lld configured=%zu first=%s oldFirstCount=%d",
+                    (int)request_id,
+                    range_count,
+                    inserted_count,
+                    (long long)word_count,
+                    (long long)new_word_count,
+                    g_custom_username_entry_count,
+                    g_custom_username_entries[0].username,
+                    (int)old_counts[0]
+                );
+            }
+            return true;
+        }
+
+        static void patchgram_log_custom_username_response_tl(void *response) {
+            if (!response || g_custom_username_tl_response_diag_logs >= 160) {
+                return;
+            }
+            int32_t request_id = 0;
+            memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+            uint32_t *words = NULL;
+            int64_t word_count = 0;
+            memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+            memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+            if (!words || word_count <= 0 || !patchgram_response_has_custom_username_tl(words, word_count)) {
+                return;
+            }
+            g_custom_username_tl_response_diag_logs++;
+            const uint8_t *bytes = (const uint8_t *)words;
+            const size_t byte_count = (size_t)word_count * sizeof(uint32_t);
+            patchgram_log(
+                "CUSTOM USERNAMES TL response seen requestId=%d words=%lld enabled=%d configured=%zu",
+                (int)request_id,
+                (long long)word_count,
+                g_custom_list_usernames_enabled ? 1 : 0,
+                g_custom_username_entry_count
+            );
+            patchgram_log_tl_words("CUSTOM USERNAMES TL response dump", request_id, words, word_count);
+            const size_t max_scan = (word_count < 512) ? (size_t)word_count : 512;
+            size_t username_logs = 0;
+            for (size_t i = 0; i < max_scan && username_logs < 16; i++) {
+                const uint32_t constructor = words[i];
+                if (constructor == PATCHGRAM_TL_UPDATE_USER_NAME) {
+                    patchgram_log_update_user_name_details(request_id, bytes, byte_count, i);
+                } else if (constructor == PATCHGRAM_TL_USERNAME) {
+                    int32_t flags = 0;
+                    patchgram_tl_read_i32_at(bytes, byte_count, (i + 1) * sizeof(uint32_t), &flags);
+                    char username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+                    patchgram_tl_read_string_ascii(
+                        bytes,
+                        byte_count,
+                        (i + 2) * sizeof(uint32_t),
+                        username,
+                        sizeof(username)
+                    );
+                    patchgram_log(
+                        "CUSTOM USERNAMES TL response username requestId=%d index=%zu flags=%d editable=%d active=%d username=%s",
+                        (int)request_id,
+                        i,
+                        (int)flags,
+                        (flags & 1) ? 1 : 0,
+                        (flags & 2) ? 1 : 0,
+                        username
+                    );
+                    username_logs++;
+                } else if (constructor == PATCHGRAM_TL_USER && i + 3 < max_scan) {
+                    const uint32_t flags = words[i + 1];
+                    const uint32_t flags2 = words[i + 2];
+                    patchgram_log(
+                        "CUSTOM USERNAMES TL response user constructor requestId=%d index=%zu flags=%08x flags2=%08x self=%d hasUsernames=%d",
+                        (int)request_id,
+                        i,
+                        flags,
+                        flags2,
+                        (flags & (1U << 10)) ? 1 : 0,
+                        (flags2 & 1U) ? 1 : 0
+                    );
+                }
+            }
         }
 
         static void patchgram_track_fact_check_request(int32_t request_id, int32_t count) {
@@ -4484,11 +5972,18 @@ public final class BinaryPatchEngine {
             return true;
         }
 
-        static bool patchgram_fragment_request_should_be_local(void *request_ref, int32_t *request_id_out) {
+        static bool patchgram_fragment_request_should_be_local(
+                void *request_ref,
+                int32_t *request_id_out,
+                char *username_out,
+                size_t username_capacity) {
             if (request_id_out) {
                 *request_id_out = 0;
             }
-            if (!g_fragment_phone_enabled || !request_ref) {
+            if (username_out && username_capacity > 0) {
+                username_out[0] = '\0';
+            }
+            if ((!g_fragment_phone_enabled && !g_custom_list_usernames_enabled) || !request_ref) {
                 return false;
             }
             void *request_data = NULL;
@@ -4507,7 +6002,9 @@ public final class BinaryPatchEngine {
             memcpy(&request_id, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(request_id));
             bool has_get_collectible_info = false;
             bool has_input_phone = false;
+            bool has_input_username = false;
             char phone[PATCHGRAM_MAX_FRAGMENT_PHONE_UTF8] = {0};
+            char username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
             const size_t max_scan = (word_count < 512) ? (size_t)word_count : 512;
             for (size_t i = PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION; i < max_scan; i++) {
                 const uint32_t word = words[i];
@@ -4522,38 +6019,73 @@ public final class BinaryPatchEngine {
                         phone,
                         sizeof(phone)
                     );
-                }
-            }
-            if (has_get_collectible_info || has_input_phone) {
-                if (g_fragment_phone_request_logs < 96) {
-                    g_fragment_phone_request_logs++;
-                    patchgram_log(
-                        "FRAGMENT PHONE getCollectibleInfo seen requestId=%d hasMethod=%d hasInputPhone=%d phone=%s selfPhone=%s targetMode=%s words=%lld enabled=%d",
-                        (int)request_id,
-                        has_get_collectible_info ? 1 : 0,
-                        has_input_phone ? 1 : 0,
-                        phone,
-                        g_fragment_phone_self_phone_utf8,
-                        patchgram_target_mode_value_name((enum PatchgramTargetMode)g_fragment_phone_target_mode),
-                        (long long)word_count,
-                        g_fragment_phone_enabled ? 1 : 0
+                } else if (word == PATCHGRAM_TL_INPUT_COLLECTIBLE_USERNAME) {
+                    has_input_username = true;
+                    patchgram_tl_read_string_ascii(
+                        (const uint8_t *)words,
+                        (size_t)word_count * sizeof(uint32_t),
+                        (i + 1) * sizeof(uint32_t),
+                        username,
+                        sizeof(username)
                     );
                 }
             }
-            if (!has_get_collectible_info || !has_input_phone) {
-                if ((has_get_collectible_info || has_input_phone) && g_fragment_phone_request_skip_logs < 96) {
-                    g_fragment_phone_request_skip_logs++;
+            if (has_get_collectible_info || has_input_phone || has_input_username) {
+                if (g_fragment_phone_request_logs < 96) {
+                    g_fragment_phone_request_logs++;
                     patchgram_log(
-                        "FRAGMENT PHONE request skipped reason=missing-method-or-phone requestId=%d hasMethod=%d hasInputPhone=%d phone=%s",
+                        "FRAGMENT getCollectibleInfo seen requestId=%d hasMethod=%d hasInputPhone=%d hasInputUsername=%d phone=%s username=%s selfPhone=%s targetMode=%s words=%lld phoneEnabled=%d usernameEnabled=%d",
                         (int)request_id,
                         has_get_collectible_info ? 1 : 0,
                         has_input_phone ? 1 : 0,
-                        phone
+                        has_input_username ? 1 : 0,
+                        phone,
+                        username,
+                        g_fragment_phone_self_phone_utf8,
+                        patchgram_target_mode_value_name((enum PatchgramTargetMode)g_fragment_phone_target_mode),
+                        (long long)word_count,
+                        g_fragment_phone_enabled ? 1 : 0,
+                        g_custom_list_usernames_enabled ? 1 : 0
+                    );
+                }
+            }
+            if (!has_get_collectible_info || (!has_input_phone && !has_input_username)) {
+                if ((has_get_collectible_info || has_input_phone || has_input_username) && g_fragment_phone_request_skip_logs < 96) {
+                    g_fragment_phone_request_skip_logs++;
+                    patchgram_log(
+                        "FRAGMENT request skipped reason=missing-method-or-input requestId=%d hasMethod=%d hasInputPhone=%d hasInputUsername=%d phone=%s username=%s",
+                        (int)request_id,
+                        has_get_collectible_info ? 1 : 0,
+                        has_input_phone ? 1 : 0,
+                        has_input_username ? 1 : 0,
+                        phone,
+                        username
                     );
                 }
                 return false;
             }
-            if ((enum PatchgramTargetMode)g_fragment_phone_target_mode == PatchgramTargetOnlySelf) {
+            if (has_input_username) {
+                struct PatchgramUsernameConfigEntry *entry = patchgram_custom_username_entry(username);
+                if (!g_custom_list_usernames_enabled || !entry || !entry->collectible) {
+                    if (g_fragment_phone_request_skip_logs < 96) {
+                        g_fragment_phone_request_skip_logs++;
+                        patchgram_log(
+                            "CUSTOM USERNAMES request skipped reason=username-not-configured requestId=%d username=%s configured=%d collectible=%d",
+                            (int)request_id,
+                            username,
+                            entry ? 1 : 0,
+                            (entry && entry->collectible) ? 1 : 0
+                        );
+                    }
+                    return false;
+                }
+                if (username_out && username_capacity > 0) {
+                    snprintf(username_out, username_capacity, "%s", username);
+                }
+            } else if (!g_fragment_phone_enabled) {
+                return false;
+            }
+            if (has_input_phone && (enum PatchgramTargetMode)g_fragment_phone_target_mode == PatchgramTargetOnlySelf) {
                 if (!g_fragment_phone_self_phone_utf8[0] || !phone[0]) {
                     if (g_fragment_phone_request_skip_logs < 96) {
                         g_fragment_phone_request_skip_logs++;
@@ -4597,13 +6129,24 @@ public final class BinaryPatchEngine {
             return request_id > 0;
         }
 
-        static uint32_t *patchgram_build_fragment_collectible_info_reply(int64_t *word_count_out) {
+        static uint32_t *patchgram_build_fragment_collectible_info_reply(
+                int64_t *word_count_out,
+                struct PatchgramUsernameConfigEntry *username_entry) {
             if (word_count_out) {
                 *word_count_out = 0;
             }
-            const char *currency = g_fragment_phone_currency[0] ? g_fragment_phone_currency : "TON";
-            const char *crypto_currency = g_fragment_phone_crypto_currency[0] ? g_fragment_phone_crypto_currency : "TON";
-            const char *url = g_fragment_phone_url[0] ? g_fragment_phone_url : "https://fragment.com/";
+            const int32_t purchase_date = username_entry ? username_entry->purchase_date : g_fragment_phone_purchase_date;
+            const int64_t amount = username_entry ? username_entry->amount : g_fragment_phone_amount;
+            const int64_t crypto_amount = username_entry ? username_entry->crypto_amount : g_fragment_phone_crypto_amount;
+            const char *currency = username_entry
+                ? (username_entry->currency[0] ? username_entry->currency : "USD")
+                : (g_fragment_phone_currency[0] ? g_fragment_phone_currency : "TON");
+            const char *crypto_currency = username_entry
+                ? (username_entry->crypto_currency[0] ? username_entry->crypto_currency : "TON")
+                : (g_fragment_phone_crypto_currency[0] ? g_fragment_phone_crypto_currency : "TON");
+            const char *url = username_entry
+                ? (username_entry->url[0] ? username_entry->url : "https://fragment.com/")
+                : (g_fragment_phone_url[0] ? g_fragment_phone_url : "https://fragment.com/");
             const size_t byte_count = sizeof(uint32_t)
                 + sizeof(int32_t)
                 + patchgram_tl_string_length(currency)
@@ -4618,11 +6161,11 @@ public final class BinaryPatchEngine {
             }
             size_t offset = 0;
             patchgram_tl_write_u32(buffer, &offset, PATCHGRAM_TL_FRAGMENT_COLLECTIBLE_INFO);
-            patchgram_tl_write_i32(buffer, &offset, g_fragment_phone_purchase_date);
+            patchgram_tl_write_i32(buffer, &offset, purchase_date);
             patchgram_tl_write_string(buffer, &offset, currency);
-            patchgram_tl_write_i64(buffer, &offset, g_fragment_phone_amount);
+            patchgram_tl_write_i64(buffer, &offset, amount);
             patchgram_tl_write_string(buffer, &offset, crypto_currency);
-            patchgram_tl_write_i64(buffer, &offset, g_fragment_phone_crypto_amount);
+            patchgram_tl_write_i64(buffer, &offset, crypto_amount);
             patchgram_tl_write_string(buffer, &offset, url);
             if (word_count_out) {
                 *word_count_out = (int64_t)(padded_count / sizeof(uint32_t));
@@ -4631,16 +6174,20 @@ public final class BinaryPatchEngine {
         }
 
         static bool patchgram_apply_fragment_phone_response(void *response) {
-            if (!response || !g_fragment_phone_enabled) {
+            if (!response || (!g_fragment_phone_enabled && !g_custom_list_usernames_enabled)) {
                 return false;
             }
             int32_t request_id = 0;
             memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
-            if (!patchgram_take_fragment_phone_request(request_id)) {
+            char username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+            if (!patchgram_take_fragment_phone_request(request_id, username, sizeof(username))) {
                 return false;
             }
+            struct PatchgramUsernameConfigEntry *username_entry = username[0]
+                ? patchgram_custom_username_entry(username)
+                : NULL;
             int64_t word_count = 0;
-            uint32_t *words = patchgram_build_fragment_collectible_info_reply(&word_count);
+            uint32_t *words = patchgram_build_fragment_collectible_info_reply(&word_count, username_entry);
             if (!words || word_count <= 0) {
                 free(words);
                 return false;
@@ -4655,12 +6202,26 @@ public final class BinaryPatchEngine {
                     "FRAGMENT PHONE response substituted requestId=%d words=%lld date=%d amount=%lld currency=%s cryptoAmount=%lld cryptoCurrency=%s url=%s",
                     (int)request_id,
                     (long long)word_count,
-                    (int)g_fragment_phone_purchase_date,
-                    (long long)g_fragment_phone_amount,
-                    g_fragment_phone_currency,
-                    (long long)g_fragment_phone_crypto_amount,
-                    g_fragment_phone_crypto_currency,
-                    g_fragment_phone_url
+                    username_entry ? (int)username_entry->purchase_date : (int)g_fragment_phone_purchase_date,
+                    username_entry ? (long long)username_entry->amount : (long long)g_fragment_phone_amount,
+                    username_entry ? username_entry->currency : g_fragment_phone_currency,
+                    username_entry ? (long long)username_entry->crypto_amount : (long long)g_fragment_phone_crypto_amount,
+                    username_entry ? username_entry->crypto_currency : g_fragment_phone_crypto_currency,
+                    username_entry ? username_entry->url : g_fragment_phone_url
+                );
+            }
+            if (username_entry && g_custom_username_response_logs < 96) {
+                g_custom_username_response_logs++;
+                patchgram_log(
+                    "CUSTOM USERNAMES response substituted requestId=%d username=%s date=%d amount=%lld currency=%s cryptoAmount=%lld cryptoCurrency=%s url=%s",
+                    (int)request_id,
+                    username_entry->username,
+                    (int)username_entry->purchase_date,
+                    (long long)username_entry->amount,
+                    username_entry->currency,
+                    (long long)username_entry->crypto_amount,
+                    username_entry->crypto_currency,
+                    username_entry->url
                 );
             }
             return true;
@@ -4896,7 +6457,7 @@ public final class BinaryPatchEngine {
         }
 
         static void patchgram_apply_fragment_phone_received_queue(void *session_private) {
-            if (!session_private || (!g_fragment_phone_enabled && !g_message_fact_check_enabled)) {
+            if (!session_private) {
                 return;
             }
             void *session_data = NULL;
@@ -4916,8 +6477,14 @@ public final class BinaryPatchEngine {
                 return;
             }
             for (uint8_t *response = begin; response < end; response += PATCHGRAM_RESPONSE_SIZE) {
-                patchgram_apply_fragment_phone_response(response);
-                patchgram_apply_fact_check_response(response);
+                patchgram_apply_custom_username_list_response(response);
+                patchgram_log_custom_username_response_tl(response);
+                if (g_fragment_phone_enabled || g_custom_list_usernames_enabled) {
+                    patchgram_apply_fragment_phone_response(response);
+                }
+                if (g_message_fact_check_enabled) {
+                    patchgram_apply_fact_check_response(response);
+                }
             }
         }
 
@@ -4929,17 +6496,33 @@ public final class BinaryPatchEngine {
         }
 
         static void patchgram_session_send_prepared(void *session, void *request_ref, int64_t ms_can_wait) {
+            patchgram_log_custom_username_request_tl(request_ref, ms_can_wait);
             int32_t request_id = 0;
-            if (patchgram_fragment_request_should_be_local(request_ref, &request_id)) {
-                patchgram_track_fragment_phone_request(request_id);
+            char collectible_username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+            if (patchgram_fragment_request_should_be_local(
+                    request_ref,
+                    &request_id,
+                    collectible_username,
+                    sizeof(collectible_username))) {
+                patchgram_track_fragment_phone_request(request_id, collectible_username);
                 if (g_fragment_phone_request_logs < 48) {
                     g_fragment_phone_request_logs++;
                     patchgram_log(
-                        "FRAGMENT PHONE request tracked requestId=%d msCanWait=%lld selfPhone=%s targetMode=%s",
+                        "FRAGMENT request tracked requestId=%d username=%s msCanWait=%lld selfPhone=%s targetMode=%s",
                         (int)request_id,
+                        collectible_username,
                         (long long)ms_can_wait,
                         g_fragment_phone_self_phone_utf8,
                         patchgram_target_mode_value_name((enum PatchgramTargetMode)g_fragment_phone_target_mode)
+                    );
+                }
+                if (collectible_username[0] && g_custom_username_request_logs < 96) {
+                    g_custom_username_request_logs++;
+                    patchgram_log(
+                        "CUSTOM USERNAMES request tracked requestId=%d username=%s msCanWait=%lld",
+                        (int)request_id,
+                        collectible_username,
+                        (long long)ms_can_wait
                     );
                 }
             }
@@ -5020,6 +6603,7 @@ public final class BinaryPatchEngine {
 
         static void patchgram_phone_or_hidden_value_map(void *value, void *input) {
             void *peer = patchgram_phone_or_hidden_value_user(value);
+            patchgram_apply_custom_usernames(peer, "PhoneOrHiddenValue.before");
             const bool hide = g_hide_self_phone_enabled && patchgram_peer_is_self_user(peer);
             if (hide) {
                 patchgram_clear_self_phone_field(peer, "PhoneOrHiddenValue.before");
@@ -5448,6 +7032,168 @@ public final class BinaryPatchEngine {
                     (unsigned long long)previous_channel,
                     (int)previous_message,
                     (unsigned long long)g_self_user_id
+                );
+            }
+        }
+
+        static void patchgram_write_username_vector(
+                void *peer,
+                struct PatchgramUsernameConfigEntry *entries,
+                size_t count,
+                int32_t editable_index,
+                const char *source) {
+            if (!peer) {
+                return;
+            }
+            if (count > 0 && editable_index < 0) {
+                editable_index = 0;
+            }
+            uint8_t *info = (uint8_t *)peer + PATCHGRAM_USER_USERNAME_INFO_OFFSET;
+            if (count == 0) {
+                void *empty = NULL;
+                editable_index = -1;
+                memcpy(info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET, &empty, sizeof(empty));
+                memcpy(info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET + sizeof(empty), &empty, sizeof(empty));
+                memcpy(info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET + sizeof(empty) * 2, &empty, sizeof(empty));
+                memcpy(info + PATCHGRAM_USERNAME_INFO_EDITABLE_INDEX_OFFSET, &editable_index, sizeof(editable_index));
+                return;
+            }
+            uint8_t *current_begin = NULL;
+            uint8_t *current_end = NULL;
+            int32_t current_editable_index = -2;
+            memcpy(&current_begin, info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET, sizeof(current_begin));
+            memcpy(&current_end, info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET + sizeof(current_begin), sizeof(current_end));
+            memcpy(
+                &current_editable_index,
+                info + PATCHGRAM_USERNAME_INFO_EDITABLE_INDEX_OFFSET,
+                sizeof(current_editable_index)
+            );
+            const size_t current_count = (current_begin && current_end && current_end >= current_begin)
+                ? (size_t)(current_end - current_begin) / PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE
+                : 0;
+            if (current_count == count && current_editable_index == editable_index) {
+                bool already_matches = true;
+                if (!current_begin) {
+                    already_matches = false;
+                }
+                for (size_t i = 0; already_matches && i < count; i++) {
+                    char current_username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+                    patchgram_copy_qstring_ascii(
+                        current_begin + i * PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE,
+                        current_username,
+                        sizeof(current_username)
+                    );
+                    if (!patchgram_username_equal(current_username, entries[i].username)) {
+                        already_matches = false;
+                    }
+                }
+                if (already_matches) {
+                    return;
+                }
+            }
+            const size_t byte_count = count * PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE;
+            uint8_t *items = (uint8_t *)patchgram_cxx_operator_new(byte_count);
+            if (!items) {
+                return;
+            }
+            memset(items, 0, byte_count);
+            for (size_t i = 0; i < count; i++) {
+                patchgram_apply_raw_qstring(
+                    items + i * PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE,
+                    entries[i].username_utf16,
+                    entries[i].username_utf16_size
+                );
+            }
+            g_custom_username_vector_items = items;
+            g_custom_username_vector_count = count;
+            g_custom_username_vector_editable_index = editable_index;
+            void *begin = items;
+            void *end = items + count * PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE;
+            void *cap = end;
+            memcpy(info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET, &begin, sizeof(begin));
+            memcpy(info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET + sizeof(begin), &end, sizeof(end));
+            memcpy(info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET + sizeof(begin) * 2, &cap, sizeof(cap));
+            memcpy(info + PATCHGRAM_USERNAME_INFO_EDITABLE_INDEX_OFFSET, &editable_index, sizeof(editable_index));
+            if (g_custom_usernames_logs < 96) {
+                g_custom_usernames_logs++;
+                patchgram_log(
+                    "CUSTOM USERNAMES wrote source=%s raw_peer=0x%llx peer_id=%llu count=%zu editableIndex=%d first=%s known_self=%llu",
+                    source ? source : "unknown",
+                    (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
+                    (unsigned long long)patchgram_user_id_from_peer(peer),
+                    count,
+                    (int)editable_index,
+                    entries[0].username,
+                    (unsigned long long)g_self_user_id
+                );
+            }
+        }
+
+        static void patchgram_capture_original_usernames(void *peer, const char *source) {
+            if (!peer || g_original_usernames_captured) {
+                return;
+            }
+            uint8_t *info = (uint8_t *)peer + PATCHGRAM_USER_USERNAME_INFO_OFFSET;
+            uint8_t *begin = NULL;
+            uint8_t *end = NULL;
+            memcpy(&begin, info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET, sizeof(begin));
+            memcpy(&end, info + PATCHGRAM_USERNAME_INFO_VECTOR_OFFSET + sizeof(begin), sizeof(end));
+            memcpy(&g_original_username_editable_index, info + PATCHGRAM_USERNAME_INFO_EDITABLE_INDEX_OFFSET, sizeof(g_original_username_editable_index));
+            g_original_username_entry_count = 0;
+            if (begin && end && end >= begin) {
+                size_t count = (size_t)(end - begin) / PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE;
+                if (count > PATCHGRAM_MAX_CUSTOM_USERNAMES) {
+                    count = PATCHGRAM_MAX_CUSTOM_USERNAMES;
+                }
+                for (size_t i = 0; i < count; i++) {
+                    char username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
+                    patchgram_copy_qstring_ascii(
+                        begin + i * PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE,
+                        username,
+                        sizeof(username)
+                    );
+                    if (!username[0]) {
+                        continue;
+                    }
+                    struct PatchgramUsernameConfigEntry *entry = &g_original_username_entries[g_original_username_entry_count++];
+                    snprintf(entry->username, sizeof(entry->username), "%s", username);
+                    patchgram_configure_custom_username_entry_utf16(entry);
+                }
+            }
+            if (g_original_username_entry_count == 0) {
+                g_original_username_editable_index = -1;
+            }
+            g_original_usernames_captured = true;
+            if (g_custom_usernames_logs < 96) {
+                g_custom_usernames_logs++;
+                patchgram_log(
+                    "CUSTOM USERNAMES captured original source=%s raw_peer=0x%llx peer_id=%llu count=%zu editableIndex=%d",
+                    source ? source : "unknown",
+                    (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
+                    (unsigned long long)patchgram_user_id_from_peer(peer),
+                    g_original_username_entry_count,
+                    (int)g_original_username_editable_index
+                );
+            }
+        }
+
+        static void patchgram_apply_custom_usernames(void *peer, const char *source) {
+            if (!peer || !patchgram_peer_is_self_user(peer)) {
+                return;
+            }
+            if (!g_custom_list_usernames_enabled || g_custom_username_entry_count == 0) {
+                return;
+            }
+            if (g_custom_usernames_logs < 96) {
+                g_custom_usernames_logs++;
+                patchgram_log(
+                    "CUSTOM USERNAMES model sync skipped reason=unsafe-direct-vector source=%s raw_peer=0x%llx peer_id=%llu count=%zu known_self=%llu first=%s",
+                    source ? source : "unknown",
+                    (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
+                    (unsigned long long)patchgram_user_id_from_peer(peer),
+                    g_custom_username_entry_count,
+                    (unsigned long long)g_self_user_id,
+                    g_custom_username_entries[0].username
                 );
             }
         }
@@ -5946,6 +7692,7 @@ public final class BinaryPatchEngine {
         var selfIdentityConfigs = manifest.selfIdentityConfigs
         var localPersonalChannelConfigs = manifest.localPersonalChannelConfigs
         var fragmentPhoneConfigs = manifest.fragmentPhoneConfigs
+        var customListUsernamesConfigs = manifest.customListUsernamesConfigs
         var messageFactCheckConfigs = manifest.messageFactCheckConfigs
         var enabledAlternativeGroups = manifest.enabledAlternativeGroups
 
@@ -5995,6 +7742,13 @@ public final class BinaryPatchEngine {
                             ?? FragmentPhonePatchConfig.defaultConfig
                     ).normalized
                 }
+                if change.rule.kind == .customListUsernames {
+                    customListUsernamesConfigs[change.rule.id] = (
+                        change.customListUsernamesConfig
+                            ?? customListUsernamesConfigs[change.rule.id]
+                            ?? CustomListUsernamesPatchConfig.defaultConfig
+                    ).normalized
+                }
                 if change.rule.id == Self.messageSettingsRuleId,
                    enabledAlternativeGroups[change.rule.id]?.contains(Self.messageFactCheckAlternativeGroup) == true {
                     messageFactCheckConfigs[change.rule.id] = (
@@ -6011,6 +7765,7 @@ public final class BinaryPatchEngine {
                 selfIdentityConfigs.removeValue(forKey: change.rule.id)
                 localPersonalChannelConfigs.removeValue(forKey: change.rule.id)
                 fragmentPhoneConfigs.removeValue(forKey: change.rule.id)
+                customListUsernamesConfigs.removeValue(forKey: change.rule.id)
                 messageFactCheckConfigs.removeValue(forKey: change.rule.id)
                 enabledAlternativeGroups.removeValue(forKey: change.rule.id)
             }
@@ -6024,6 +7779,7 @@ public final class BinaryPatchEngine {
         manifest.selfIdentityConfigs = selfIdentityConfigs.filter { enabled.contains($0.key) }
         manifest.localPersonalChannelConfigs = localPersonalChannelConfigs.filter { enabled.contains($0.key) }
         manifest.fragmentPhoneConfigs = fragmentPhoneConfigs.filter { enabled.contains($0.key) }
+        manifest.customListUsernamesConfigs = customListUsernamesConfigs.filter { enabled.contains($0.key) }
         manifest.messageFactCheckConfigs = messageFactCheckConfigs.filter { ruleId, _ in
             enabled.contains(ruleId)
                 && enabledAlternativeGroups[ruleId]?.contains(Self.messageFactCheckAlternativeGroup) == true
@@ -6060,6 +7816,7 @@ public final class BinaryPatchEngine {
             selfIdentityConfigs: [:],
             localPersonalChannelConfigs: [:],
             fragmentPhoneConfigs: [:],
+            customListUsernamesConfigs: [:],
             messageFactCheckConfigs: [:]
         )
         try writeManifest(manifest, appURL: appURL)

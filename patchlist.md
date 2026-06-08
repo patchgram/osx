@@ -23,8 +23,8 @@ This file describes the patches available in Patchgram in plain language.
 | Don't share phone when adding contacts | `dylib` | Prevents Telegram Desktop from sending the phone privacy exception flag when adding a contact. |
 | 999 accounts | `binary` | Raises the local account limit from Telegram Desktop's normal limit to 999 accounts. |
 | Show bot callback-data on hover | `dylib` | Shows bot button callback data locally when hovering/copying inline button text. |
-| Disable Premium, Stars, TON & Gifts | `binary` | Disables selected monetization UI and request paths: Premium, Stars, TON, Gifts, boosts, paid reactions, emoji statuses, and related app config parts. |
-| Custom account settings | `dylib` | A grouped local account customization patch. It contains visual balance, badge, Premium, verification, identity, attached channel, and Fragment phone subpatches. |
+| Disable Premium, Stars, TON & Gifts | `dylib` | Disables selected monetization UI and request paths at runtime: Premium, Stars, TON, Gifts, boosts, paid reactions, emoji statuses, and related app config parts. |
+| Custom account settings | `dylib` | A grouped local account customization patch. It contains visual balance, badge, Premium, verification, identity, attached channel, Fragment phone, and custom usernames subpatches. |
 | Disable premium effects | `dylib` | Stops Premium sticker/effect animations from starting locally. |
 | Disable media spoilers | `dylib` | Shows spoiler-marked photos/videos normally instead of blurring them locally. |
 | Sensitive blur | `dylib` | Disables local sensitive-content blur checks. |
@@ -68,6 +68,7 @@ This file describes the patches available in Patchgram in plain language.
 | Custom userID | Visually replaces your own displayed user ID locally. Empty value means original ID. |
 | Local attached channel | Visually attaches another channel by channel ID. For it to display correctly in your own client, open/load that channel in Telegram Desktop first. |
 | Fragment phone | Makes the displayed phone look collectible locally and lets you set local `fragment.collectibleInfo` values. |
+| Custom list usernames | Replaces the username list shown in your self-profile locally. Usernames can be regular or collectible, and collectible usernames can return custom `fragment.collectibleInfo` values. |
 
 ## Disable Ads Subpatches
 

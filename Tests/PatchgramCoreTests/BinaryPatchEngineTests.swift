@@ -28,6 +28,22 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertEqual(inspection.executableURL.lastPathComponent, "Telegram")
     }
 
+    func testRejectsUnsupportedBundleIdentifier() throws {
+        let unsupportedURL = appURL.deletingLastPathComponent()
+            .appendingPathComponent("Unsupported.app", isDirectory: true)
+        try makeAppFixture(
+            at: unsupportedURL,
+            executableName: "Unsupported",
+            bundleIdentifier: "org.telegram.desktop",
+            bundleVersion: "6.8.2"
+        )
+
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        XCTAssertThrowsError(try engine.inspect(appURL: unsupportedURL)) { error in
+            XCTAssertEqual(error as? PatchgramError, .unsupportedAppBundle("org.telegram.desktop"))
+        }
+    }
+
     func testAppliesAndRemovesBinaryRules() throws {
         let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
         let initial = try engine.statuses(appURL: appURL)
@@ -80,6 +96,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.hide_self_phone"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.self_identity_override"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.fragment_phone"))
+        XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.custom_list_usernames"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.no_premium_anim"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.disable_spoilers"))
         XCTAssertNotNil(BinaryPatchRuleCatalog.rule(id: "binary.visual.sensitive_blur"))
@@ -248,6 +265,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         let appConfig = try XCTUnwrap(rule.replacements.first { $0.id == "help.getAppConfig.constructor" })
         let premium = try XCTUnwrap(rule.replacements.first { $0.id == "data.peer_premium_value.force_false" })
         let selectedGroups: Set<String> = [appConfig.alternativeGroup]
+        let original = try Data(contentsOf: executableURL)
 
         _ = try engine.applyRuleChanges(
             [
@@ -261,19 +279,28 @@ final class BinaryPatchEngineTests: XCTestCase {
             signAfterPatch: false
         )
 
-        var executable = try Data(contentsOf: executableURL)
-        XCTAssertNil(executable.range(of: appConfig.original))
-        XCTAssertNotNil(executable.range(of: appConfig.patched))
+        var executable = try Data(contentsOf: wrappedExecutableURL)
+        XCTAssertEqual(executable, original)
+        XCTAssertNotNil(executable.range(of: appConfig.original))
+        XCTAssertNil(executable.range(of: appConfig.patched))
         XCTAssertNotNil(executable.range(of: premium.original))
         XCTAssertNil(executable.range(of: premium.patched))
+        var configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationAppConfigEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationPremiumUIEnabled\" : false"))
+        XCTAssertEqual(try engine.statuses(appURL: appURL, rules: [rule]).first?.state, .applied)
 
         _ = try engine.applyRuleChanges(
             [BinaryPatchRuleChange(rule: rule, enabled: true)],
             appURL: appURL,
             signAfterPatch: false
         )
-        executable = try Data(contentsOf: executableURL)
-        XCTAssertNotNil(executable.range(of: premium.patched))
+        executable = try Data(contentsOf: wrappedExecutableURL)
+        XCTAssertEqual(executable, original)
+        XCTAssertNil(executable.range(of: premium.patched))
+        configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationPremiumUIEnabled\" : true"))
 
         _ = try engine.applyRuleChanges(
             [
@@ -286,10 +313,15 @@ final class BinaryPatchEngineTests: XCTestCase {
             appURL: appURL,
             signAfterPatch: false
         )
-        executable = try Data(contentsOf: executableURL)
-        XCTAssertNotNil(executable.range(of: appConfig.patched))
+        executable = try Data(contentsOf: wrappedExecutableURL)
+        XCTAssertEqual(executable, original)
+        XCTAssertNotNil(executable.range(of: appConfig.original))
+        XCTAssertNil(executable.range(of: appConfig.patched))
         XCTAssertNotNil(executable.range(of: premium.original))
         XCTAssertNil(executable.range(of: premium.patched))
+        configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationAppConfigEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationPremiumUIEnabled\" : false"))
     }
 
     func testApplyChecksWriteAccessBeforeChangingApp() throws {
@@ -324,6 +356,7 @@ final class BinaryPatchEngineTests: XCTestCase {
             "binary.privacy.no_phone_on_add",
             "binary.inline.callback_hover",
             "binary.messages.settings",
+            "binary.config.disable_monetization",
             "binary.premium.local",
             "binary.visual.peer_badge",
             "binary.visual.no_premium_anim",
@@ -351,6 +384,11 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertTrue(configJSON.contains("\"visualPeerBadgeEnabled\" : true"))
         XCTAssertTrue(configJSON.contains("\"visualPeerBadgeValue\" : 1"))
         XCTAssertTrue(configJSON.contains("\"localPremiumEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationAppConfigEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationPremiumUIEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationGiftsEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"disableMonetizationReadReceiptsEnabled\" : true"))
         XCTAssertTrue(configJSON.contains("\"noPremiumAnimEnabled\" : true"))
         XCTAssertTrue(configJSON.contains("\"disableSpoilersEnabled\" : true"))
         XCTAssertTrue(configJSON.contains("\"scheduledSendEnabled\" : true"))
@@ -1027,6 +1065,16 @@ final class BinaryPatchEngineTests: XCTestCase {
         )
     }
 
+    func testCustomUsernameValidationAllowsDigitsAndCyrillic() throws {
+        XCTAssertTrue(CustomUsernameEntryPatchConfig.isValidUsername("123456"))
+        XCTAssertTrue(CustomUsernameEntryPatchConfig.isValidUsername("тестовый"))
+        XCTAssertTrue(CustomUsernameEntryPatchConfig.isValidUsername("юзер_123"))
+        XCTAssertTrue(CustomUsernameEntryPatchConfig.isValidUsername(String(repeating: "a", count: 32)))
+        XCTAssertFalse(CustomUsernameEntryPatchConfig.isValidUsername(String(repeating: "a", count: 33)))
+        XCTAssertFalse(CustomUsernameEntryPatchConfig.isValidUsername(""))
+        XCTAssertFalse(CustomUsernameEntryPatchConfig.isValidUsername("bad username"))
+    }
+
     func testSelfIdentityConfigDecodesLegacyNumericUserId() throws {
         let numeric = Data(#"{"phone":"+15551234567","userId":987654321}"#.utf8)
         let zero = Data(#"{"phone":"","userId":0}"#.utf8)
@@ -1058,7 +1106,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertTrue(report.changedExecutable)
         XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeHookDylibURL.path))
         let dylib = try Data(contentsOf: runtimeHookDylibURL)
-        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_20260608_FACT_CHECK_EARLY_LAYOUT_READY".utf8)))
+        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_20260609_DISABLE_MONETIZATION_RUNTIME".utf8)))
     }
 
     private var executableURL: URL {
@@ -1122,7 +1170,12 @@ private struct StubProcessRunner: ProcessRunning {
     }
 }
 
-private func makeAppFixture(at appURL: URL) throws {
+private func makeAppFixture(
+    at appURL: URL,
+    executableName: String = "Telegram",
+    bundleIdentifier: String = "com.tdesktop.Telegram",
+    bundleVersion: String = "6.8.4"
+) throws {
     let contents = appURL.appendingPathComponent("Contents", isDirectory: true)
     let macOS = contents.appendingPathComponent("MacOS", isDirectory: true)
     let resources = contents.appendingPathComponent("Resources", isDirectory: true)
@@ -1135,16 +1188,16 @@ private func makeAppFixture(at appURL: URL) throws {
     <plist version="1.0">
     <dict>
       <key>CFBundleExecutable</key>
-      <string>Telegram</string>
+      <string>\(executableName)</string>
       <key>CFBundleIdentifier</key>
-      <string>com.tdesktop.Telegram</string>
+      <string>\(bundleIdentifier)</string>
       <key>CFBundleShortVersionString</key>
-      <string>6.8.4</string>
+      <string>\(bundleVersion)</string>
     </dict>
     </plist>
     """
     try info.write(to: contents.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
-    try fixtureExecutableData().write(to: macOS.appendingPathComponent("Telegram"), options: .atomic)
+    try fixtureExecutableData().write(to: macOS.appendingPathComponent(executableName), options: .atomic)
 }
 
 private func fixtureExecutableData(preferredToggleReplacementIds: Set<String> = []) -> Data {

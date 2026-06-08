@@ -13,6 +13,7 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         "binary.visual.self_identity_override",
         "binary.visual.local_personal_channel",
         "binary.visual.fragment_phone",
+        "binary.visual.custom_list_usernames",
         "binary.visual.peer_badge",
         "binary.visual.no_premium_anim",
         "binary.visual.disable_spoilers",
@@ -22,6 +23,7 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         "binary.inline.callback_hover",
         "binary.display.custom_ton",
         "binary.display.custom_stars",
+        "binary.config.disable_monetization",
         "binary.activity.block_typing",
         "binary.read_receipts.block_history_read",
         "binary.messages.settings",
@@ -40,6 +42,7 @@ struct BinaryRuleRowState: Identifiable, Hashable {
     var selfIdentityConfig: SelfIdentityPatchConfig?
     var localPersonalChannelConfig: LocalPersonalChannelPatchConfig?
     var fragmentPhoneConfig: FragmentPhonePatchConfig?
+    var customListUsernamesConfig: CustomListUsernamesPatchConfig?
     var messageFactCheckConfig: MessageFactCheckPatchConfig?
     var subpatches: [BinarySubpatchRowState] = []
 
@@ -67,6 +70,9 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         if status.rule.kind == .fragmentPhone {
             return fragmentPhoneConfig?.displayValue
         }
+        if status.rule.kind == .customListUsernames {
+            return customListUsernamesConfig?.displayValue
+        }
         guard let parameter = status.rule.parameter, let parameterValue else { return nil }
         return parameter.displayValue(parameterValue)
     }
@@ -78,7 +84,8 @@ struct BinaryRuleRowState: Identifiable, Hashable {
                 || status.rule.kind == .customLevelRating
                 || status.rule.kind == .selfIdentityOverride
                 || status.rule.kind == .localPersonalChannel
-                || status.rule.kind == .fragmentPhone))
+                || status.rule.kind == .fragmentPhone
+                || status.rule.kind == .customListUsernames))
     }
 
     var updateButtonTitle: String? {
@@ -87,7 +94,8 @@ struct BinaryRuleRowState: Identifiable, Hashable {
             && status.rule.kind != .botVerification
             && status.rule.kind != .customLevelRating
             && status.rule.kind != .selfIdentityOverride
-            && status.rule.kind != .localPersonalChannel) ? "Update" : "Change"
+            && status.rule.kind != .localPersonalChannel
+            && status.rule.kind != .customListUsernames) ? "Update" : "Change"
     }
 
     var needsApply: Bool {
@@ -226,6 +234,25 @@ enum PatchDeliveryFilter: String, CaseIterable, Identifiable {
     }
 }
 
+enum PatchSortOrder: String, CaseIterable, Identifiable {
+    case original
+    case az
+    case za
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .original:
+            return "Default"
+        case .az:
+            return "A-Z"
+        case .za:
+            return "Z-A"
+        }
+    }
+}
+
 @MainActor
 final class PatchgramViewModel: ObservableObject {
     @Published var appURL: URL?
@@ -240,6 +267,7 @@ final class PatchgramViewModel: ObservableObject {
     @Published var lastChangedFiles: [String] = []
     @Published var searchText = ""
     @Published var deliveryFilter: PatchDeliveryFilter = .all
+    @Published var sortOrder: PatchSortOrder = .original
     @Published var binaryParameterValues: [String: UInt64] = [:]
     @Published var botVerificationConfigs: [String: BotVerificationPatchConfig] = [:]
     @Published var botVerificationUserPresets: [BotVerificationUserPreset] = []
@@ -248,16 +276,28 @@ final class PatchgramViewModel: ObservableObject {
     @Published var selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:]
     @Published var localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:]
     @Published var fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:]
+    @Published var customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:]
+    @Published var isShowingCustomListUsernamesSettings = false
     @Published var messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
     @Published var writeAccessAlert: WriteAccessAlert?
+    @Published var updateChecksEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(updateChecksEnabled, forKey: Self.updateChecksEnabledKey)
+        }
+    }
+    @Published var isShowingAppSettings = false
+    @Published var availableUpdate: PatchgramAvailableUpdate?
+    @Published var isCheckingForUpdates = false
 
     private let binaryEngine = BinaryPatchEngine()
+    private static let updateChecksEnabledKey = "Patchgram.updateChecks.enabled"
     private static let binaryParameterDefaultsPrefix = "Patchgram.binaryParameter."
     private static let botVerificationDefaultsPrefix = "Patchgram.botVerificationConfig."
     private static let customLevelRatingDefaultsPrefix = "Patchgram.customLevelRatingConfig."
     private static let selfIdentityDefaultsPrefix = "Patchgram.selfIdentityConfig."
     private static let localPersonalChannelDefaultsPrefix = "Patchgram.localPersonalChannelConfig."
     private static let fragmentPhoneDefaultsPrefix = "Patchgram.fragmentPhoneConfig."
+    private static let customListUsernamesDefaultsPrefix = "Patchgram.customListUsernamesConfig."
     private static let messageFactCheckDefaultsPrefix = "Patchgram.messageFactCheckConfig."
     private static let botVerificationPresetsFileName = "BotVerificationPresets.json"
     private static let customAccountDesiredSubpatchIdsKey = "Patchgram.customAccountSubpatches.desired"
@@ -270,6 +310,7 @@ final class PatchgramViewModel: ObservableObject {
     private static let selfIdentityOverrideRuleId = "binary.visual.self_identity_override"
     private static let localPersonalChannelRuleId = "binary.visual.local_personal_channel"
     private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
+    private static let customListUsernamesRuleId = "binary.visual.custom_list_usernames"
     private static let appConfigDesiredSubpatchIdsKey = "Patchgram.appConfigSubpatches.desired"
     private static let appConfigAppliedSubpatchIdsKey = "Patchgram.appConfigSubpatches.applied"
     private static let appConfigFeatureRuleId = "binary.config.disable_monetization"
@@ -293,6 +334,7 @@ final class PatchgramViewModel: ObservableObject {
         "binary.visual.hide_self_phone",
         "binary.visual.self_identity_override",
         "binary.visual.local_personal_channel",
+        "binary.visual.custom_list_usernames",
         "binary.visual.peer_badge",
         "binary.visual.no_premium_anim",
         "binary.visual.disable_spoilers",
@@ -302,6 +344,7 @@ final class PatchgramViewModel: ObservableObject {
         "binary.inline.callback_hover",
         "binary.display.custom_ton",
         "binary.display.custom_stars",
+        appConfigFeatureRuleId,
         "binary.activity.block_typing",
         "binary.read_receipts.block_history_read",
         messageSettingsFeatureRuleId,
@@ -325,7 +368,8 @@ final class PatchgramViewModel: ObservableObject {
         "binary.premium.local",
         selfIdentityOverrideRuleId,
         localPersonalChannelRuleId,
-        fragmentPhoneRuleId
+        fragmentPhoneRuleId,
+        customListUsernamesRuleId
     ]
     private static let messageSettingsSubpatchDefinitions: [BinaryCompositeSubpatchDefinition] = [
         BinaryCompositeSubpatchDefinition(id: "typing", title: "Typing activity"),
@@ -358,7 +402,8 @@ final class PatchgramViewModel: ObservableObject {
         BinaryCompositeSubpatchDefinition(id: customPhoneNumberSubpatchId, title: "Custom phone number", internalRuleId: selfIdentityOverrideRuleId, alternativeGroup: customPhoneNumberAlternativeGroup, showsChangeButton: true),
         BinaryCompositeSubpatchDefinition(id: customUserIdSubpatchId, title: "Custom userID", internalRuleId: selfIdentityOverrideRuleId, alternativeGroup: customUserIdAlternativeGroup, showsChangeButton: true),
         BinaryCompositeSubpatchDefinition(id: "local_personal_channel", title: "Local attached channel", internalRuleId: localPersonalChannelRuleId, showsChangeButton: true),
-        BinaryCompositeSubpatchDefinition(id: "fragment_phone", title: "Fragment phone", internalRuleId: fragmentPhoneRuleId, showsChangeButton: true)
+        BinaryCompositeSubpatchDefinition(id: "fragment_phone", title: "Fragment phone", internalRuleId: fragmentPhoneRuleId, showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "custom_list_usernames", title: "Custom list usernames", internalRuleId: customListUsernamesRuleId, showsSettingsButton: true)
     ]
     private var desiredAppConfigSubpatchIds: Set<String>
     private var appliedAppConfigSubpatchIds: Set<String>
@@ -370,8 +415,10 @@ final class PatchgramViewModel: ObservableObject {
     private var appliedAdsSubpatchIds: Set<String>
     private var pendingConfigSubpatchIds: Set<String> = []
     private var latestStatusByRuleId: [String: BinaryRuleStatus] = [:]
+    private var didCheckForUpdatesOnLaunch = false
 
     init() {
+        updateChecksEnabled = UserDefaults.standard.object(forKey: Self.updateChecksEnabledKey) as? Bool ?? true
         binaryParameterValues = Self.loadBinaryParameterValues()
         botVerificationUserPresets = Self.loadBotVerificationUserPresets()
         botVerificationConfigs = Self.loadBotVerificationConfigs()
@@ -379,6 +426,7 @@ final class PatchgramViewModel: ObservableObject {
         selfIdentityConfigs = Self.loadSelfIdentityConfigs()
         localPersonalChannelConfigs = Self.loadLocalPersonalChannelConfigs()
         fragmentPhoneConfigs = Self.loadFragmentPhoneConfigs()
+        customListUsernamesConfigs = Self.loadCustomListUsernamesConfigs()
         messageFactCheckConfigs = Self.loadMessageFactCheckConfigs()
         desiredCustomAccountSubpatchIds = Self.loadCustomAccountSubpatchIds(
             key: Self.customAccountDesiredSubpatchIdsKey,
@@ -424,7 +472,7 @@ final class PatchgramViewModel: ObservableObject {
 
     var filteredBinaryRows: [BinaryRuleRowState] {
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return binaryRows.filter { row in
+        let filtered = binaryRows.filter { row in
             let matchesDelivery: Bool
             switch deliveryFilter {
             case .all:
@@ -440,6 +488,18 @@ final class PatchgramViewModel: ObservableObject {
                 || row.status.rule.methodName.lowercased().contains(needle)
                 || row.status.rule.constructorId.lowercased().contains(needle)
         }
+        switch sortOrder {
+        case .original:
+            return filtered
+        case .az:
+            return filtered.sorted {
+                $0.status.rule.title.localizedStandardCompare($1.status.rule.title) == .orderedAscending
+            }
+        case .za:
+            return filtered.sorted {
+                $0.status.rule.title.localizedStandardCompare($1.status.rule.title) == .orderedDescending
+            }
+        }
     }
 
     var hasPendingChanges: Bool {
@@ -454,9 +514,47 @@ final class PatchgramViewModel: ObservableObject {
         hasPendingChanges ? "Patch changes pending." : "Patch ready."
     }
 
+    func checkForUpdatesOnLaunch() async {
+        guard updateChecksEnabled, !didCheckForUpdatesOnLaunch else {
+            return
+        }
+        didCheckForUpdatesOnLaunch = true
+        await checkForUpdates(isUserInitiated: false)
+    }
+
+    func checkForUpdates(isUserInitiated: Bool = true) async {
+        guard !isCheckingForUpdates else {
+            return
+        }
+        isCheckingForUpdates = true
+        if isUserInitiated {
+            statusMessage = "Checking GitHub Releases for updates..."
+        }
+        defer {
+            isCheckingForUpdates = false
+        }
+
+        do {
+            if let update = try await PatchgramUpdater.checkForUpdate() {
+                availableUpdate = update
+                statusMessage = "Patchgram \(update.latestVersion) is available."
+            } else if isUserInitiated {
+                statusMessage = "Patchgram is up to date."
+            }
+        } catch {
+            if isUserInitiated {
+                statusMessage = "Update check failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func openReleasePage(_ update: PatchgramAvailableUpdate) {
+        NSWorkspace.shared.open(update.releaseURL)
+    }
+
     func chooseApp() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Telegram.app or a patched copy"
+        panel.title = "Choose Telegram.app"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.treatsFilePackagesAsDirectories = false
@@ -468,27 +566,6 @@ final class PatchgramViewModel: ObservableObject {
             appURL = url
             UserDefaults.standard.set(url.path, forKey: "Patchgram.appURL")
             rescanApp(quick: true)
-        }
-    }
-
-    func copySelectedApp() {
-        guard let appURL else { return }
-        let panel = NSSavePanel()
-        panel.title = "Create patched Telegram copy"
-        panel.nameFieldStringValue = "Telegram Patchgram.app"
-        panel.canCreateDirectories = true
-        panel.prompt = "Copy"
-
-        if panel.runModal() == .OK, let destination = panel.url {
-            do {
-                let inspection = try binaryEngine.copyApp(source: appURL, destination: destination)
-                self.appURL = inspection.appURL
-                UserDefaults.standard.set(inspection.appURL.path, forKey: "Patchgram.appURL")
-                rescanApp()
-                statusMessage = "Copied app to \(inspection.appURL.path)."
-            } catch {
-                statusMessage = error.localizedDescription
-            }
         }
     }
 
@@ -533,6 +610,10 @@ final class PatchgramViewModel: ObservableObject {
             if !manifestFragmentPhoneConfigs.isEmpty {
                 fragmentPhoneConfigs.merge(manifestFragmentPhoneConfigs) { _, manifestValue in manifestValue }
             }
+            let manifestCustomListUsernamesConfigs = try binaryEngine.manifestCustomListUsernamesConfigs(appURL: appURL)
+            if !manifestCustomListUsernamesConfigs.isEmpty {
+                customListUsernamesConfigs.merge(manifestCustomListUsernamesConfigs) { _, manifestValue in manifestValue }
+            }
             let manifestMessageFactCheckConfigs = try binaryEngine.manifestMessageFactCheckConfigs(appURL: appURL)
             if !manifestMessageFactCheckConfigs.isEmpty {
                 messageFactCheckConfigs.merge(manifestMessageFactCheckConfigs) { _, manifestValue in manifestValue }
@@ -552,6 +633,7 @@ final class PatchgramViewModel: ObservableObject {
                     selfIdentityConfigs: selfIdentityConfigsForEngine(),
                     localPersonalChannelConfigs: localPersonalChannelConfigsForEngine(),
                     fragmentPhoneConfigs: fragmentPhoneConfigsForEngine(),
+                    customListUsernamesConfigs: customListUsernamesConfigsForEngine(),
                     messageFactCheckConfigs: messageFactCheckConfigsForEngine()
                 )
             }
@@ -573,6 +655,23 @@ final class PatchgramViewModel: ObservableObject {
     func showBotVerificationSettings() {
         guard !isWorking else { return }
         isShowingBotVerificationSettings = true
+    }
+
+    func showCustomListUsernamesSettings() {
+        guard !isWorking else { return }
+        isShowingCustomListUsernamesSettings = true
+    }
+
+    func showSubpatchSettings(ruleId: String, subpatchId: String) {
+        guard !isWorking, ruleId == Self.customAccountFeatureRuleId else { return }
+        switch subpatchId {
+        case "bot_verification":
+            isShowingBotVerificationSettings = true
+        case "custom_list_usernames":
+            isShowingCustomListUsernamesSettings = true
+        default:
+            break
+        }
     }
 
     func addBotVerificationUserPreset(title: String, customEmojiIdText: String, description: String) -> Bool {
@@ -663,6 +762,7 @@ final class PatchgramViewModel: ObservableObject {
                 selfIdentityConfig: selfIdentityConfig(for: $0.rule),
                 localPersonalChannelConfig: localPersonalChannelConfig(for: $0.rule),
                 fragmentPhoneConfig: fragmentPhoneConfig(for: $0.rule),
+                customListUsernamesConfig: customListUsernamesConfig(for: $0.rule),
                 messageFactCheckConfig: messageFactCheckConfig(for: $0.rule),
                 subpatches: subpatches
             )
@@ -671,7 +771,11 @@ final class PatchgramViewModel: ObservableObject {
         appInfo = "\(inspection.bundleIdentifier) \(inspection.bundleVersion)"
         selectedAppIcon = NSWorkspace.shared.icon(forFile: inspection.appURL.path)
         executableSize = ByteCountFormatter.string(fromByteCount: Int64(inspection.executableSize), countStyle: .file)
-        statusMessage = quick ? "Patch ready. Byte windows will be verified on apply." : "Patch ready."
+        statusMessage = readyStatusMessage(quick: quick)
+    }
+
+    private func readyStatusMessage(quick: Bool) -> String {
+        return quick ? "Patch ready. Byte windows will be verified on apply." : "Patch ready."
     }
 
     func setDesired(_ enabled: Bool, for row: BinaryRuleRowState) {
@@ -918,6 +1022,7 @@ final class PatchgramViewModel: ObservableObject {
                 patchedSelfIdentityConfig: nextSelfIdentityConfig,
                 patchedLocalPersonalChannelConfig: nil,
                 patchedFragmentPhoneConfig: nil,
+                patchedCustomListUsernamesConfig: nil,
                 patchedMessageFactCheckConfig: nil
             )
             setOperationProgress(0.90, message: liveRuntimeUpdate ? "Runtime config updated." : "Opening selected app...")
@@ -976,6 +1081,7 @@ final class PatchgramViewModel: ObservableObject {
                     patchedSelfIdentityConfig: change.selfIdentityConfig,
                     patchedLocalPersonalChannelConfig: change.localPersonalChannelConfig,
                     patchedFragmentPhoneConfig: change.fragmentPhoneConfig,
+                    patchedCustomListUsernamesConfig: change.customListUsernamesConfig,
                     patchedMessageFactCheckConfig: change.messageFactCheckConfig,
                     enabledAlternativeGroups: change.enabledAlternativeGroups
                 )
@@ -1066,6 +1172,7 @@ final class PatchgramViewModel: ObservableObject {
                     patchedSelfIdentityConfig: nil,
                     patchedLocalPersonalChannelConfig: nil,
                     patchedFragmentPhoneConfig: nil,
+                    patchedCustomListUsernamesConfig: nil,
                     patchedMessageFactCheckConfig: nil,
                     enabledAlternativeGroups: change.enabledAlternativeGroups
                 )
@@ -1113,6 +1220,7 @@ final class PatchgramViewModel: ObservableObject {
         patchedSelfIdentityConfig: SelfIdentityPatchConfig?,
         patchedLocalPersonalChannelConfig: LocalPersonalChannelPatchConfig?,
         patchedFragmentPhoneConfig: FragmentPhonePatchConfig?,
+        patchedCustomListUsernamesConfig: CustomListUsernamesPatchConfig?,
         patchedMessageFactCheckConfig: MessageFactCheckPatchConfig?,
         enabledAlternativeGroups: Set<String>? = nil
     ) {
@@ -1158,6 +1266,10 @@ final class PatchgramViewModel: ObservableObject {
         binaryRows[index].fragmentPhoneConfig = enabled
             ? storedFragmentPhoneConfig
             : (patchedFragmentPhoneConfig ?? storedFragmentPhoneConfig)
+        let storedCustomListUsernamesConfig = customListUsernamesConfig(for: displayRule)
+        binaryRows[index].customListUsernamesConfig = enabled
+            ? storedCustomListUsernamesConfig
+            : (patchedCustomListUsernamesConfig ?? storedCustomListUsernamesConfig)
         let storedMessageFactCheckConfig = messageFactCheckConfig(for: displayRule)
         binaryRows[index].messageFactCheckConfig = enabled
             ? storedMessageFactCheckConfig
@@ -1199,6 +1311,7 @@ final class PatchgramViewModel: ObservableObject {
             binaryRows[index].selfIdentityConfig = selfIdentityConfig(for: rule)
             binaryRows[index].localPersonalChannelConfig = localPersonalChannelConfig(for: rule)
             binaryRows[index].fragmentPhoneConfig = fragmentPhoneConfig(for: rule)
+            binaryRows[index].customListUsernamesConfig = customListUsernamesConfig(for: rule)
             binaryRows[index].messageFactCheckConfig = messageFactCheckConfig(for: rule)
             if Self.compositeFeatureRuleIds.contains(rule.id) {
                 binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
@@ -1403,6 +1516,8 @@ final class PatchgramViewModel: ObservableObject {
                 selfIdentityConfig: selfIdentityConfig(for: $0.rule),
                 localPersonalChannelConfig: localPersonalChannelConfig(for: $0.rule),
                 fragmentPhoneConfig: fragmentPhoneConfig(for: $0.rule),
+                customListUsernamesConfig: customListUsernamesConfig(for: $0.rule),
+                messageFactCheckConfig: messageFactCheckConfig(for: $0.rule),
                 subpatches: subpatchRows(for: $0)
             )
         }
@@ -1455,6 +1570,7 @@ final class PatchgramViewModel: ObservableObject {
                 selfIdentityConfig: enabled ? selfIdentityConfig(for: rule) : nil,
                 localPersonalChannelConfig: enabled ? localPersonalChannelConfig(for: rule) : nil,
                 fragmentPhoneConfig: enabled ? fragmentPhoneConfig(for: rule) : nil,
+                customListUsernamesConfig: enabled ? customListUsernamesConfig(for: rule) : nil,
                 messageFactCheckConfig: enabled ? messageFactCheckConfig(for: rule) : nil,
                 enabledAlternativeGroups: enabled ? alternativeGroupsForChange(row) : nil
             )
@@ -1503,6 +1619,7 @@ final class PatchgramViewModel: ObservableObject {
                 selfIdentityConfig: enabled ? selfIdentityConfig(for: rule) : nil,
                 localPersonalChannelConfig: enabled ? localPersonalChannelConfig(for: rule) : nil,
                 fragmentPhoneConfig: enabled ? fragmentPhoneConfig(for: rule) : nil,
+                customListUsernamesConfig: enabled ? customListUsernamesConfig(for: rule) : nil,
                 messageFactCheckConfig: enabled ? messageFactCheckConfig(for: rule) : nil,
                 enabledAlternativeGroups: groups
             )
@@ -1938,6 +2055,18 @@ final class PatchgramViewModel: ObservableObject {
         })
     }
 
+    private static func loadCustomListUsernamesConfigs() -> [String: CustomListUsernamesPatchConfig] {
+        let decoder = JSONDecoder()
+        return Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
+            guard rule.kind == .customListUsernames else { return nil }
+            let key = customListUsernamesDefaultsPrefix + rule.id
+            let saved = UserDefaults.standard
+                .data(forKey: key)
+                .flatMap { try? decoder.decode(CustomListUsernamesPatchConfig.self, from: $0) }
+            return (rule.id, (saved ?? CustomListUsernamesPatchConfig.defaultConfig).normalized)
+        })
+    }
+
     private static func loadMessageFactCheckConfigs() -> [String: MessageFactCheckPatchConfig] {
         let decoder = JSONDecoder()
         guard let rule = BinaryPatchRuleCatalog.rule(id: messageSettingsFeatureRuleId) else { return [:] }
@@ -2029,6 +2158,15 @@ final class PatchgramViewModel: ObservableObject {
         })
     }
 
+    private func customListUsernamesConfigsForEngine() -> [String: CustomListUsernamesPatchConfig] {
+        Dictionary(uniqueKeysWithValues: BinaryPatchRuleCatalog.rules.compactMap { rule in
+            guard rule.kind == .customListUsernames, let config = customListUsernamesConfig(for: rule) else {
+                return nil
+            }
+            return (rule.id, config)
+        })
+    }
+
     private func messageFactCheckConfigsForEngine() -> [String: MessageFactCheckPatchConfig] {
         guard let rule = BinaryPatchRuleCatalog.rule(id: Self.messageSettingsFeatureRuleId),
               let config = messageFactCheckConfig(for: rule) else {
@@ -2107,6 +2245,31 @@ final class PatchgramViewModel: ObservableObject {
         return (fragmentPhoneConfigs[rule.id] ?? FragmentPhonePatchConfig.defaultConfig).normalized
     }
 
+    func customListUsernamesConfigForSettings() -> CustomListUsernamesPatchConfig {
+        guard let rule = BinaryPatchRuleCatalog.rule(id: Self.customListUsernamesRuleId) else {
+            return .defaultConfig
+        }
+        return customListUsernamesConfig(for: rule) ?? .defaultConfig
+    }
+
+    func updateCustomListUsernamesConfig(_ config: CustomListUsernamesPatchConfig) {
+        guard let rule = BinaryPatchRuleCatalog.rule(id: Self.customListUsernamesRuleId) else { return }
+        let normalized = config.normalized
+        customListUsernamesConfigs[rule.id] = normalized
+        storeCustomListUsernamesConfig(normalized, for: rule.id)
+        if desiredCustomAccountSubpatchIds.contains("custom_list_usernames")
+            || appliedCustomAccountSubpatchIds.contains("custom_list_usernames") {
+            pendingConfigSubpatchIds.insert("custom_list_usernames")
+        }
+        refreshCustomAccountRow()
+        statusMessage = "Custom list usernames settings saved."
+    }
+
+    private func customListUsernamesConfig(for rule: BinaryPatchRule) -> CustomListUsernamesPatchConfig? {
+        guard rule.kind == .customListUsernames else { return nil }
+        return (customListUsernamesConfigs[rule.id] ?? CustomListUsernamesPatchConfig.defaultConfig).normalized
+    }
+
     private func messageFactCheckConfig(for rule: BinaryPatchRule) -> MessageFactCheckPatchConfig? {
         guard rule.id == Self.messageSettingsFeatureRuleId else { return nil }
         return (messageFactCheckConfigs[rule.id] ?? MessageFactCheckPatchConfig.defaultConfig).normalized
@@ -2137,6 +2300,14 @@ final class PatchgramViewModel: ObservableObject {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(config.normalized) {
             UserDefaults.standard.set(data, forKey: Self.fragmentPhoneDefaultsPrefix + ruleId)
+        }
+    }
+
+    private func storeCustomListUsernamesConfig(_ config: CustomListUsernamesPatchConfig, for ruleId: String) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(config.normalized) {
+            UserDefaults.standard.set(data, forKey: Self.customListUsernamesDefaultsPrefix + ruleId)
+            UserDefaults.standard.synchronize()
         }
     }
 
@@ -2625,6 +2796,12 @@ final class PatchgramViewModel: ObservableObject {
                     guard let config = promptForFragmentPhoneConfig(for: rule, actionTitle: actionTitle) else { return false }
                     fragmentPhoneConfigs[rule.id] = config
                     storeFragmentPhoneConfig(config, for: rule.id)
+                } else if rule.kind == .customListUsernames {
+                    guard customListUsernamesConfig(for: rule)?.entries.isEmpty == false else {
+                        statusMessage = "Add at least one username in Custom list usernames settings."
+                        isShowingCustomListUsernamesSettings = true
+                        return false
+                    }
                 } else if rule.parameter != nil {
                     guard let value = promptForParameterIfNeeded(for: rule, actionTitle: actionTitle) else { return false }
                     binaryParameterValues[rule.id] = value

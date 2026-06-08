@@ -14,6 +14,7 @@ public enum BinaryPatchRuleKind: String, Codable, Sendable {
     case selfIdentityOverride
     case localPersonalChannel
     case fragmentPhone
+    case customListUsernames
     case runtimeMemory
 }
 
@@ -415,6 +416,255 @@ public struct FragmentPhonePatchConfig: Codable, Hashable, Sendable {
 
     public var displayValue: String {
         "\(normalized.targetMode.label) - \(normalized.cryptoAmount) \(normalized.cryptoCurrency), \(normalized.amount) \(normalized.currency)"
+    }
+}
+
+public struct UsernameCollectibleInfoPatchConfig: Codable, Hashable, Sendable {
+    public static let defaultConfig = UsernameCollectibleInfoPatchConfig(
+        purchaseDateText: "0",
+        currency: "USD",
+        amount: 0,
+        cryptoCurrency: "TON",
+        cryptoAmount: 0,
+        url: ""
+    )
+
+    public let purchaseDateText: String
+    public let currency: String
+    public let amount: Int64
+    public let cryptoCurrency: String
+    public let cryptoAmount: Int64
+    public let url: String
+
+    public init(
+        purchaseDateText: String,
+        currency: String,
+        amount: Int64,
+        cryptoCurrency: String,
+        cryptoAmount: Int64,
+        url: String
+    ) {
+        self.purchaseDateText = purchaseDateText
+        self.currency = currency
+        self.amount = amount
+        self.cryptoCurrency = cryptoCurrency
+        self.cryptoAmount = cryptoAmount
+        self.url = url
+    }
+
+    public var normalized: UsernameCollectibleInfoPatchConfig {
+        UsernameCollectibleInfoPatchConfig(
+            purchaseDateText: purchaseDateText.trimmingCharacters(in: .whitespacesAndNewlines),
+            currency: currency.trimmingCharacters(in: .whitespacesAndNewlines),
+            amount: max(0, amount),
+            cryptoCurrency: cryptoCurrency.trimmingCharacters(in: .whitespacesAndNewlines),
+            cryptoAmount: max(0, cryptoAmount),
+            url: url.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    public var purchaseDateUnix: Int32? {
+        let text = normalized.purchaseDateText
+        if text.isEmpty {
+            return 0
+        }
+        if let value = Int64(text), value >= 0, value <= Int64(Int32.max) {
+            return Int32(value)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "HH:mm:ss dd.MM.yyyy"
+        guard let date = formatter.date(from: text) else { return nil }
+        let timestamp = Int64(date.timeIntervalSince1970)
+        guard timestamp >= 0, timestamp <= Int64(Int32.max) else { return nil }
+        return Int32(timestamp)
+    }
+
+    public var payloadFields: [String] {
+        [
+            String(purchaseDateUnix ?? 0),
+            Self.payloadSafe(normalized.currency),
+            String(normalized.amount),
+            Self.payloadSafe(normalized.cryptoCurrency),
+            String(normalized.cryptoAmount),
+            Self.payloadSafe(normalized.url)
+        ]
+    }
+
+    private static func payloadSafe(_ value: String) -> String {
+        value.replacingOccurrences(of: "|", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+    }
+}
+
+public enum CustomUsernameStatus: String, CaseIterable, Codable, Hashable, Sendable {
+    case `default`
+    case collectible
+
+    public var label: String {
+        switch self {
+        case .default:
+            return "Default"
+        case .collectible:
+            return "Collectible"
+        }
+    }
+}
+
+public struct CustomUsernameEntryPatchConfig: Identifiable, Codable, Hashable, Sendable {
+    public static let maxUsernameLength = 32
+
+    public let id: UUID
+    public let username: String
+    public let status: CustomUsernameStatus
+    public let isPrimary: Bool
+    public let collectibleInfo: UsernameCollectibleInfoPatchConfig
+
+    public init(
+        id: UUID = UUID(),
+        username: String,
+        status: CustomUsernameStatus,
+        isPrimary: Bool = false,
+        collectibleInfo: UsernameCollectibleInfoPatchConfig = .defaultConfig
+    ) {
+        self.id = id
+        self.username = username
+        self.status = status
+        self.isPrimary = isPrimary
+        self.collectibleInfo = collectibleInfo
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case username
+        case status
+        case isPrimary
+        case collectibleInfo
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        username = try container.decode(String.self, forKey: .username)
+        status = try container.decodeIfPresent(CustomUsernameStatus.self, forKey: .status) ?? .default
+        isPrimary = try container.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? false
+        collectibleInfo = try container.decodeIfPresent(
+            UsernameCollectibleInfoPatchConfig.self,
+            forKey: .collectibleInfo
+        ) ?? .defaultConfig
+    }
+
+    public var normalized: CustomUsernameEntryPatchConfig? {
+        let cleaned = Self.normalizedUsername(username)
+        guard Self.isValidUsername(cleaned) else { return nil }
+        return CustomUsernameEntryPatchConfig(
+            id: id,
+            username: cleaned,
+            status: status,
+            isPrimary: isPrimary,
+            collectibleInfo: collectibleInfo.normalized
+        )
+    }
+
+    public static func normalizedUsername(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+    }
+
+    public static func isValidUsername(_ value: String) -> Bool {
+        guard !value.isEmpty, value.count <= maxUsernameLength else { return false }
+        var allowed = CharacterSet.letters
+        allowed.formUnion(.decimalDigits)
+        allowed.insert(charactersIn: "_.-")
+        return value.unicodeScalars.allSatisfy { scalar in
+            allowed.contains(scalar)
+        }
+    }
+}
+
+public struct CustomListUsernamesPatchConfig: Codable, Hashable, Sendable {
+    public static let defaultConfig = CustomListUsernamesPatchConfig(
+        entries: [],
+        useSharedCollectibleInfo: true,
+        sharedCollectibleInfo: .defaultConfig
+    )
+
+    public let entries: [CustomUsernameEntryPatchConfig]
+    public let useSharedCollectibleInfo: Bool
+    public let sharedCollectibleInfo: UsernameCollectibleInfoPatchConfig
+
+    public init(
+        entries: [CustomUsernameEntryPatchConfig],
+        useSharedCollectibleInfo: Bool = true,
+        sharedCollectibleInfo: UsernameCollectibleInfoPatchConfig = .defaultConfig
+    ) {
+        self.entries = entries
+        self.useSharedCollectibleInfo = useSharedCollectibleInfo
+        self.sharedCollectibleInfo = sharedCollectibleInfo
+    }
+
+    public var normalized: CustomListUsernamesPatchConfig {
+        var seen = Set<String>()
+        let rawEntries = entries.compactMap { entry -> CustomUsernameEntryPatchConfig? in
+            guard let normalized = entry.normalized else { return nil }
+            let key = normalized.username.lowercased()
+            guard seen.insert(key).inserted else { return nil }
+            let info = useSharedCollectibleInfo
+                ? sharedCollectibleInfo.normalized
+                : normalized.collectibleInfo.normalized
+            return CustomUsernameEntryPatchConfig(
+                id: normalized.id,
+                username: normalized.username,
+                status: normalized.status,
+                isPrimary: normalized.isPrimary,
+                collectibleInfo: info
+            )
+        }
+        let primaryIndex = rawEntries.firstIndex(where: \.isPrimary) ?? rawEntries.indices.first
+        let normalizedEntries = rawEntries.enumerated()
+            .map { index, entry in
+                CustomUsernameEntryPatchConfig(
+                    id: entry.id,
+                    username: entry.username,
+                    status: entry.status,
+                    isPrimary: index == primaryIndex,
+                    collectibleInfo: entry.collectibleInfo
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.isPrimary != rhs.isPrimary {
+                    return lhs.isPrimary
+                }
+                guard let leftIndex = rawEntries.firstIndex(where: { $0.id == lhs.id }),
+                      let rightIndex = rawEntries.firstIndex(where: { $0.id == rhs.id }) else {
+                    return false
+                }
+                return leftIndex < rightIndex
+            }
+        return CustomListUsernamesPatchConfig(
+            entries: normalizedEntries,
+            useSharedCollectibleInfo: useSharedCollectibleInfo,
+            sharedCollectibleInfo: sharedCollectibleInfo.normalized
+        )
+    }
+
+    public var displayValue: String {
+        let normalized = normalized
+        let collectibleCount = normalized.entries.filter { $0.status == .collectible }.count
+        let first = normalized.entries.first?.username ?? "none"
+        return "\(normalized.entries.count) usernames, \(collectibleCount) collectible, first @\(first)"
+    }
+
+    public var runtimePayload: String {
+        normalized.entries.map { entry in
+            let info = entry.collectibleInfo.normalized
+            return ([
+                entry.username,
+                entry.status == .collectible ? "1" : "0"
+            ] + info.payloadFields).joined(separator: "|")
+        }.joined(separator: "\n")
     }
 }
 
@@ -1011,10 +1261,10 @@ public enum BinaryPatchRuleDefinitions {
             title: "Disable Premium, Stars, TON & Gifts",
             methodName: "help.getAppConfig",
             constructorId: "61e3f854",
-            kind: .poisonConstructor,
-            summary: "Invalidates monetization config, gift/status requests, paid reactions, premium effects, and local Premium/Stars/Gifts/Boost UI gates.",
-            disabledBehavior: "Restores the original help.getAppConfig, gift/status/payment constructor ids, paid reaction decoding, and monetization menu/UI gates.",
-            riskNote: "This blocks app config, Gifts, emoji statuses, premium effects, boost/gift menu actions, paid reaction sending/availability, and paid reaction decoding locally. Other app-config-controlled features may also fall back to defaults until the patch is disabled.",
+            kind: .runtimeMemory,
+            summary: "Uses Patchgram.dylib to disable selected monetization config, gift/status requests, paid reactions, Premium effects, and local Premium/Stars/Gifts/Boost UI gates at runtime.",
+            disabledBehavior: "Stops the runtime memory overrides and keeps the original on-disk Telegram executable bytes restored.",
+            riskNote: "This is a local runtime patch. It scans known arm64 byte windows on startup/config reload instead of rewriting them on disk, so exact semantic coverage can still differ between Telegram Desktop versions until each path is replaced by a higher-level hook.",
             supportedBuildNote: unsupportedBuild,
             replacements: [
                 BinaryReplacement(
@@ -1669,6 +1919,18 @@ public enum BinaryPatchRuleDefinitions {
             summary: "Installs a local runtime hook that makes selected phone rows look collectible and stores local fragment.collectibleInfo values for the phone collectible dialog.",
             disabledBehavior: "Keeps Telegram's original Fragment phone collectible detection and response data.",
             riskNote: "This is a local client-side display patch. It does not mint or transfer a Fragment collectible phone number.",
+            supportedBuildNote: unsupportedBuild,
+            replacements: []
+        ),
+        BinaryPatchRule(
+            id: "binary.visual.custom_list_usernames",
+            title: "Custom list usernames",
+            methodName: "Data::UsernamesInfo / fragment.getCollectibleInfo",
+            constructorId: "inputCollectibleUsername#e39460a9 / fragment.collectibleInfo#6ebdff91",
+            kind: .customListUsernames,
+            summary: "Installs a local runtime hook that replaces the usernames list shown for your self-profile and returns local Fragment collectible info for configured collectible usernames.",
+            disabledBehavior: "Keeps Telegram's original self-profile usernames and Fragment username collectible response data.",
+            riskNote: "This is a local client-side display patch. It does not reserve, mint, buy, or assign Telegram usernames on the server.",
             supportedBuildNote: unsupportedBuild,
             replacements: []
         ),

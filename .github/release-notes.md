@@ -1,5 +1,4 @@
 Release
 
-- Added Custom Fact Check for local Fact Check text under channel posts.
-- Fixed the parent Message settings row showing Change when only Custom Fact Check is configurable.
-- Added Retry to the Permission required alert.
+- Moved Disable Premium, Stars, TON & Gifts to Patchgram.dylib runtime patching.
+- Added live runtime updates for Disable Premium, Stars, TON & Gifts subpatch changes.

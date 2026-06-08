@@ -2,6 +2,7 @@ import Foundation
 
 public enum PatchgramError: LocalizedError, Equatable {
     case invalidAppBundle(String)
+    case unsupportedAppBundle(String)
     case destinationExists(String)
     case missingFile(String)
     case missingExecutable(String)
@@ -18,6 +19,8 @@ public enum PatchgramError: LocalizedError, Equatable {
         switch self {
         case let .invalidAppBundle(path):
             return "`\(path)` does not look like a Telegram Desktop app bundle."
+        case let .unsupportedAppBundle(bundleIdentifier):
+            return "`\(bundleIdentifier)` is not supported by Patchgram. Select the official Telegram Desktop app bundle (`com.tdesktop.Telegram`)."
         case let .destinationExists(path):
             return "Destination already exists: `\(path)`."
         case let .missingFile(path):

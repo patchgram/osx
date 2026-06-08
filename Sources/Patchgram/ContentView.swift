@@ -35,6 +35,24 @@ struct ContentView: View {
         .sheet(isPresented: $viewModel.isShowingBotVerificationSettings) {
             BotVerificationSettingsView(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingCustomListUsernamesSettings) {
+            CustomListUsernamesSettingsView(viewModel: viewModel)
+        }
+        .sheet(item: $viewModel.availableUpdate) { update in
+            UpdateAvailableView(
+                update: update,
+                onOpenRelease: {
+                    viewModel.openReleasePage(update)
+                    viewModel.availableUpdate = nil
+                },
+                onClose: {
+                    viewModel.availableUpdate = nil
+                }
+            )
+        }
+        .task {
+            await viewModel.checkForUpdatesOnLaunch()
+        }
     }
 
     private var writeAccessAlertBinding: Binding<Bool> {
@@ -60,6 +78,17 @@ private struct HeaderBar: View {
                         .frame(width: 32, height: 32)
                         .offset(y: 1)
                     Text("Patchgram")
+                    Button {
+                        viewModel.isShowingAppSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Settings")
+                    .popover(isPresented: $viewModel.isShowingAppSettings, arrowEdge: .top) {
+                        AppSettingsView(viewModel: viewModel)
+                    }
                 }
                 .font(.system(size: 22, weight: .semibold))
                 Spacer()
@@ -67,12 +96,6 @@ private struct HeaderBar: View {
                     viewModel.rescanApp()
                 } label: {
                     Label("Rescan", systemImage: "arrow.clockwise")
-                }
-                .disabled(viewModel.isWorking || viewModel.appURL == nil)
-                Button {
-                    viewModel.copySelectedApp()
-                } label: {
-                    Label("Copy App", systemImage: "doc.on.doc")
                 }
                 .disabled(viewModel.isWorking || viewModel.appURL == nil)
                 Button {
@@ -113,6 +136,119 @@ private struct HeaderBar: View {
 
     private var currentPath: String {
         viewModel.appURL?.path ?? "No app selected"
+    }
+}
+
+private struct AppSettingsView: View {
+    @ObservedObject var viewModel: PatchgramViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.blue)
+                Text("Settings")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Close")
+            }
+
+            Toggle("Check for updates on launch", isOn: $viewModel.updateChecksEnabled)
+                .toggleStyle(.checkbox)
+                .font(.body)
+
+            HStack(spacing: 10) {
+                Button {
+                    Task {
+                        await viewModel.checkForUpdates()
+                        if viewModel.availableUpdate != nil {
+                            dismiss()
+                        }
+                    }
+                } label: {
+                    Label("Check Now", systemImage: "arrow.down.circle")
+                }
+                .font(.body)
+                .disabled(viewModel.isCheckingForUpdates)
+
+                if viewModel.isCheckingForUpdates {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Spacer()
+            }
+        }
+        .font(.body)
+        .padding(22)
+        .frame(width: 360)
+    }
+}
+
+private struct UpdateAvailableView: View {
+    let update: PatchgramAvailableUpdate
+    let onOpenRelease: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Update available")
+                        .font(.title3.weight(.semibold))
+                    Text("Patchgram \(update.currentVersion) -> \(update.latestVersion)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(update.releaseName)
+                    .font(.headline)
+                ScrollView {
+                    Text(changelogText)
+                        .font(.system(size: 12))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(minHeight: 160, maxHeight: 260)
+                .padding(10)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Later") {
+                    onClose()
+                }
+                Button {
+                    onOpenRelease()
+                } label: {
+                    Label("Open Release", systemImage: "safari")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(22)
+        .frame(width: 520)
+    }
+
+    private var changelogText: String {
+        update.changelog.isEmpty ? "No changelog provided." : update.changelog
     }
 }
 
@@ -157,7 +293,7 @@ private struct Sidebar: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                Text("Patch a copy unless you intentionally want to modify the selected bundle.")
+                Text("The selected bundle must be writable before patching.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -213,6 +349,7 @@ private struct StatBlock: View {
 
 private struct RuleList: View {
     @ObservedObject var viewModel: PatchgramViewModel
+    @State private var isShowingFilters = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -222,13 +359,39 @@ private struct RuleList: View {
                 TextField("Search method or constructor", text: $viewModel.searchText)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 360)
-                Picker("Filters", selection: $viewModel.deliveryFilter) {
-                    ForEach(PatchDeliveryFilter.allCases) { filter in
-                        Text(filter.label).tag(filter)
-                    }
+                Button {
+                    isShowingFilters.toggle()
+                } label: {
+                    Label("Filters", systemImage: "line.3.horizontal.decrease.circle")
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 210)
+                .popover(isPresented: $isShowingFilters, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Type")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("Type", selection: $viewModel.deliveryFilter) {
+                                ForEach(PatchDeliveryFilter.allCases) { filter in
+                                    Text(filter.label).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Sort")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("Sort", selection: $viewModel.sortOrder) {
+                                ForEach(PatchSortOrder.allCases) { order in
+                                    Text(order.label).tag(order)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                    }
+                    .padding(14)
+                    .frame(width: 260)
+                }
                 Spacer()
             }
             .padding(18)
@@ -244,7 +407,9 @@ private struct RuleList: View {
                             viewModel.changeSubpatch(ruleId: ruleId, subpatchId: subpatchId)
                         } onUpdate: {
                             viewModel.updateAppliedPatch(for: row)
-                        } onSettings: {
+                        } onSettings: { ruleId, subpatchId in
+                            viewModel.showSubpatchSettings(ruleId: ruleId, subpatchId: subpatchId)
+                        } onRuleSettings: {
                             viewModel.showBotVerificationSettings()
                         }
                     }
@@ -263,7 +428,8 @@ private struct BinaryRuleCard: View {
     let onSubpatchToggle: @MainActor @Sendable (String, String, Bool) -> Void
     let onSubpatchChange: @MainActor @Sendable (String, String) -> Void
     let onUpdate: @MainActor @Sendable () -> Void
-    let onSettings: @MainActor @Sendable () -> Void
+    let onSettings: @MainActor @Sendable (String, String) -> Void
+    let onRuleSettings: @MainActor @Sendable () -> Void
     @State private var showsSubpatches = false
 
     var body: some View {
@@ -285,7 +451,7 @@ private struct BinaryRuleCard: View {
                     UpdatePatchButton(title: row.updateButtonTitle, isDisabled: isWorking, action: onUpdate)
                     if row.status.rule.kind == .botVerification {
                         Button {
-                            onSettings()
+                            onRuleSettings()
                         } label: {
                             Label("Settings", systemImage: "gearshape")
                         }
@@ -348,7 +514,7 @@ private struct BinaryRuleCard: View {
                                         onSubpatchChange(row.id, subpatchId)
                                     },
                                     onSettings: {
-                                        onSettings()
+                                        onSettings(row.id, subpatch.id)
                                     }
                                 )
                             }
@@ -515,6 +681,331 @@ private struct BotVerificationPresetRow: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color(nsColor: .separatorColor), lineWidth: 0.6)
+        }
+    }
+}
+
+private struct CustomUsernameDraft: Identifiable, Hashable {
+    var id = UUID()
+    var username: String
+    var status: CustomUsernameStatus
+    var isPrimary: Bool
+    var collectibleInfo: CollectibleInfoDraft
+}
+
+private struct CollectibleInfoDraft: Hashable {
+    var purchaseDateText: String
+    var currency: String
+    var amount: String
+    var cryptoCurrency: String
+    var cryptoAmount: String
+    var url: String
+
+    init(_ config: UsernameCollectibleInfoPatchConfig = .defaultConfig) {
+        purchaseDateText = config.purchaseDateText
+        currency = config.currency
+        amount = String(config.amount)
+        cryptoCurrency = config.cryptoCurrency
+        cryptoAmount = String(config.cryptoAmount)
+        url = config.url
+    }
+
+    func config(statusMessage: Binding<String>) -> UsernameCollectibleInfoPatchConfig? {
+        let amountText = amount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cryptoAmountText = cryptoAmount.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let amountValue = amountText.isEmpty ? 0 : Int64(amountText), amountValue >= 0 else {
+            statusMessage.wrappedValue = "Enter a valid collectible amount."
+            return nil
+        }
+        guard let cryptoAmountValue = cryptoAmountText.isEmpty ? 0 : Int64(cryptoAmountText),
+              cryptoAmountValue >= 0 else {
+            statusMessage.wrappedValue = "Enter a valid collectible crypto amount."
+            return nil
+        }
+        let config = UsernameCollectibleInfoPatchConfig(
+            purchaseDateText: purchaseDateText,
+            currency: currency,
+            amount: amountValue,
+            cryptoCurrency: cryptoCurrency,
+            cryptoAmount: cryptoAmountValue,
+            url: url
+        ).normalized
+        guard config.purchaseDateUnix != nil else {
+            statusMessage.wrappedValue = "Enter purchase date as unix-time or HH:MM:SS dd.mm.yyyy."
+            return nil
+        }
+        guard config.currency.count <= 32, config.cryptoCurrency.count <= 32 else {
+            statusMessage.wrappedValue = "Enter currency values up to 32 characters."
+            return nil
+        }
+        guard config.url.count <= 256 else {
+            statusMessage.wrappedValue = "Enter a URL up to 256 characters."
+            return nil
+        }
+        return config
+    }
+}
+
+private struct CustomListUsernamesSettingsView: View {
+    @ObservedObject var viewModel: PatchgramViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var entries: [CustomUsernameDraft] = []
+    @State private var useSharedCollectibleInfo = true
+    @State private var sharedInfo = CollectibleInfoDraft()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Label("Custom List Usernames", systemImage: "at")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    addEntry()
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                Button {
+                    save()
+                } label: {
+                    Label("Save", systemImage: "checkmark")
+                }
+                .keyboardShortcut(.defaultAction)
+                Button {
+                    if save() {
+                        dismiss()
+                    }
+                } label: {
+                    Label("Done", systemImage: "xmark")
+                }
+            }
+            .padding(18)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Toggle("Use one collectible info for all collectible usernames", isOn: $useSharedCollectibleInfo)
+                        .toggleStyle(.checkbox)
+
+                    if useSharedCollectibleInfo {
+                        CollectibleInfoEditor(title: "Shared collectible info", draft: $sharedInfo)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Usernames")
+                            .font(.headline)
+                        if entries.isEmpty {
+                            Text("No usernames")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach($entries) { $entry in
+                                CustomUsernameDraftRow(
+                                    entry: $entry,
+                                    useSharedCollectibleInfo: useSharedCollectibleInfo,
+                                    onMakePrimary: {
+                                        setPrimary(entry.id)
+                                    },
+                                    onDelete: {
+                                        let wasPrimary = entry.isPrimary
+                                        entries.removeAll { $0.id == entry.id }
+                                        if wasPrimary {
+                                            ensurePrimary()
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                .padding(18)
+            }
+        }
+        .frame(width: 720, height: 620)
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        let config = viewModel.customListUsernamesConfigForSettings()
+        useSharedCollectibleInfo = config.useSharedCollectibleInfo
+        sharedInfo = CollectibleInfoDraft(config.sharedCollectibleInfo)
+        entries = config.entries.map {
+            CustomUsernameDraft(
+                id: $0.id,
+                username: $0.username,
+                status: $0.status,
+                isPrimary: $0.isPrimary,
+                collectibleInfo: CollectibleInfoDraft($0.collectibleInfo)
+            )
+        }
+    }
+
+    private func addEntry() {
+        entries.append(
+            CustomUsernameDraft(
+                username: "",
+                status: .default,
+                isPrimary: entries.isEmpty,
+                collectibleInfo: CollectibleInfoDraft(sharedInfo.config(statusMessage: .constant("")) ?? .defaultConfig)
+            )
+        )
+    }
+
+    private func setPrimary(_ id: UUID) {
+        entries = entries.map { entry in
+            var next = entry
+            next.isPrimary = entry.id == id
+            return next
+        }
+    }
+
+    private func ensurePrimary() {
+        guard !entries.isEmpty, !entries.contains(where: \.isPrimary) else {
+            return
+        }
+        entries[0].isPrimary = true
+    }
+
+    @discardableResult
+    private func save() -> Bool {
+        var seen = Set<String>()
+        let sharedConfig: UsernameCollectibleInfoPatchConfig
+        if let config = sharedInfo.config(statusMessage: $viewModel.statusMessage) {
+            sharedConfig = config
+        } else {
+            return false
+        }
+        let primaryId = entries.first(where: \.isPrimary)?.id ?? entries.first?.id
+        let configs: [CustomUsernameEntryPatchConfig] = entries.compactMap { draft in
+            let username = CustomUsernameEntryPatchConfig.normalizedUsername(draft.username)
+            guard CustomUsernameEntryPatchConfig.isValidUsername(username) else {
+                viewModel.statusMessage = "Enter usernames up to \(CustomUsernameEntryPatchConfig.maxUsernameLength) characters using letters, digits, underscore, dot or dash."
+                return nil
+            }
+            let key = username.lowercased()
+            guard seen.insert(key).inserted else {
+                viewModel.statusMessage = "Remove duplicate username: \(username)."
+                return nil
+            }
+            let info: UsernameCollectibleInfoPatchConfig
+            if useSharedCollectibleInfo {
+                info = sharedConfig
+            } else if let config = draft.collectibleInfo.config(statusMessage: $viewModel.statusMessage) {
+                info = config
+            } else {
+                return nil
+            }
+            return CustomUsernameEntryPatchConfig(
+                id: draft.id,
+                username: username,
+                status: draft.status,
+                isPrimary: draft.id == primaryId,
+                collectibleInfo: info
+            )
+        }
+        guard configs.count == entries.count else { return false }
+        viewModel.updateCustomListUsernamesConfig(
+            CustomListUsernamesPatchConfig(
+                entries: configs,
+                useSharedCollectibleInfo: useSharedCollectibleInfo,
+                sharedCollectibleInfo: sharedConfig
+            )
+        )
+        entries = configs.map {
+            CustomUsernameDraft(
+                id: $0.id,
+                username: $0.username,
+                status: $0.status,
+                isPrimary: $0.isPrimary,
+                collectibleInfo: CollectibleInfoDraft($0.collectibleInfo)
+            )
+        }
+        return true
+    }
+}
+
+private struct CustomUsernameDraftRow: View {
+    @Binding var entry: CustomUsernameDraft
+    let useSharedCollectibleInfo: Bool
+    let onMakePrimary: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                TextField("username", text: $entry.username)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 180)
+                    .onChange(of: entry.username) { value in
+                        guard value.count > CustomUsernameEntryPatchConfig.maxUsernameLength else {
+                            return
+                        }
+                        entry.username = String(value.prefix(CustomUsernameEntryPatchConfig.maxUsernameLength))
+                    }
+                Picker("Status", selection: $entry.status) {
+                    ForEach(CustomUsernameStatus.allCases, id: \.self) { status in
+                        Text(status.label).tag(status)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                Button {
+                    onMakePrimary()
+                } label: {
+                    Label(entry.isPrimary ? "First" : "Make First", systemImage: entry.isPrimary ? "1.circle.fill" : "1.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(entry.isPrimary)
+                Spacer()
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if entry.status == .collectible && !useSharedCollectibleInfo {
+                CollectibleInfoEditor(title: "Collectible info", draft: $entry.collectibleInfo)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.6)
+        }
+    }
+}
+
+private struct CollectibleInfoEditor: View {
+    let title: String
+    @Binding var draft: CollectibleInfoDraft
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+            labeledField("Purchase date", text: $draft.purchaseDateText, placeholder: "0 or 12:34:56 07.06.2026")
+            HStack(spacing: 10) {
+                labeledField("Currency", text: $draft.currency, placeholder: "USD")
+                labeledField("Amount", text: $draft.amount, placeholder: "0")
+            }
+            HStack(spacing: 10) {
+                labeledField("Crypto", text: $draft.cryptoCurrency, placeholder: "TON")
+                labeledField("Crypto amount", text: $draft.cryptoAmount, placeholder: "0")
+            }
+            labeledField("URL", text: $draft.url, placeholder: "https://fragment.com/username/...")
+        }
+    }
+
+    private func labeledField(_ title: String, text: Binding<String>, placeholder: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .frame(width: 104, alignment: .trailing)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
         }
     }
 }
