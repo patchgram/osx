@@ -18,7 +18,7 @@ This file describes the patches available in Patchgram in plain language.
 | Always offline | `dylib` | Keeps your account shown as offline by forcing the local `account.updateStatus` offline value. |
 | Block typing activity | `dylib` | Stops Telegram Desktop from sending typing activity by invalidating the typing request. |
 | Block read messages | `dylib` | Blocks read-history requests so messages are not marked as read through the patched request path. |
-| Message settings | `dylib` | A grouped privacy patch for typing activity, read receipts, local drafts, and scheduled send. |
+| Message settings | `dylib` | A grouped privacy patch for typing activity, read receipts, local drafts, scheduled send, and local channel post Fact Check text. |
 | Open links without warning | `dylib` | Opens hidden/external links without Telegram's extra confirmation warning. |
 | Don't share phone when adding contacts | `dylib` | Prevents Telegram Desktop from sending the phone privacy exception flag when adding a contact. |
 | 999 accounts | `binary` | Raises the local account limit from Telegram Desktop's normal limit to 999 accounts. |
@@ -39,6 +39,7 @@ This file describes the patches available in Patchgram in plain language.
 | Read receipts | Stops read-history requests from being sent through the patched paths. |
 | Local drafts | Keeps drafts local by blocking draft sync requests. |
 | Scheduled send | Enables Patchgram's local scheduled-send runtime flag. |
+| Custom Fact Check | Locally triggers Telegram Desktop's Fact Check request path for visible posts and replaces `messages.getFactCheck` responses with your own Fact Check text. |
 
 ## Disable Premium, Stars, TON & Gifts Subpatches
 

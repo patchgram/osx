@@ -169,6 +169,48 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertFalse(statuses.first?.detail.contains("Multiple alternative windows matched") ?? true)
     }
 
+    func testMessageSettingsFactCheckRuntimeConfigPersistsText() throws {
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.messages.settings"))
+        let factCheck = try XCTUnwrap(rule.replacements.first {
+            $0.alternativeGroup == "messages.fact_check.local"
+        })
+
+        _ = try engine.applyRuleChanges(
+            [
+                BinaryPatchRuleChange(
+                    rule: rule,
+                    enabled: true,
+                    messageFactCheckConfig: MessageFactCheckPatchConfig(
+                        text: "Local Fact Check",
+                        country: "us",
+                        hash: 42,
+                        needCheck: true
+                    ),
+                    enabledAlternativeGroups: [factCheck.alternativeGroup]
+                )
+            ],
+            appURL: appURL,
+            signAfterPatch: false
+        )
+
+        let configJSON = try String(contentsOf: runtimeConfigURL, encoding: .utf8)
+        XCTAssertTrue(configJSON.contains("\"messageSettingsEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"messageTypingEnabled\" : false"))
+        XCTAssertTrue(configJSON.contains("\"messageFactCheckEnabled\" : true"))
+        XCTAssertTrue(configJSON.contains("\"messageFactCheckText\" : \"Local Fact Check\""))
+        XCTAssertTrue(configJSON.contains("\"messageFactCheckCountry\" : \"US\""))
+        XCTAssertTrue(configJSON.contains("\"messageFactCheckHash\" : 42"))
+        XCTAssertTrue(configJSON.contains("\"messageFactCheckNeedCheck\" : true"))
+
+        let statuses = try engine.statuses(
+            appURL: appURL,
+            rules: [rule],
+            messageFactCheckConfigs: [rule.id: MessageFactCheckPatchConfig(text: "Changed")]
+        )
+        XCTAssertEqual(statuses.first?.state, .partial)
+    }
+
     func testOpenLinksWithoutWarningUsesRuntimeMemoryPatch() throws {
         let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
         let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.links.open_without_warning"))
@@ -1016,7 +1058,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertTrue(report.changedExecutable)
         XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeHookDylibURL.path))
         let dylib = try Data(contentsOf: runtimeHookDylibURL)
-        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_20260608_FRAGMENT_PHONE_NO_TEXT_FALLBACK".utf8)))
+        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_20260608_FACT_CHECK_EARLY_LAYOUT_READY".utf8)))
     }
 
     private var executableURL: URL {

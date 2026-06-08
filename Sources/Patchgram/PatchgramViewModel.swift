@@ -40,6 +40,7 @@ struct BinaryRuleRowState: Identifiable, Hashable {
     var selfIdentityConfig: SelfIdentityPatchConfig?
     var localPersonalChannelConfig: LocalPersonalChannelPatchConfig?
     var fragmentPhoneConfig: FragmentPhonePatchConfig?
+    var messageFactCheckConfig: MessageFactCheckPatchConfig?
     var subpatches: [BinarySubpatchRowState] = []
 
     var patchDeliveryLabel: String {
@@ -193,9 +194,17 @@ private struct BotVerificationPresetOption: Hashable {
     }
 }
 
+enum WriteAccessRetryAction: Equatable {
+    case updateAppliedPatch(ruleId: String)
+    case applyBinaryChanges
+    case disableAllBinary
+    case restoreOriginalBinary
+}
+
 struct WriteAccessAlert: Identifiable, Equatable {
     let id = UUID()
     let message: String
+    let retryAction: WriteAccessRetryAction
 }
 
 enum PatchDeliveryFilter: String, CaseIterable, Identifiable {
@@ -239,6 +248,7 @@ final class PatchgramViewModel: ObservableObject {
     @Published var selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:]
     @Published var localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:]
     @Published var fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:]
+    @Published var messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
     @Published var writeAccessAlert: WriteAccessAlert?
 
     private let binaryEngine = BinaryPatchEngine()
@@ -248,6 +258,7 @@ final class PatchgramViewModel: ObservableObject {
     private static let selfIdentityDefaultsPrefix = "Patchgram.selfIdentityConfig."
     private static let localPersonalChannelDefaultsPrefix = "Patchgram.localPersonalChannelConfig."
     private static let fragmentPhoneDefaultsPrefix = "Patchgram.fragmentPhoneConfig."
+    private static let messageFactCheckDefaultsPrefix = "Patchgram.messageFactCheckConfig."
     private static let botVerificationPresetsFileName = "BotVerificationPresets.json"
     private static let customAccountDesiredSubpatchIdsKey = "Patchgram.customAccountSubpatches.desired"
     private static let customAccountAppliedSubpatchIdsKey = "Patchgram.customAccountSubpatches.applied"
@@ -265,6 +276,8 @@ final class PatchgramViewModel: ObservableObject {
     private static let messageSettingsDesiredSubpatchIdsKey = "Patchgram.messageSettingsSubpatches.desired"
     private static let messageSettingsAppliedSubpatchIdsKey = "Patchgram.messageSettingsSubpatches.applied"
     private static let messageSettingsFeatureRuleId = "binary.messages.settings"
+    private static let messageFactCheckSubpatchId = "fact_check"
+    private static let messageFactCheckAlternativeGroup = "messages.fact_check.local"
     private static let adsDesiredSubpatchIdsKey = "Patchgram.adsSubpatches.desired"
     private static let adsAppliedSubpatchIdsKey = "Patchgram.adsSubpatches.applied"
     private static let adsFeatureRuleId = "binary.ads.disable_sponsored"
@@ -318,7 +331,8 @@ final class PatchgramViewModel: ObservableObject {
         BinaryCompositeSubpatchDefinition(id: "typing", title: "Typing activity"),
         BinaryCompositeSubpatchDefinition(id: "read_receipts", title: "Read receipts"),
         BinaryCompositeSubpatchDefinition(id: "local_drafts", title: "Local drafts"),
-        BinaryCompositeSubpatchDefinition(id: "scheduled_send", title: "Scheduled send")
+        BinaryCompositeSubpatchDefinition(id: "scheduled_send", title: "Scheduled send"),
+        BinaryCompositeSubpatchDefinition(id: messageFactCheckSubpatchId, title: "Custom Fact Check", showsChangeButton: true)
     ]
     private static let appConfigSubpatchDefinitions: [BinaryCompositeSubpatchDefinition] = [
         BinaryCompositeSubpatchDefinition(id: "app_config", title: "App config"),
@@ -365,6 +379,7 @@ final class PatchgramViewModel: ObservableObject {
         selfIdentityConfigs = Self.loadSelfIdentityConfigs()
         localPersonalChannelConfigs = Self.loadLocalPersonalChannelConfigs()
         fragmentPhoneConfigs = Self.loadFragmentPhoneConfigs()
+        messageFactCheckConfigs = Self.loadMessageFactCheckConfigs()
         desiredCustomAccountSubpatchIds = Self.loadCustomAccountSubpatchIds(
             key: Self.customAccountDesiredSubpatchIdsKey,
             defaultValue: []
@@ -518,6 +533,10 @@ final class PatchgramViewModel: ObservableObject {
             if !manifestFragmentPhoneConfigs.isEmpty {
                 fragmentPhoneConfigs.merge(manifestFragmentPhoneConfigs) { _, manifestValue in manifestValue }
             }
+            let manifestMessageFactCheckConfigs = try binaryEngine.manifestMessageFactCheckConfigs(appURL: appURL)
+            if !manifestMessageFactCheckConfigs.isEmpty {
+                messageFactCheckConfigs.merge(manifestMessageFactCheckConfigs) { _, manifestValue in manifestValue }
+            }
             let statuses: [BinaryRuleStatus]
             let statusRules = rulesForStatus()
             let manifestStatuses = try binaryEngine.manifestStatuses(appURL: appURL, rules: statusRules)
@@ -532,7 +551,8 @@ final class PatchgramViewModel: ObservableObject {
                     customLevelRatingConfigs: customLevelRatingConfigsForEngine(),
                     selfIdentityConfigs: selfIdentityConfigsForEngine(),
                     localPersonalChannelConfigs: localPersonalChannelConfigsForEngine(),
-                    fragmentPhoneConfigs: fragmentPhoneConfigsForEngine()
+                    fragmentPhoneConfigs: fragmentPhoneConfigsForEngine(),
+                    messageFactCheckConfigs: messageFactCheckConfigsForEngine()
                 )
             }
             applyAppInspection(inspection, statuses: statuses, quick: quick)
@@ -643,6 +663,7 @@ final class PatchgramViewModel: ObservableObject {
                 selfIdentityConfig: selfIdentityConfig(for: $0.rule),
                 localPersonalChannelConfig: localPersonalChannelConfig(for: $0.rule),
                 fragmentPhoneConfig: fragmentPhoneConfig(for: $0.rule),
+                messageFactCheckConfig: messageFactCheckConfig(for: $0.rule),
                 subpatches: subpatches
             )
         }
@@ -670,6 +691,10 @@ final class PatchgramViewModel: ObservableObject {
                 desiredAppConfigSubpatchIds = Set(Self.appConfigSubpatchDefinitions.map(\.id))
                 storeAppConfigSubpatchIds(desiredAppConfigSubpatchIds, key: Self.appConfigDesiredSubpatchIdsKey)
             } else if row.id == Self.messageSettingsFeatureRuleId {
+                guard configureMessageSettingsSubpatches(
+                    Set(Self.messageSettingsSubpatchDefinitions.map(\.id)),
+                    actionTitle: "Enable"
+                ) else { return }
                 desiredMessageSettingsSubpatchIds = Set(Self.messageSettingsSubpatchDefinitions.map(\.id))
                 storeMessageSettingsSubpatchIds(
                     desiredMessageSettingsSubpatchIds,
@@ -743,6 +768,9 @@ final class PatchgramViewModel: ObservableObject {
            desiredAppConfigSubpatchIds.isEmpty {
             guard confirmAppConfigConflictsIfNeeded() else { return }
         }
+        if ruleId == Self.messageSettingsFeatureRuleId, enabled {
+            guard configureMessageSettingsSubpatches([subpatchId], actionTitle: "Enable") else { return }
+        }
         var desired = desiredSubpatchIds(for: ruleId)
         if enabled {
             desired.insert(subpatchId)
@@ -757,14 +785,24 @@ final class PatchgramViewModel: ObservableObject {
 
     func changeSubpatch(ruleId: String, subpatchId: String) {
         guard !isWorking else { return }
-        guard ruleId == Self.customAccountFeatureRuleId,
-              binaryRows.contains(where: { $0.id == ruleId }),
-              Self.customAccountSubpatchDefinitions.contains(where: {
-                  $0.id == subpatchId && $0.showsChangeButton
-              }) else {
+        guard binaryRows.contains(where: { $0.id == ruleId }) else { return }
+        if ruleId == Self.customAccountFeatureRuleId {
+            guard Self.customAccountSubpatchDefinitions.contains(where: {
+                $0.id == subpatchId && $0.showsChangeButton
+            }) else {
+                return
+            }
+            guard configureCustomAccountSubpatches([subpatchId], actionTitle: "Change") else { return }
+        } else if ruleId == Self.messageSettingsFeatureRuleId {
+            guard Self.messageSettingsSubpatchDefinitions.contains(where: {
+                $0.id == subpatchId && $0.showsChangeButton
+            }) else {
+                return
+            }
+            guard configureMessageSettingsSubpatches([subpatchId], actionTitle: "Change") else { return }
+        } else {
             return
         }
-        guard configureCustomAccountSubpatches([subpatchId], actionTitle: "Change") else { return }
         if desiredSubpatchIds(for: ruleId).contains(subpatchId)
             || appliedSubpatchIds(for: ruleId).contains(subpatchId) {
             pendingConfigSubpatchIds.insert(subpatchId)
@@ -777,7 +815,10 @@ final class PatchgramViewModel: ObservableObject {
     func updateAppliedPatch(for row: BinaryRuleRowState) {
         guard !isWorking else { return }
         guard let appURL else { return }
-        guard verifyPatchWriteAccess(appURL: appURL) else { return }
+        guard verifyPatchWriteAccess(
+            appURL: appURL,
+            retryAction: .updateAppliedPatch(ruleId: row.id)
+        ) else { return }
         if row.id == Self.customAccountFeatureRuleId {
             let enabledSubpatches = desiredSubpatchIds(for: row.id)
             guard !enabledSubpatches.isEmpty,
@@ -863,6 +904,7 @@ final class PatchgramViewModel: ObservableObject {
                 botVerificationConfig: nextBotVerificationConfig,
                 customLevelRatingConfig: nextCustomLevelRatingConfig,
                 selfIdentityConfig: nextSelfIdentityConfig,
+                messageFactCheckConfig: nil,
                 signAfterPatch: !liveRuntimeUpdate
             )
             lastChangedFiles = report.changedExecutable ? changedFiles(for: row.status.rule) : []
@@ -875,7 +917,8 @@ final class PatchgramViewModel: ObservableObject {
                 patchedCustomLevelRatingConfig: nextCustomLevelRatingConfig,
                 patchedSelfIdentityConfig: nextSelfIdentityConfig,
                 patchedLocalPersonalChannelConfig: nil,
-                patchedFragmentPhoneConfig: nil
+                patchedFragmentPhoneConfig: nil,
+                patchedMessageFactCheckConfig: nil
             )
             setOperationProgress(0.90, message: liveRuntimeUpdate ? "Runtime config updated." : "Opening selected app...")
             _ = closeMessage
@@ -902,7 +945,7 @@ final class PatchgramViewModel: ObservableObject {
         guard let appURL else { return }
         let pendingRows = binaryRows.filter(\.needsApply)
         guard !pendingRows.isEmpty else { return }
-        guard verifyPatchWriteAccess(appURL: appURL) else { return }
+        guard verifyPatchWriteAccess(appURL: appURL, retryAction: .applyBinaryChanges) else { return }
         let changes = pendingRows.flatMap { self.changes(for: $0, changedGroupsOnly: true) }
         beginOperation("Applying built app patches...")
         do {
@@ -933,6 +976,7 @@ final class PatchgramViewModel: ObservableObject {
                     patchedSelfIdentityConfig: change.selfIdentityConfig,
                     patchedLocalPersonalChannelConfig: change.localPersonalChannelConfig,
                     patchedFragmentPhoneConfig: change.fragmentPhoneConfig,
+                    patchedMessageFactCheckConfig: change.messageFactCheckConfig,
                     enabledAlternativeGroups: change.enabledAlternativeGroups
                 )
             }
@@ -1000,7 +1044,7 @@ final class PatchgramViewModel: ObservableObject {
         guard let appURL else { return }
         let rowsToDisable = binaryRows.filter { $0.desiredEnabled || $0.status.state.isEnabled }
         guard !rowsToDisable.isEmpty else { return }
-        guard verifyPatchWriteAccess(appURL: appURL) else { return }
+        guard verifyPatchWriteAccess(appURL: appURL, retryAction: .disableAllBinary) else { return }
         let changes = rowsToDisable.flatMap {
             self.changes(for: $0, changedGroupsOnly: false, forcedEnabled: false)
         }
@@ -1022,6 +1066,7 @@ final class PatchgramViewModel: ObservableObject {
                     patchedSelfIdentityConfig: nil,
                     patchedLocalPersonalChannelConfig: nil,
                     patchedFragmentPhoneConfig: nil,
+                    patchedMessageFactCheckConfig: nil,
                     enabledAlternativeGroups: change.enabledAlternativeGroups
                 )
             }
@@ -1039,7 +1084,7 @@ final class PatchgramViewModel: ObservableObject {
     func restoreOriginalBinary() {
         guard !isWorking else { return }
         guard let appURL else { return }
-        guard verifyPatchWriteAccess(appURL: appURL) else { return }
+        guard verifyPatchWriteAccess(appURL: appURL, retryAction: .restoreOriginalBinary) else { return }
         beginOperation("Restoring backup...")
         do {
             setOperationProgress(0.15, message: "Closing selected app if needed...")
@@ -1068,6 +1113,7 @@ final class PatchgramViewModel: ObservableObject {
         patchedSelfIdentityConfig: SelfIdentityPatchConfig?,
         patchedLocalPersonalChannelConfig: LocalPersonalChannelPatchConfig?,
         patchedFragmentPhoneConfig: FragmentPhonePatchConfig?,
+        patchedMessageFactCheckConfig: MessageFactCheckPatchConfig?,
         enabledAlternativeGroups: Set<String>? = nil
     ) {
         let displayRule = BinaryPatchRuleCatalog.rule(id: rule.id) ?? rule
@@ -1112,14 +1158,20 @@ final class PatchgramViewModel: ObservableObject {
         binaryRows[index].fragmentPhoneConfig = enabled
             ? storedFragmentPhoneConfig
             : (patchedFragmentPhoneConfig ?? storedFragmentPhoneConfig)
+        let storedMessageFactCheckConfig = messageFactCheckConfig(for: displayRule)
+        binaryRows[index].messageFactCheckConfig = enabled
+            ? storedMessageFactCheckConfig
+            : (patchedMessageFactCheckConfig ?? storedMessageFactCheckConfig)
         if Self.compositeFeatureRuleIds.contains(displayRule.id) {
             if enabled {
                 let appliedIds = subpatchIds(forAlternativeGroups: enabledAlternativeGroups, ruleId: displayRule.id)
                     ?? desiredSubpatchIds(for: displayRule.id)
                 setAppliedSubpatchIds(appliedIds, for: displayRule.id)
+                pendingConfigSubpatchIds.subtract(appliedIds)
             } else {
                 setAppliedSubpatchIds([], for: displayRule.id)
                 setDesiredSubpatchIds([], for: displayRule.id)
+                pendingConfigSubpatchIds.subtract(Self.subpatchDefinitions(for: displayRule.id).map(\.id))
             }
             binaryRows[index].desiredEnabled = !desiredSubpatchIds(for: displayRule.id).isEmpty
             binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
@@ -1147,6 +1199,7 @@ final class PatchgramViewModel: ObservableObject {
             binaryRows[index].selfIdentityConfig = selfIdentityConfig(for: rule)
             binaryRows[index].localPersonalChannelConfig = localPersonalChannelConfig(for: rule)
             binaryRows[index].fragmentPhoneConfig = fragmentPhoneConfig(for: rule)
+            binaryRows[index].messageFactCheckConfig = messageFactCheckConfig(for: rule)
             if Self.compositeFeatureRuleIds.contains(rule.id) {
                 binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
             }
@@ -1287,7 +1340,7 @@ final class PatchgramViewModel: ObservableObject {
         return apps.allSatisfy(\.isTerminated)
     }
 
-    private func verifyPatchWriteAccess(appURL: URL) -> Bool {
+    private func verifyPatchWriteAccess(appURL: URL, retryAction: WriteAccessRetryAction) -> Bool {
         do {
             try binaryEngine.verifyPatchWriteAccess(appURL: appURL)
             return true
@@ -1299,9 +1352,25 @@ final class PatchgramViewModel: ObservableObject {
                 Patchgram needs permission to edit the selected app bundle before it can patch or unpatch it.
 
                 Grant access in System Settings, then try again.
-                """
+                """,
+                retryAction: retryAction
             )
             return false
+        }
+    }
+
+    func retryWriteAccessAction(_ action: WriteAccessRetryAction) {
+        writeAccessAlert = nil
+        switch action {
+        case let .updateAppliedPatch(ruleId):
+            guard let row = binaryRows.first(where: { $0.id == ruleId }) else { return }
+            updateAppliedPatch(for: row)
+        case .applyBinaryChanges:
+            applyBinaryChanges()
+        case .disableAllBinary:
+            disableAllBinary()
+        case .restoreOriginalBinary:
+            restoreOriginalBinary()
         }
     }
 
@@ -1386,6 +1455,7 @@ final class PatchgramViewModel: ObservableObject {
                 selfIdentityConfig: enabled ? selfIdentityConfig(for: rule) : nil,
                 localPersonalChannelConfig: enabled ? localPersonalChannelConfig(for: rule) : nil,
                 fragmentPhoneConfig: enabled ? fragmentPhoneConfig(for: rule) : nil,
+                messageFactCheckConfig: enabled ? messageFactCheckConfig(for: rule) : nil,
                 enabledAlternativeGroups: enabled ? alternativeGroupsForChange(row) : nil
             )
         ]
@@ -1433,6 +1503,7 @@ final class PatchgramViewModel: ObservableObject {
                 selfIdentityConfig: enabled ? selfIdentityConfig(for: rule) : nil,
                 localPersonalChannelConfig: enabled ? localPersonalChannelConfig(for: rule) : nil,
                 fragmentPhoneConfig: enabled ? fragmentPhoneConfig(for: rule) : nil,
+                messageFactCheckConfig: enabled ? messageFactCheckConfig(for: rule) : nil,
                 enabledAlternativeGroups: groups
             )
         }
@@ -1733,6 +1804,9 @@ final class PatchgramViewModel: ObservableObject {
             if group == "messages.scheduled_send.local" {
                 return "scheduled_send"
             }
+            if group == Self.messageFactCheckAlternativeGroup {
+                return Self.messageFactCheckSubpatchId
+            }
         }
         if ruleId == adsFeatureRuleId {
             return group.hasPrefix("ads.proxy_sponsor.") || group == "ads.proxy_sponsor.disable"
@@ -1864,6 +1938,16 @@ final class PatchgramViewModel: ObservableObject {
         })
     }
 
+    private static func loadMessageFactCheckConfigs() -> [String: MessageFactCheckPatchConfig] {
+        let decoder = JSONDecoder()
+        guard let rule = BinaryPatchRuleCatalog.rule(id: messageSettingsFeatureRuleId) else { return [:] }
+        let key = messageFactCheckDefaultsPrefix + rule.id
+        let saved = UserDefaults.standard
+            .data(forKey: key)
+            .flatMap { try? decoder.decode(MessageFactCheckPatchConfig.self, from: $0) }
+        return [rule.id: (saved ?? MessageFactCheckPatchConfig.defaultConfig).normalized]
+    }
+
     private static func loadCustomAccountSubpatchIds(key: String, defaultValue: Set<String>) -> Set<String> {
         loadSubpatchIds(key: key, knownIds: Set(customAccountSubpatchDefinitions.map(\.id)), defaultValue: defaultValue)
     }
@@ -1945,6 +2029,14 @@ final class PatchgramViewModel: ObservableObject {
         })
     }
 
+    private func messageFactCheckConfigsForEngine() -> [String: MessageFactCheckPatchConfig] {
+        guard let rule = BinaryPatchRuleCatalog.rule(id: Self.messageSettingsFeatureRuleId),
+              let config = messageFactCheckConfig(for: rule) else {
+            return [:]
+        }
+        return [rule.id: config]
+    }
+
     private func parameterValue(for rule: BinaryPatchRule) -> UInt64? {
         guard let parameter = rule.parameter else { return nil }
         return binaryParameterValues[rule.id] ?? parameter.defaultValue
@@ -2015,6 +2107,11 @@ final class PatchgramViewModel: ObservableObject {
         return (fragmentPhoneConfigs[rule.id] ?? FragmentPhonePatchConfig.defaultConfig).normalized
     }
 
+    private func messageFactCheckConfig(for rule: BinaryPatchRule) -> MessageFactCheckPatchConfig? {
+        guard rule.id == Self.messageSettingsFeatureRuleId else { return nil }
+        return (messageFactCheckConfigs[rule.id] ?? MessageFactCheckPatchConfig.defaultConfig).normalized
+    }
+
     private func storeBotVerificationConfig(_ config: BotVerificationPatchConfig, for ruleId: String) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(config.normalized) {
@@ -2040,6 +2137,13 @@ final class PatchgramViewModel: ObservableObject {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(config.normalized) {
             UserDefaults.standard.set(data, forKey: Self.fragmentPhoneDefaultsPrefix + ruleId)
+        }
+    }
+
+    private func storeMessageFactCheckConfig(_ config: MessageFactCheckPatchConfig, for ruleId: String) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(config.normalized) {
+            UserDefaults.standard.set(data, forKey: Self.messageFactCheckDefaultsPrefix + ruleId)
         }
     }
 
@@ -2531,6 +2635,17 @@ final class PatchgramViewModel: ObservableObject {
         return true
     }
 
+    private func configureMessageSettingsSubpatches(_ subpatchIds: Set<String>, actionTitle: String) -> Bool {
+        guard subpatchIds.contains(Self.messageFactCheckSubpatchId),
+              let rule = BinaryPatchRuleCatalog.rule(id: Self.messageSettingsFeatureRuleId) else {
+            return true
+        }
+        guard let config = promptForMessageFactCheckConfig(for: rule, actionTitle: actionTitle) else { return false }
+        messageFactCheckConfigs[rule.id] = config
+        storeMessageFactCheckConfig(config, for: rule.id)
+        return true
+    }
+
     @discardableResult
     private func promptForCustomPhoneNumber(for rule: BinaryPatchRule, actionTitle: String) -> SelfIdentityPatchConfig? {
         guard rule.kind == .selfIdentityOverride else { return nil }
@@ -2877,6 +2992,94 @@ final class PatchgramViewModel: ObservableObject {
         }
         guard config.url.count <= 256 else {
             statusMessage = "Enter a URL up to 256 characters."
+            return nil
+        }
+        return config
+    }
+
+    private func promptForMessageFactCheckConfig(
+        for rule: BinaryPatchRule,
+        actionTitle: String
+    ) -> MessageFactCheckPatchConfig? {
+        guard rule.id == Self.messageSettingsFeatureRuleId else { return nil }
+        let current = messageFactCheckConfig(for: rule) ?? MessageFactCheckPatchConfig.defaultConfig
+        let alert = NSAlert()
+        alert.messageText = "Custom Fact Check"
+        alert.informativeText = "Enter the local Fact Check fields that Telegram Desktop should show under requested channel posts."
+        alert.addButton(withTitle: actionTitle)
+        alert.addButton(withTitle: "Cancel")
+
+        let labelWidth: CGFloat = 82
+        let controlX = labelWidth + 12
+        let controlWidth: CGFloat = 300
+        let rowHeight: CGFloat = 26
+        let rowGap: CGFloat = 8
+        let rows = 4
+        let width = controlX + controlWidth
+        let height = CGFloat(rows) * rowHeight + CGFloat(rows - 1) * rowGap
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+
+        func addLabel(_ title: String, row: Int) {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap + 3
+            let label = NSTextField(labelWithString: title + ":")
+            label.alignment = .right
+            label.frame = NSRect(x: 0, y: y, width: labelWidth, height: 20)
+            container.addSubview(label)
+        }
+
+        func rowFrame(_ row: Int) -> NSRect {
+            let y = height - CGFloat(row + 1) * rowHeight - CGFloat(row) * rowGap
+            return NSRect(x: controlX, y: y, width: controlWidth, height: rowHeight)
+        }
+
+        addLabel("Text", row: 0)
+        let textField = NSTextField(frame: rowFrame(0))
+        textField.stringValue = current.text
+        textField.placeholderString = "Fact check text"
+        container.addSubview(textField)
+
+        addLabel("Country", row: 1)
+        let countryField = NSTextField(frame: rowFrame(1))
+        countryField.stringValue = current.country
+        countryField.placeholderString = "Optional, for example US"
+        container.addSubview(countryField)
+
+        addLabel("Hash", row: 2)
+        let hashField = NSTextField(frame: rowFrame(2))
+        hashField.stringValue = String(current.hash)
+        hashField.placeholderString = "0"
+        container.addSubview(hashField)
+
+        let needCheckButton = NSButton(checkboxWithTitle: "Need check", target: nil, action: nil)
+        needCheckButton.frame = rowFrame(3)
+        needCheckButton.state = current.needCheck ? .on : .off
+        container.addSubview(needCheckButton)
+
+        alert.accessoryView = container
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        let hashText = hashField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let hash = hashText.isEmpty ? 0 : Int64(hashText) else {
+            statusMessage = "Enter a valid Fact Check hash."
+            return nil
+        }
+
+        let config = MessageFactCheckPatchConfig(
+            text: textField.stringValue,
+            country: countryField.stringValue,
+            hash: hash,
+            needCheck: needCheckButton.state == .on
+        ).normalized
+        guard !config.text.isEmpty else {
+            statusMessage = "Enter a Fact Check text."
+            return nil
+        }
+        guard config.text.utf8.count <= 1024 else {
+            statusMessage = "Enter a Fact Check text up to 1024 bytes."
+            return nil
+        }
+        guard config.country.utf8.count <= 256 else {
+            statusMessage = "Enter a Fact Check country up to 256 bytes."
             return nil
         }
         return config

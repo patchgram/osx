@@ -59,6 +59,7 @@ private struct BinaryPatchManifest: Codable {
     var selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:]
     var localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:]
     var fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:]
+    var messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
     var enabledAlternativeGroups: [String: [String]] = [:]
 
     init(
@@ -70,6 +71,7 @@ private struct BinaryPatchManifest: Codable {
         selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:],
         fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
+        messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:],
         enabledAlternativeGroups: [String: [String]] = [:]
     ) {
         self.updatedAt = updatedAt
@@ -80,6 +82,7 @@ private struct BinaryPatchManifest: Codable {
         self.selfIdentityConfigs = selfIdentityConfigs
         self.localPersonalChannelConfigs = localPersonalChannelConfigs
         self.fragmentPhoneConfigs = fragmentPhoneConfigs
+        self.messageFactCheckConfigs = messageFactCheckConfigs
         self.enabledAlternativeGroups = enabledAlternativeGroups
     }
 
@@ -92,6 +95,7 @@ private struct BinaryPatchManifest: Codable {
         case selfIdentityConfigs
         case localPersonalChannelConfigs
         case fragmentPhoneConfigs
+        case messageFactCheckConfigs
         case enabledAlternativeGroups
     }
 
@@ -119,6 +123,10 @@ private struct BinaryPatchManifest: Codable {
         fragmentPhoneConfigs = try container.decodeIfPresent(
             [String: FragmentPhonePatchConfig].self,
             forKey: .fragmentPhoneConfigs
+        ) ?? [:]
+        messageFactCheckConfigs = try container.decodeIfPresent(
+            [String: MessageFactCheckPatchConfig].self,
+            forKey: .messageFactCheckConfigs
         ) ?? [:]
         enabledAlternativeGroups = try container.decodeIfPresent(
             [String: [String]].self,
@@ -181,6 +189,11 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let messageTypingEnabled: Bool
     let messageReadReceiptsEnabled: Bool
     let messageLocalDraftsEnabled: Bool
+    let messageFactCheckEnabled: Bool
+    let messageFactCheckText: String
+    let messageFactCheckCountry: String
+    let messageFactCheckHash: Int64
+    let messageFactCheckNeedCheck: Bool
     let localPremiumEnabled: Bool
     let scheduledSendEnabled: Bool
     let sensitiveBlurEnabled: Bool
@@ -199,6 +212,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
     public let selfIdentityConfig: SelfIdentityPatchConfig?
     public let localPersonalChannelConfig: LocalPersonalChannelPatchConfig?
     public let fragmentPhoneConfig: FragmentPhonePatchConfig?
+    public let messageFactCheckConfig: MessageFactCheckPatchConfig?
     public let enabledAlternativeGroups: Set<String>?
 
     public init(
@@ -210,6 +224,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         selfIdentityConfig: SelfIdentityPatchConfig? = nil,
         localPersonalChannelConfig: LocalPersonalChannelPatchConfig? = nil,
         fragmentPhoneConfig: FragmentPhonePatchConfig? = nil,
+        messageFactCheckConfig: MessageFactCheckPatchConfig? = nil,
         enabledAlternativeGroups: Set<String>? = nil
     ) {
         self.rule = rule
@@ -220,6 +235,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         self.selfIdentityConfig = selfIdentityConfig
         self.localPersonalChannelConfig = localPersonalChannelConfig
         self.fragmentPhoneConfig = fragmentPhoneConfig
+        self.messageFactCheckConfig = messageFactCheckConfig
         self.enabledAlternativeGroups = enabledAlternativeGroups
     }
 }
@@ -288,6 +304,7 @@ public final class BinaryPatchEngine {
     private static let messageReadReceiptsAlternativeGroupPrefix = "messages.read_receipts."
     private static let messageLocalDraftsAlternativeGroup = "messages.drafts.local_only"
     private static let scheduledSendAlternativeGroup = "messages.scheduled_send.local"
+    private static let messageFactCheckAlternativeGroup = "messages.fact_check.local"
     private static let localPremiumRuleId = "binary.premium.local"
     private static let scheduledSendRuleId = "binary.messages.scheduled_send"
     private static let sensitiveBlurRuleId = "binary.visual.sensitive_blur"
@@ -340,7 +357,7 @@ public final class BinaryPatchEngine {
     private static let deprecatedBotVerificationRuntimeConfigName = "PatchgramBotVerification.json"
     private static let legacyRuntimeHookDylibName = "PatchgramDeletedIconHook.dylib"
     private static let legacyRuntimeHookSourceName = "PatchgramDeletedIconHook.c"
-    private static let runtimeHookBuildMarker = "PATCHGRAM_RUNTIME_BUILD_20260608_FRAGMENT_PHONE_NO_TEXT_FALLBACK"
+    private static let runtimeHookBuildMarker = "PATCHGRAM_RUNTIME_BUILD_20260608_FACT_CHECK_EARLY_LAYOUT_READY"
     private static let patchLogName = "PatchgramPatch.log"
     private static let hookLogName = "PatchgramHook.log"
 
@@ -409,7 +426,8 @@ public final class BinaryPatchEngine {
         customLevelRatingConfigs: [String: CustomLevelRatingPatchConfig] = [:],
         selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:],
-        fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:]
+        fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
+        messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
     ) throws -> [BinaryRuleStatus] {
         let inspection = try inspect(appURL: appURL)
         let manifest = try readManifest(appURL: appURL)
@@ -428,7 +446,8 @@ public final class BinaryPatchEngine {
                     requestedCustomLevelRatingConfig: customLevelRatingConfigs[rule.id],
                     requestedSelfIdentityConfig: selfIdentityConfigs[rule.id],
                     requestedLocalPersonalChannelConfig: localPersonalChannelConfigs[rule.id],
-                    requestedFragmentPhoneConfig: fragmentPhoneConfigs[rule.id]
+                    requestedFragmentPhoneConfig: fragmentPhoneConfigs[rule.id],
+                    requestedMessageFactCheckConfig: messageFactCheckConfigs[rule.id]
                 )
             }
             return status(
@@ -471,6 +490,12 @@ public final class BinaryPatchEngine {
                     : "Not recorded in Patchgram manifest."
             } else if rule.kind == .fragmentPhone,
                       let config = manifest.fragmentPhoneConfigs[rule.id] {
+                detail = state.isEnabled
+                    ? "Recorded in Patchgram manifest: \(config.displayValue)."
+                    : "Not recorded in Patchgram manifest."
+            } else if rule.id == Self.messageSettingsRuleId,
+                      let config = manifest.messageFactCheckConfigs[rule.id],
+                      manifest.enabledAlternativeGroups[rule.id]?.contains(Self.messageFactCheckAlternativeGroup) == true {
                 detail = state.isEnabled
                     ? "Recorded in Patchgram manifest: \(config.displayValue)."
                     : "Not recorded in Patchgram manifest."
@@ -523,6 +548,10 @@ public final class BinaryPatchEngine {
         try readManifest(appURL: appURL)?.fragmentPhoneConfigs ?? [:]
     }
 
+    public func manifestMessageFactCheckConfigs(appURL: URL) throws -> [String: MessageFactCheckPatchConfig] {
+        try readManifest(appURL: appURL)?.messageFactCheckConfigs ?? [:]
+    }
+
     public func appendDiagnosticLog(_ message: String, appURL: URL) {
         appendPatchLog(message, appURL: appURL)
     }
@@ -549,6 +578,7 @@ public final class BinaryPatchEngine {
         selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:],
         fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
+        messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:],
         signAfterPatch: Bool = true
     ) throws -> BinaryPatchApplicationReport {
         let changes = try desired
@@ -565,7 +595,8 @@ public final class BinaryPatchEngine {
                     customLevelRatingConfig: customLevelRatingConfigs[rule.id],
                     selfIdentityConfig: selfIdentityConfigs[rule.id],
                     localPersonalChannelConfig: localPersonalChannelConfigs[rule.id],
-                    fragmentPhoneConfig: fragmentPhoneConfigs[rule.id]
+                    fragmentPhoneConfig: fragmentPhoneConfigs[rule.id],
+                    messageFactCheckConfig: messageFactCheckConfigs[rule.id]
                 )
             }
         return try applyRuleChanges(changes, appURL: appURL, signAfterPatch: signAfterPatch)
@@ -701,6 +732,7 @@ public final class BinaryPatchEngine {
         selfIdentityConfig: SelfIdentityPatchConfig? = nil,
         localPersonalChannelConfig: LocalPersonalChannelPatchConfig? = nil,
         fragmentPhoneConfig: FragmentPhonePatchConfig? = nil,
+        messageFactCheckConfig: MessageFactCheckPatchConfig? = nil,
         signAfterPatch: Bool = true
     ) throws -> BinaryPatchApplicationReport {
         let inspection = try inspect(appURL: appURL)
@@ -747,7 +779,8 @@ public final class BinaryPatchEngine {
                 customLevelRatingConfig: customLevelRatingConfig,
                 selfIdentityConfig: selfIdentityConfig,
                 localPersonalChannelConfig: localPersonalChannelConfig,
-                fragmentPhoneConfig: fragmentPhoneConfig
+                fragmentPhoneConfig: fragmentPhoneConfig,
+                messageFactCheckConfig: messageFactCheckConfig
             )
             let nextManifest = try manifest(
                 appURL: appURL,
@@ -769,7 +802,8 @@ public final class BinaryPatchEngine {
                     customLevelRatingConfig: customLevelRatingConfig,
                     selfIdentityConfig: selfIdentityConfig,
                     localPersonalChannelConfig: localPersonalChannelConfig,
-                    fragmentPhoneConfig: fragmentPhoneConfig
+                    fragmentPhoneConfig: fragmentPhoneConfig,
+                    messageFactCheckConfig: messageFactCheckConfig
                 )
             ]
         )
@@ -972,7 +1006,8 @@ public final class BinaryPatchEngine {
         requestedCustomLevelRatingConfig: CustomLevelRatingPatchConfig?,
         requestedSelfIdentityConfig: SelfIdentityPatchConfig?,
         requestedLocalPersonalChannelConfig: LocalPersonalChannelPatchConfig?,
-        requestedFragmentPhoneConfig: FragmentPhonePatchConfig?
+        requestedFragmentPhoneConfig: FragmentPhonePatchConfig?,
+        requestedMessageFactCheckConfig: MessageFactCheckPatchConfig?
     ) -> BinaryRuleStatus {
         let manifestEnabled = manifest?.enabledRuleIds.contains(rule.id) == true
         let installed = runtimeHookInstalled(for: inspection)
@@ -1005,6 +1040,13 @@ public final class BinaryPatchEngine {
         let fragmentPhoneConfig = (
             requestedFragmentPhoneConfig ?? manifestFragmentPhoneConfig
         ).normalized
+        let manifestMessageFactCheckConfig = (
+            manifest?.messageFactCheckConfigs[rule.id]
+                ?? MessageFactCheckPatchConfig.defaultConfig
+        ).normalized
+        let messageFactCheckConfig = (
+            requestedMessageFactCheckConfig ?? manifestMessageFactCheckConfig
+        ).normalized
 
         if Self.runtimeMemoryPatchRuleIds.contains(rule.id),
            !manifestEnabled,
@@ -1034,6 +1076,9 @@ public final class BinaryPatchEngine {
             installedDetail = "Runtime hook installed: \(localPersonalChannelConfig.displayValue)."
         } else if rule.kind == .fragmentPhone {
             installedDetail = "Runtime hook installed: \(fragmentPhoneConfig.displayValue)."
+        } else if rule.id == Self.messageSettingsRuleId,
+                  manifest?.enabledAlternativeGroups[rule.id]?.contains(Self.messageFactCheckAlternativeGroup) == true {
+            installedDetail = "Runtime memory patch installed: \(messageFactCheckConfig.displayValue)."
         } else if let parameter = rule.parameter {
             let value = parameterValue
                 ?? manifest?.parameterValues[rule.id]
@@ -1087,6 +1132,16 @@ public final class BinaryPatchEngine {
                     rule: rule,
                     state: .partial,
                     detail: "Runtime hook is installed with a different Fragment phone config."
+                )
+            }
+            if rule.id == Self.messageSettingsRuleId,
+               manifest?.enabledAlternativeGroups[rule.id]?.contains(Self.messageFactCheckAlternativeGroup) == true,
+               let requestedMessageFactCheckConfig,
+               requestedMessageFactCheckConfig.normalized != manifestMessageFactCheckConfig {
+                return BinaryRuleStatus(
+                    rule: rule,
+                    state: .partial,
+                    detail: "Runtime hook is installed with a different Message Fact Check config."
                 )
             }
             if let parameterValue,
@@ -1720,6 +1775,10 @@ public final class BinaryPatchEngine {
             manifest.fragmentPhoneConfigs[Self.fragmentPhoneRuleId]
                 ?? FragmentPhonePatchConfig.defaultConfig
         ).normalized
+        let messageFactCheckConfig = (
+            manifest.messageFactCheckConfigs[Self.messageSettingsRuleId]
+                ?? MessageFactCheckPatchConfig.defaultConfig
+        ).normalized
         let visualPeerBadgeRule = BinaryPatchRuleCatalog.rule(id: Self.visualPeerBadgeRuleId)
         let tonRule = BinaryPatchRuleCatalog.rule(id: Self.customTonRuleId)
         let starsRule = BinaryPatchRuleCatalog.rule(id: Self.customStarsRuleId)
@@ -1784,6 +1843,12 @@ public final class BinaryPatchEngine {
                 && messageGroups.contains(where: Self.isMessageReadReceiptsAlternativeGroup),
             messageLocalDraftsEnabled: enabled.contains(Self.messageSettingsRuleId)
                 && messageGroups.contains(Self.messageLocalDraftsAlternativeGroup),
+            messageFactCheckEnabled: enabled.contains(Self.messageSettingsRuleId)
+                && messageGroups.contains(Self.messageFactCheckAlternativeGroup),
+            messageFactCheckText: messageFactCheckConfig.text,
+            messageFactCheckCountry: messageFactCheckConfig.country,
+            messageFactCheckHash: messageFactCheckConfig.hash,
+            messageFactCheckNeedCheck: messageFactCheckConfig.needCheck,
             localPremiumEnabled: enabled.contains(Self.localPremiumRuleId),
             scheduledSendEnabled: enabled.contains(Self.scheduledSendRuleId)
                 || (enabled.contains(Self.messageSettingsRuleId)
@@ -2006,6 +2071,10 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_CHANNEL_SET_BOT_VERIFY_DETAILS_VMADDR 0x103fadd08ULL
         #define PATCHGRAM_PHONE_OR_HIDDEN_VALUE_MAP_VMADDR 0x10557c90cULL
         #define PATCHGRAM_IS_COLLECTIBLE_PHONE_VMADDR 0x1054d1c40ULL
+        #define PATCHGRAM_HISTORY_ITEM_SET_FACTCHECK_VMADDR 0x1044e516cULL
+        #define PATCHGRAM_HISTORY_ITEM_CREATE_VIEW_VMADDR 0x1044e15f8ULL
+        #define PATCHGRAM_HISTORY_ITEM_HAS_UNREQUESTED_FACTCHECK_VMADDR 0x1044e58f4ULL
+        #define PATCHGRAM_DATA_FACTCHECKS_REQUEST_FOR_VMADDR 0x108215c38ULL
         #define PATCHGRAM_SESSION_PRIVATE_TRY_TO_RECEIVE_VMADDR 0x105d6b498ULL
         #define PATCHGRAM_SESSION_SEND_PREPARED_VMADDR 0x105d74850ULL
         #define PATCHGRAM_MESSAGES_SEND_MESSAGE_SERIALIZE_VMADDR 0x103d35b74ULL
@@ -2044,10 +2113,15 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_MAX_PHONE_UTF16 64
         #define PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8 256
         #define PATCHGRAM_MAX_FRAGMENT_PHONE_UTF8 128
+        #define PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF8 1024
+        #define PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF16 1024
+        #define PATCHGRAM_MAX_FACT_CHECK_COUNTRY_UTF16 256
         #define PATCHGRAM_GENERATED_DETAILS_SIZE 0x80
         #define PATCHGRAM_MAX_MEMORY_PATCH_OCCURRENCES 16
         #define PATCHGRAM_MAX_TRACKED_USER_PEERS 1024
         #define PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS 64
+        #define PATCHGRAM_MAX_TRACKED_FACT_CHECK_REQUESTS 64
+        #define PATCHGRAM_MAX_FORCED_FACT_CHECK_ITEMS 4096
         #define PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION 8
         #define PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET 0x30
         #define PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET 0x20
@@ -2061,6 +2135,15 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_TL_FRAGMENT_GET_COLLECTIBLE_INFO 0xbe1e85baU
         #define PATCHGRAM_TL_INPUT_COLLECTIBLE_PHONE 0xa2e214a4U
         #define PATCHGRAM_TL_FRAGMENT_COLLECTIBLE_INFO 0x6ebdff91U
+        #define PATCHGRAM_TL_MESSAGES_GET_FACT_CHECK 0xb9cdc5eeU
+        #define PATCHGRAM_TL_FACT_CHECK 0xb89bfccfU
+        #define PATCHGRAM_TL_TEXT_WITH_ENTITIES 0x751f3146U
+        #define PATCHGRAM_TL_VECTOR 0x1cb5c415U
+        #define PATCHGRAM_MESSAGE_FACTCHECK_TEXT_OFFSET 0x0
+        #define PATCHGRAM_MESSAGE_FACTCHECK_COUNTRY_OFFSET 0x30
+        #define PATCHGRAM_MESSAGE_FACTCHECK_HASH_OFFSET 0x48
+        #define PATCHGRAM_MESSAGE_FACTCHECK_NEED_CHECK_OFFSET 0x50
+        #define PATCHGRAM_MESSAGE_FACTCHECK_SIZE 0x58
 
         enum PatchgramPatchTemplate {
             PatchgramTemplateNone,
@@ -2118,6 +2201,7 @@ public final class BinaryPatchEngine {
         static bool g_message_typing_enabled = false;
         static bool g_message_read_receipts_enabled = false;
         static bool g_message_local_drafts_enabled = false;
+        static bool g_message_fact_check_enabled = false;
         static bool g_local_premium_enabled = false;
         static bool g_no_premium_anim_enabled = false;
         static bool g_disable_spoilers_enabled = false;
@@ -2141,6 +2225,14 @@ public final class BinaryPatchEngine {
         static char g_fragment_phone_crypto_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8] = {0};
         static char g_fragment_phone_url[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8] = {0};
         static char g_fragment_phone_self_phone_utf8[PATCHGRAM_MAX_FRAGMENT_PHONE_UTF8] = {0};
+        static char g_message_fact_check_text[PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF8] = {0};
+        static char g_message_fact_check_country[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8] = {0};
+        static uint16_t g_message_fact_check_text_utf16[PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF16] = {0};
+        static int64_t g_message_fact_check_text_utf16_size = 0;
+        static uint16_t g_message_fact_check_country_utf16[PATCHGRAM_MAX_FACT_CHECK_COUNTRY_UTF16] = {0};
+        static int64_t g_message_fact_check_country_utf16_size = 0;
+        static int64_t g_message_fact_check_hash = 0;
+        static bool g_message_fact_check_need_check = false;
         uint64_t g_self_user_id_target_mode = 2;
         static uint64_t g_custom_ton_value = 999;
         static uint64_t g_custom_stars_value = 999;
@@ -2161,6 +2253,7 @@ public final class BinaryPatchEngine {
         static bool g_previous_message_typing_enabled = false;
         static bool g_previous_message_read_receipts_enabled = false;
         static bool g_previous_message_local_drafts_enabled = false;
+        static bool g_previous_message_fact_check_enabled = false;
         static bool g_previous_local_premium_enabled = false;
         static bool g_previous_no_premium_anim_enabled = false;
         static bool g_previous_disable_spoilers_enabled = false;
@@ -2186,6 +2279,13 @@ public final class BinaryPatchEngine {
         static uint32_t g_fragment_phone_request_logs = 0;
         static uint32_t g_fragment_phone_request_skip_logs = 0;
         static uint32_t g_fragment_phone_response_logs = 0;
+        static uint32_t g_message_fact_check_request_logs = 0;
+        static uint32_t g_message_fact_check_request_skip_logs = 0;
+        static uint32_t g_message_fact_check_response_logs = 0;
+        static uint32_t g_message_fact_check_trigger_logs = 0;
+        static uint32_t g_message_fact_check_request_for_logs = 0;
+        static uint32_t g_message_fact_check_direct_set_logs = 0;
+        static uint32_t g_message_fact_check_early_layout_logs = 0;
         static uint32_t g_level_rating_logs = 0;
         static uint32_t g_scheduled_send_logs = 0;
         static void *g_tracked_user_peers[PATCHGRAM_MAX_TRACKED_USER_PEERS] = {0};
@@ -2193,6 +2293,18 @@ public final class BinaryPatchEngine {
         static pthread_mutex_t g_tracked_user_peers_mutex = PTHREAD_MUTEX_INITIALIZER;
         static int32_t g_fragment_phone_request_ids[PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS] = {0};
         static pthread_mutex_t g_fragment_phone_request_ids_mutex = PTHREAD_MUTEX_INITIALIZER;
+        struct PatchgramFactCheckRequest {
+            int32_t request_id;
+            int32_t count;
+        };
+        static struct PatchgramFactCheckRequest g_fact_check_requests[PATCHGRAM_MAX_TRACKED_FACT_CHECK_REQUESTS] = {0};
+        static pthread_mutex_t g_fact_check_requests_mutex = PTHREAD_MUTEX_INITIALIZER;
+        struct PatchgramForcedFactCheckItem {
+            void *item;
+            uint8_t attempts;
+        };
+        static struct PatchgramForcedFactCheckItem g_forced_fact_check_items[PATCHGRAM_MAX_FORCED_FACT_CHECK_ITEMS] = {0};
+        static pthread_mutex_t g_forced_fact_check_items_mutex = PTHREAD_MUTEX_INITIALIZER;
 
         typedef void (*PatchgramSetBotVerifyDetailsFn)(void *, void *);
         typedef void (*PatchgramPhoneOrHiddenValueMapFn)(void *, void *);
@@ -2201,6 +2313,10 @@ public final class BinaryPatchEngine {
         typedef void (*PatchgramMessagesSerializeFn)(void *, void *, uint64_t, uint64_t);
         typedef void (*PatchgramSessionTryToReceiveFn)(void *);
         typedef void (*PatchgramSessionSendPreparedFn)(void *, void *, int64_t);
+        typedef bool (*PatchgramHistoryItemHasUnrequestedFactcheckFn)(void *);
+        typedef void (*PatchgramDataFactchecksRequestForFn)(void *, void *);
+        typedef void (*PatchgramHistoryItemSetFactcheckFn)(void *, void *);
+        typedef void (*PatchgramHistoryItemCreateViewFn)(void *, void *, void *, void *);
         struct PatchgramStarsRating {
             int32_t level;
             int32_t stars;
@@ -2217,6 +2333,10 @@ public final class BinaryPatchEngine {
         static PatchgramMessagesSerializeFn g_original_messages_send_media_serialize = NULL;
         static PatchgramSessionTryToReceiveFn g_original_session_private_try_to_receive = NULL;
         static PatchgramSessionSendPreparedFn g_original_session_send_prepared = NULL;
+        static PatchgramHistoryItemHasUnrequestedFactcheckFn g_original_history_item_has_unrequested_factcheck = NULL;
+        static PatchgramDataFactchecksRequestForFn g_original_data_factchecks_request_for = NULL;
+        static PatchgramHistoryItemSetFactcheckFn g_history_item_set_factcheck = NULL;
+        static PatchgramHistoryItemCreateViewFn g_original_history_item_create_view = NULL;
         void *g_original_format_count_decimal = NULL;
 
         enum PatchgramTargetMode {
@@ -2769,6 +2889,19 @@ public final class BinaryPatchEngine {
             );
         }
 
+        static void patchgram_configure_fact_check_text(const char *text, const char *country) {
+            g_message_fact_check_text_utf16_size = (int64_t)patchgram_utf8_to_utf16(
+                text,
+                g_message_fact_check_text_utf16,
+                PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF16
+            );
+            g_message_fact_check_country_utf16_size = (int64_t)patchgram_utf8_to_utf16(
+                country,
+                g_message_fact_check_country_utf16,
+                PATCHGRAM_MAX_FACT_CHECK_COUNTRY_UTF16
+            );
+        }
+
         static const char *patchgram_main_image_name(void) {
             uint32_t count = _dyld_image_count();
             for (uint32_t index = 0; index < count; index++) {
@@ -2997,6 +3130,9 @@ public final class BinaryPatchEngine {
                 if (strcmp(alternative_group, "messages.scheduled_send.local") == 0) {
                     return g_message_settings_enabled && g_scheduled_send_enabled;
                 }
+                if (strcmp(alternative_group, "messages.fact_check.local") == 0) {
+                    return g_message_settings_enabled && g_message_fact_check_enabled;
+                }
                 return g_message_settings_enabled;
             }
             if (strcmp(rule_id, "binary.premium.local") == 0) {
@@ -3067,6 +3203,9 @@ public final class BinaryPatchEngine {
                 if (strcmp(alternative_group, "messages.scheduled_send.local") == 0) {
                     return g_previous_message_settings_enabled && g_previous_scheduled_send_enabled;
                 }
+                if (strcmp(alternative_group, "messages.fact_check.local") == 0) {
+                    return g_previous_message_settings_enabled && g_previous_message_fact_check_enabled;
+                }
                 return g_previous_message_settings_enabled;
             }
             if (strcmp(rule_id, "binary.premium.local") == 0) {
@@ -3112,6 +3251,7 @@ public final class BinaryPatchEngine {
             g_previous_message_typing_enabled = g_message_typing_enabled;
             g_previous_message_read_receipts_enabled = g_message_read_receipts_enabled;
             g_previous_message_local_drafts_enabled = g_message_local_drafts_enabled;
+            g_previous_message_fact_check_enabled = g_message_fact_check_enabled;
             g_previous_local_premium_enabled = g_local_premium_enabled;
             g_previous_no_premium_anim_enabled = g_no_premium_anim_enabled;
             g_previous_disable_spoilers_enabled = g_disable_spoilers_enabled;
@@ -3579,6 +3719,8 @@ public final class BinaryPatchEngine {
             char fragment_phone_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
             char fragment_phone_crypto_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
             char fragment_phone_url[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
+            char message_fact_check_text[PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF8];
+            char message_fact_check_country[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
             patchgram_json_string(json, "botVerificationTargetMode", target_mode, sizeof(target_mode));
             patchgram_json_string(json, "customLevelRatingTargetMode", rating_target_mode, sizeof(rating_target_mode));
             patchgram_json_string(json, "botVerificationDescription", description, sizeof(description));
@@ -3592,6 +3734,8 @@ public final class BinaryPatchEngine {
             patchgram_json_string(json, "fragmentPhoneCurrency", fragment_phone_currency, sizeof(fragment_phone_currency));
             patchgram_json_string(json, "fragmentPhoneCryptoCurrency", fragment_phone_crypto_currency, sizeof(fragment_phone_crypto_currency));
             patchgram_json_string(json, "fragmentPhoneUrl", fragment_phone_url, sizeof(fragment_phone_url));
+            patchgram_json_string(json, "messageFactCheckText", message_fact_check_text, sizeof(message_fact_check_text));
+            patchgram_json_string(json, "messageFactCheckCountry", message_fact_check_country, sizeof(message_fact_check_country));
             if (!self_phone_target_mode[0]) {
                 snprintf(self_phone_target_mode, sizeof(self_phone_target_mode), "%s", "onlySelf");
             }
@@ -3624,6 +3768,7 @@ public final class BinaryPatchEngine {
             g_message_typing_enabled = patchgram_json_bool(json, "messageTypingEnabled", false);
             g_message_read_receipts_enabled = patchgram_json_bool(json, "messageReadReceiptsEnabled", false);
             g_message_local_drafts_enabled = patchgram_json_bool(json, "messageLocalDraftsEnabled", false);
+            g_message_fact_check_enabled = patchgram_json_bool(json, "messageFactCheckEnabled", false);
             g_local_premium_enabled = patchgram_json_bool(json, "localPremiumEnabled", false);
             g_no_premium_anim_enabled = patchgram_json_bool(json, "noPremiumAnimEnabled", false);
             g_disable_spoilers_enabled = patchgram_json_bool(json, "disableSpoilersEnabled", false);
@@ -3643,6 +3788,10 @@ public final class BinaryPatchEngine {
             snprintf(g_fragment_phone_currency, sizeof(g_fragment_phone_currency), "%s", fragment_phone_currency);
             snprintf(g_fragment_phone_crypto_currency, sizeof(g_fragment_phone_crypto_currency), "%s", fragment_phone_crypto_currency);
             snprintf(g_fragment_phone_url, sizeof(g_fragment_phone_url), "%s", fragment_phone_url);
+            snprintf(g_message_fact_check_text, sizeof(g_message_fact_check_text), "%s", message_fact_check_text);
+            snprintf(g_message_fact_check_country, sizeof(g_message_fact_check_country), "%s", message_fact_check_country);
+            g_message_fact_check_hash = patchgram_json_i64(json, "messageFactCheckHash", 0);
+            g_message_fact_check_need_check = patchgram_json_bool(json, "messageFactCheckNeedCheck", false);
             g_custom_ton_value = patchgram_json_u64(json, "customTonValue", 999);
             g_custom_stars_value = patchgram_json_u64(json, "customStarsValue", 999);
             g_custom_level_rating_level = (int32_t)patchgram_json_i64(json, "customLevelRatingLevel", 1);
@@ -3661,9 +3810,10 @@ public final class BinaryPatchEngine {
             g_fragment_phone_target_mode = (uint64_t)patchgram_parse_target_mode(fragment_phone_target_mode);
             patchgram_configure_description(description);
             patchgram_configure_self_phone(self_phone);
+            patchgram_configure_fact_check_text(g_message_fact_check_text, g_message_fact_check_country);
             patchgram_refresh_config_mtime(config_path, NULL);
             patchgram_log(
-                "CONFIG %s botVerification=%d targetMode=%s customEmojiId=%llu description=%s descriptionUtf16Length=%lld customLevelRating=%d:%s level=%d rating=%d current=%d next=%d hideSelfPhone=%d selfIdentity=%d customPhone=%d:%s phoneUtf16Length=%lld customUserId=%d:%s displayUserId=%llu personalChannel=%d:%s:%llu:%d reference=%s fragmentPhone=%d:%s date=%d amount=%lld currency=%s cryptoAmount=%lld cryptoCurrency=%s url=%s visualPeerBadge=%d:%llu forceOffline=%d openLinks=%d noPhoneOnAdd=%d callbackHover=%d customTon=%d:%llu customStars=%d:%llu blockTyping=%d blockRead=%d messageSettings=%d typing=%d readReceipts=%d localDrafts=%d localPremium=%d noPremiumAnim=%d disableSpoilers=%d scheduledSend=%d sensitiveBlur=%d hideStories=%d disableAds=%d telegramAds=%d proxySponsor=%d image=%s",
+                "CONFIG %s botVerification=%d targetMode=%s customEmojiId=%llu description=%s descriptionUtf16Length=%lld customLevelRating=%d:%s level=%d rating=%d current=%d next=%d hideSelfPhone=%d selfIdentity=%d customPhone=%d:%s phoneUtf16Length=%lld customUserId=%d:%s displayUserId=%llu personalChannel=%d:%s:%llu:%d reference=%s fragmentPhone=%d:%s date=%d amount=%lld currency=%s cryptoAmount=%lld cryptoCurrency=%s url=%s visualPeerBadge=%d:%llu forceOffline=%d openLinks=%d noPhoneOnAdd=%d callbackHover=%d customTon=%d:%llu customStars=%d:%llu blockTyping=%d blockRead=%d messageSettings=%d typing=%d readReceipts=%d localDrafts=%d factCheck=%d factCheckText=%s factCheckCountry=%s factCheckHash=%lld factCheckNeedCheck=%d localPremium=%d noPremiumAnim=%d disableSpoilers=%d scheduledSend=%d sensitiveBlur=%d hideStories=%d disableAds=%d telegramAds=%d proxySponsor=%d image=%s",
                 reason ? reason : "load",
                 g_bot_verification_enabled ? 1 : 0,
                 target_mode,
@@ -3713,6 +3863,11 @@ public final class BinaryPatchEngine {
                 g_message_typing_enabled ? 1 : 0,
                 g_message_read_receipts_enabled ? 1 : 0,
                 g_message_local_drafts_enabled ? 1 : 0,
+                g_message_fact_check_enabled ? 1 : 0,
+                g_message_fact_check_text,
+                g_message_fact_check_country,
+                (long long)g_message_fact_check_hash,
+                g_message_fact_check_need_check ? 1 : 0,
                 g_local_premium_enabled ? 1 : 0,
                 g_no_premium_anim_enabled ? 1 : 0,
                 g_disable_spoilers_enabled ? 1 : 0,
@@ -3725,13 +3880,14 @@ public final class BinaryPatchEngine {
                 patchgram_main_image_name()
             );
             patchgram_log(
-                "SCHEDULED SEND config reason=%s enabled=%d messageSettings=%d typing=%d readReceipts=%d localDrafts=%d delaySeconds=%d sendMessageHook=%d sendMediaHook=%d status=%s",
+                "SCHEDULED SEND config reason=%s enabled=%d messageSettings=%d typing=%d readReceipts=%d localDrafts=%d factCheck=%d delaySeconds=%d sendMessageHook=%d sendMediaHook=%d status=%s",
                 reason ? reason : "load",
                 g_scheduled_send_enabled ? 1 : 0,
                 g_message_settings_enabled ? 1 : 0,
                 g_message_typing_enabled ? 1 : 0,
                 g_message_read_receipts_enabled ? 1 : 0,
                 g_message_local_drafts_enabled ? 1 : 0,
+                g_message_fact_check_enabled ? 1 : 0,
                 PATCHGRAM_SCHEDULED_SEND_DELAY_SECONDS,
                 g_scheduled_send_message_hook_installed ? 1 : 0,
                 g_scheduled_send_media_hook_installed ? 1 : 0,
@@ -3791,6 +3947,7 @@ public final class BinaryPatchEngine {
         static void patchgram_write_custom_level_rating(void *peer, const char *source);
         static void patchgram_write_local_personal_channel(void *peer, const char *source);
         static void patchgram_apply_raw_qstring(uint8_t *destination, const uint16_t *text, int64_t size);
+        static void patchgram_configure_fact_check_text(const char *text, const char *country);
 
         static uint64_t patchgram_details_u64(void *details, size_t offset) {
             if (!details) {
@@ -4177,6 +4334,156 @@ public final class BinaryPatchEngine {
             return true;
         }
 
+        static bool patchgram_tl_read_i32_at(
+            const uint8_t *buffer,
+            size_t length,
+            size_t offset,
+            int32_t *value_out
+        ) {
+            if (!buffer || !value_out || offset + sizeof(int32_t) > length) {
+                return false;
+            }
+            memcpy(value_out, buffer + offset, sizeof(int32_t));
+            return true;
+        }
+
+        static void patchgram_track_fact_check_request(int32_t request_id, int32_t count) {
+            if (request_id <= 0 || count <= 0) {
+                return;
+            }
+            pthread_mutex_lock(&g_fact_check_requests_mutex);
+            size_t empty_index = PATCHGRAM_MAX_TRACKED_FACT_CHECK_REQUESTS;
+            for (size_t i = 0; i < PATCHGRAM_MAX_TRACKED_FACT_CHECK_REQUESTS; i++) {
+                if (g_fact_check_requests[i].request_id == request_id) {
+                    g_fact_check_requests[i].count = count;
+                    pthread_mutex_unlock(&g_fact_check_requests_mutex);
+                    return;
+                }
+                if (g_fact_check_requests[i].request_id == 0 && empty_index == PATCHGRAM_MAX_TRACKED_FACT_CHECK_REQUESTS) {
+                    empty_index = i;
+                }
+            }
+            if (empty_index != PATCHGRAM_MAX_TRACKED_FACT_CHECK_REQUESTS) {
+                g_fact_check_requests[empty_index].request_id = request_id;
+                g_fact_check_requests[empty_index].count = count;
+            } else {
+                g_fact_check_requests[0].request_id = request_id;
+                g_fact_check_requests[0].count = count;
+            }
+            pthread_mutex_unlock(&g_fact_check_requests_mutex);
+        }
+
+        static int32_t patchgram_take_fact_check_request(int32_t request_id) {
+            if (request_id <= 0) {
+                return 0;
+            }
+            int32_t count = 0;
+            pthread_mutex_lock(&g_fact_check_requests_mutex);
+            for (size_t i = 0; i < PATCHGRAM_MAX_TRACKED_FACT_CHECK_REQUESTS; i++) {
+                if (g_fact_check_requests[i].request_id == request_id) {
+                    count = g_fact_check_requests[i].count;
+                    g_fact_check_requests[i].request_id = 0;
+                    g_fact_check_requests[i].count = 0;
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&g_fact_check_requests_mutex);
+            return count;
+        }
+
+        static bool patchgram_fact_check_request_should_be_local(
+            void *request_ref,
+            int32_t *request_id_out,
+            int32_t *count_out
+        ) {
+            if (request_id_out) {
+                *request_id_out = 0;
+            }
+            if (count_out) {
+                *count_out = 0;
+            }
+            if (!g_message_settings_enabled || !g_message_fact_check_enabled || !request_ref) {
+                return false;
+            }
+            if (!g_message_fact_check_text[0]) {
+                if (g_message_fact_check_request_skip_logs < 32) {
+                    g_message_fact_check_request_skip_logs++;
+                    patchgram_log("FACT CHECK request skipped reason=empty-text");
+                }
+                return false;
+            }
+            void *request_data = NULL;
+            memcpy(&request_data, request_ref, sizeof(request_data));
+            if (!request_data) {
+                return false;
+            }
+            uint32_t *words = NULL;
+            int64_t word_count = 0;
+            memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+            memcpy(&word_count, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+            if (!words || word_count <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) {
+                return false;
+            }
+            int32_t request_id = 0;
+            memcpy(&request_id, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(request_id));
+            const uint8_t *bytes = (const uint8_t *)words;
+            const size_t byte_count = (size_t)word_count * sizeof(uint32_t);
+            const size_t max_scan = (word_count < 512) ? (size_t)word_count : 512;
+            bool has_method = false;
+            int32_t count = 0;
+            for (size_t i = PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION; i < max_scan; i++) {
+                if (words[i] != PATCHGRAM_TL_MESSAGES_GET_FACT_CHECK) {
+                    continue;
+                }
+                has_method = true;
+                for (size_t j = i + 1; j + 1 < max_scan; j++) {
+                    if (words[j] != PATCHGRAM_TL_VECTOR) {
+                        continue;
+                    }
+                    int32_t candidate_count = 0;
+                    if (patchgram_tl_read_i32_at(bytes, byte_count, (j + 1) * sizeof(uint32_t), &candidate_count)
+                        && candidate_count > 0
+                        && candidate_count <= 256
+                        && j + 2 + (size_t)candidate_count <= max_scan) {
+                        count = candidate_count;
+                        break;
+                    }
+                }
+                break;
+            }
+            if (has_method && g_message_fact_check_request_logs < 96) {
+                g_message_fact_check_request_logs++;
+                patchgram_log(
+                    "FACT CHECK getFactCheck seen requestId=%d count=%d words=%lld enabled=%d textLength=%zu",
+                    (int)request_id,
+                    (int)count,
+                    (long long)word_count,
+                    g_message_fact_check_enabled ? 1 : 0,
+                    strlen(g_message_fact_check_text)
+                );
+            }
+            if (!has_method || count <= 0 || request_id <= 0) {
+                if ((has_method || request_id > 0) && g_message_fact_check_request_skip_logs < 96) {
+                    g_message_fact_check_request_skip_logs++;
+                    patchgram_log(
+                        "FACT CHECK request skipped reason=%s requestId=%d count=%d hasMethod=%d",
+                        !has_method ? "missing-method" : (count <= 0 ? "missing-msg-ids" : "missing-request-id"),
+                        (int)request_id,
+                        (int)count,
+                        has_method ? 1 : 0
+                    );
+                }
+                return false;
+            }
+            if (request_id_out) {
+                *request_id_out = request_id;
+            }
+            if (count_out) {
+                *count_out = count;
+            }
+            return true;
+        }
+
         static bool patchgram_fragment_request_should_be_local(void *request_ref, int32_t *request_id_out) {
             if (request_id_out) {
                 *request_id_out = 0;
@@ -4359,8 +4666,237 @@ public final class BinaryPatchEngine {
             return true;
         }
 
+        static uint32_t *patchgram_build_fact_check_reply(int32_t count, int64_t *word_count_out) {
+            if (word_count_out) {
+                *word_count_out = 0;
+            }
+            if (count <= 0 || !g_message_fact_check_text[0]) {
+                return NULL;
+            }
+            const char *country = g_message_fact_check_country;
+            const char *text = g_message_fact_check_text;
+            const int32_t flags = (g_message_fact_check_need_check ? 1 : 0) | 2;
+            const size_t one_fact_check_size = sizeof(uint32_t)
+                + sizeof(int32_t)
+                + patchgram_tl_string_length(country)
+                + sizeof(uint32_t)
+                + patchgram_tl_string_length(text)
+                + sizeof(uint32_t)
+                + sizeof(int32_t)
+                + sizeof(int64_t);
+            const size_t byte_count = sizeof(uint32_t) + sizeof(int32_t) + one_fact_check_size * (size_t)count;
+            const size_t padded_count = (byte_count + 3U) & ~(size_t)3U;
+            uint8_t *buffer = (uint8_t *)calloc(padded_count, 1);
+            if (!buffer) {
+                return NULL;
+            }
+            size_t offset = 0;
+            patchgram_tl_write_u32(buffer, &offset, PATCHGRAM_TL_VECTOR);
+            patchgram_tl_write_i32(buffer, &offset, count);
+            for (int32_t i = 0; i < count; i++) {
+                patchgram_tl_write_u32(buffer, &offset, PATCHGRAM_TL_FACT_CHECK);
+                patchgram_tl_write_i32(buffer, &offset, flags);
+                patchgram_tl_write_string(buffer, &offset, country);
+                patchgram_tl_write_u32(buffer, &offset, PATCHGRAM_TL_TEXT_WITH_ENTITIES);
+                patchgram_tl_write_string(buffer, &offset, text);
+                patchgram_tl_write_u32(buffer, &offset, PATCHGRAM_TL_VECTOR);
+                patchgram_tl_write_i32(buffer, &offset, 0);
+                patchgram_tl_write_i64(buffer, &offset, g_message_fact_check_hash);
+            }
+            if (word_count_out) {
+                *word_count_out = (int64_t)(padded_count / sizeof(uint32_t));
+            }
+            return (uint32_t *)buffer;
+        }
+
+        static bool patchgram_apply_fact_check_response(void *response) {
+            if (!response || !g_message_settings_enabled || !g_message_fact_check_enabled) {
+                return false;
+            }
+            int32_t request_id = 0;
+            memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+            const int32_t count = patchgram_take_fact_check_request(request_id);
+            if (count <= 0) {
+                return false;
+            }
+            int64_t word_count = 0;
+            uint32_t *words = patchgram_build_fact_check_reply(count, &word_count);
+            if (!words || word_count <= 0) {
+                free(words);
+                return false;
+            }
+            void *data_header = NULL;
+            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_D_OFFSET, &data_header, sizeof(data_header));
+            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, &words, sizeof(words));
+            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &word_count, sizeof(word_count));
+            if (g_message_fact_check_response_logs < 96) {
+                g_message_fact_check_response_logs++;
+                patchgram_log(
+                    "FACT CHECK response substituted requestId=%d count=%d words=%lld text=%s country=%s hash=%lld needCheck=%d",
+                    (int)request_id,
+                    (int)count,
+                    (long long)word_count,
+                    g_message_fact_check_text,
+                    g_message_fact_check_country,
+                    (long long)g_message_fact_check_hash,
+                    g_message_fact_check_need_check ? 1 : 0
+                );
+            }
+            return true;
+        }
+
+        static bool patchgram_should_force_fact_check_item(void *item) {
+            if (!item) {
+                return false;
+            }
+            bool should_force = false;
+            pthread_mutex_lock(&g_forced_fact_check_items_mutex);
+            size_t empty_index = PATCHGRAM_MAX_FORCED_FACT_CHECK_ITEMS;
+            for (size_t i = 0; i < PATCHGRAM_MAX_FORCED_FACT_CHECK_ITEMS; i++) {
+                if (g_forced_fact_check_items[i].item == item) {
+                    if (g_forced_fact_check_items[i].attempts < 8) {
+                        g_forced_fact_check_items[i].attempts++;
+                        should_force = true;
+                    }
+                    pthread_mutex_unlock(&g_forced_fact_check_items_mutex);
+                    return should_force;
+                }
+                if (!g_forced_fact_check_items[i].item && empty_index == PATCHGRAM_MAX_FORCED_FACT_CHECK_ITEMS) {
+                    empty_index = i;
+                }
+            }
+            if (empty_index != PATCHGRAM_MAX_FORCED_FACT_CHECK_ITEMS) {
+                g_forced_fact_check_items[empty_index].item = item;
+                g_forced_fact_check_items[empty_index].attempts = 1;
+            } else {
+                g_forced_fact_check_items[0].item = item;
+                g_forced_fact_check_items[0].attempts = 1;
+            }
+            should_force = true;
+            pthread_mutex_unlock(&g_forced_fact_check_items_mutex);
+            return should_force;
+        }
+
+        static bool patchgram_set_local_fact_check_on_item(void *item) {
+            if (!item
+                || !g_history_item_set_factcheck
+                || !g_message_settings_enabled
+                || !g_message_fact_check_enabled
+                || g_message_fact_check_text_utf16_size <= 0) {
+                return false;
+            }
+            uint8_t info[PATCHGRAM_MESSAGE_FACTCHECK_SIZE];
+            memset(info, 0, sizeof(info));
+            patchgram_apply_raw_qstring(
+                info + PATCHGRAM_MESSAGE_FACTCHECK_TEXT_OFFSET + PATCHGRAM_QSTRING_D_OFFSET,
+                g_message_fact_check_text_utf16,
+                g_message_fact_check_text_utf16_size
+            );
+            memset(
+                info + PATCHGRAM_MESSAGE_FACTCHECK_TEXT_OFFSET + PATCHGRAM_TEXT_WITH_ENTITIES_ENTITIES_OFFSET,
+                0,
+                PATCHGRAM_QT_ARRAY_DATA_POINTER_SIZE
+            );
+            patchgram_apply_raw_qstring(
+                info + PATCHGRAM_MESSAGE_FACTCHECK_COUNTRY_OFFSET,
+                g_message_fact_check_country_utf16,
+                g_message_fact_check_country_utf16_size
+            );
+            uint64_t effective_hash = (uint64_t)g_message_fact_check_hash;
+            if (effective_hash == 0) {
+                effective_hash = 1;
+            }
+            memcpy(info + PATCHGRAM_MESSAGE_FACTCHECK_HASH_OFFSET, &effective_hash, sizeof(effective_hash));
+            const uint8_t need_check = g_message_fact_check_need_check ? 1 : 0;
+            memcpy(info + PATCHGRAM_MESSAGE_FACTCHECK_NEED_CHECK_OFFSET, &need_check, sizeof(need_check));
+            g_history_item_set_factcheck(item, info);
+            if (g_message_fact_check_direct_set_logs < 256) {
+                g_message_fact_check_direct_set_logs++;
+                patchgram_log(
+                    "FACT CHECK direct set item=%p textLength=%lld countryLength=%lld hash=%llu configuredHash=%lld needCheck=%d",
+                    item,
+                    (long long)g_message_fact_check_text_utf16_size,
+                    (long long)g_message_fact_check_country_utf16_size,
+                    (unsigned long long)effective_hash,
+                    (long long)g_message_fact_check_hash,
+                    g_message_fact_check_need_check ? 1 : 0
+                );
+            }
+            return true;
+        }
+
+        static bool patchgram_history_item_has_unrequested_factcheck(void *item) {
+            const bool original = g_original_history_item_has_unrequested_factcheck
+                ? g_original_history_item_has_unrequested_factcheck(item)
+                : false;
+            if (original
+                || !g_message_settings_enabled
+                || !g_message_fact_check_enabled
+                || !g_message_fact_check_text[0]) {
+                return original;
+            }
+            const bool forced = patchgram_should_force_fact_check_item(item);
+            const bool direct_set = forced && patchgram_set_local_fact_check_on_item(item);
+            if (forced && g_message_fact_check_trigger_logs < 256) {
+                g_message_fact_check_trigger_logs++;
+                patchgram_log(
+                    "FACT CHECK trigger forced item=%p textLength=%zu directSet=%d",
+                    item,
+                    strlen(g_message_fact_check_text),
+                    direct_set ? 1 : 0
+                );
+            }
+            if (direct_set) {
+                return false;
+            }
+            return forced;
+        }
+
+        static void patchgram_history_item_create_view(
+            void *result,
+            void *item,
+            void *delegate,
+            void *replacing
+        ) {
+            const bool direct_set = patchgram_set_local_fact_check_on_item(item);
+            if (direct_set && g_message_fact_check_early_layout_logs < 256) {
+                g_message_fact_check_early_layout_logs++;
+                patchgram_log(
+                    "FACT CHECK early createView item=%p result=%p delegate=%p replacing=%p",
+                    item,
+                    result,
+                    delegate,
+                    replacing
+                );
+            }
+            if (g_original_history_item_create_view) {
+                g_original_history_item_create_view(result, item, delegate, replacing);
+            }
+        }
+
+        static void patchgram_data_factchecks_request_for(void *factchecks, void *item) {
+            if (g_message_settings_enabled
+                && g_message_fact_check_enabled
+                && g_message_fact_check_text[0]
+                && g_message_fact_check_request_for_logs < 256) {
+                g_message_fact_check_request_for_logs++;
+                patchgram_log(
+                    "FACT CHECK requestFor called factchecks=%p item=%p textLength=%zu country=%s hash=%lld needCheck=%d",
+                    factchecks,
+                    item,
+                    strlen(g_message_fact_check_text),
+                    g_message_fact_check_country,
+                    (long long)g_message_fact_check_hash,
+                    g_message_fact_check_need_check ? 1 : 0
+                );
+            }
+            if (g_original_data_factchecks_request_for) {
+                g_original_data_factchecks_request_for(factchecks, item);
+            }
+        }
+
         static void patchgram_apply_fragment_phone_received_queue(void *session_private) {
-            if (!session_private || !g_fragment_phone_enabled) {
+            if (!session_private || (!g_fragment_phone_enabled && !g_message_fact_check_enabled)) {
                 return;
             }
             void *session_data = NULL;
@@ -4381,6 +4917,7 @@ public final class BinaryPatchEngine {
             }
             for (uint8_t *response = begin; response < end; response += PATCHGRAM_RESPONSE_SIZE) {
                 patchgram_apply_fragment_phone_response(response);
+                patchgram_apply_fact_check_response(response);
             }
         }
 
@@ -4403,6 +4940,21 @@ public final class BinaryPatchEngine {
                         (long long)ms_can_wait,
                         g_fragment_phone_self_phone_utf8,
                         patchgram_target_mode_value_name((enum PatchgramTargetMode)g_fragment_phone_target_mode)
+                    );
+                }
+            }
+            int32_t fact_check_request_id = 0;
+            int32_t fact_check_count = 0;
+            if (patchgram_fact_check_request_should_be_local(request_ref, &fact_check_request_id, &fact_check_count)) {
+                patchgram_track_fact_check_request(fact_check_request_id, fact_check_count);
+                if (g_message_fact_check_request_logs < 96) {
+                    g_message_fact_check_request_logs++;
+                    patchgram_log(
+                        "FACT CHECK request tracked requestId=%d count=%d msCanWait=%lld text=%s",
+                        (int)fact_check_request_id,
+                        (int)fact_check_count,
+                        (long long)ms_can_wait,
+                        g_message_fact_check_text
                     );
                 }
             }
@@ -5025,6 +5577,20 @@ public final class BinaryPatchEngine {
                 0xff, 0x83, 0x02, 0xd1, 0xf6, 0x57, 0x07, 0xa9,
                 0xf4, 0x4f, 0x08, 0xa9, 0xfd, 0x7b, 0x09, 0xa9
             };
+            static const uint8_t history_item_create_view_expected[] = {
+                0xe9, 0x23, 0xb9, 0x6d, 0xfc, 0x6f, 0x01, 0xa9,
+                0xfa, 0x67, 0x02, 0xa9, 0xf8, 0x5f, 0x03, 0xa9
+            };
+            static const uint8_t history_item_has_unrequested_factcheck_expected[] = {
+                0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x03, 0x00, 0x91,
+                0x08, 0x14, 0x40, 0xf9, 0x08, 0x05, 0x63, 0x92,
+                0x09, 0x00, 0xa4, 0x52, 0x1f, 0x01, 0x09, 0xeb
+            };
+            static const uint8_t data_factchecks_request_for_expected[] = {
+                0xff, 0xc3, 0x01, 0xd1, 0xf8, 0x5f, 0x03, 0xa9,
+                0xf6, 0x57, 0x04, 0xa9, 0xf4, 0x4f, 0x05, 0xa9,
+                0xfd, 0x7b, 0x06, 0xa9, 0xfd, 0x83, 0x01, 0x91
+            };
             static const uint8_t session_private_try_to_receive_expected[] = {
                 0xfc, 0x6f, 0xba, 0xa9, 0xfa, 0x67, 0x01, 0xa9,
                 0xf8, 0x5f, 0x02, 0xa9, 0xf6, 0x57, 0x03, 0xa9
@@ -5048,6 +5614,9 @@ public final class BinaryPatchEngine {
 
             g_profile_peer_id_text_return = (uintptr_t)patchgram_resolve_vmaddr(
                 PATCHGRAM_PROFILE_PEER_ID_TEXT_RETURN_VMADDR
+            );
+            g_history_item_set_factcheck = (PatchgramHistoryItemSetFactcheckFn)patchgram_resolve_vmaddr(
+                PATCHGRAM_HISTORY_ITEM_SET_FACTCHECK_VMADDR
             );
 
             const bool user_flags_hook = patchgram_install_inline_hook(
@@ -5090,6 +5659,45 @@ public final class BinaryPatchEngine {
                 (void **)&g_original_is_collectible_phone,
                 "Info::Profile::IsCollectiblePhone"
             );
+            bool history_item_create_view_hook = false;
+            if (PATCHGRAM_HISTORY_ITEM_CREATE_VIEW_VMADDR != 0) {
+                history_item_create_view_hook = patchgram_install_inline_hook(
+                    patchgram_resolve_vmaddr(PATCHGRAM_HISTORY_ITEM_CREATE_VIEW_VMADDR),
+                    patchgram_history_item_create_view,
+                    history_item_create_view_expected,
+                    sizeof(history_item_create_view_expected),
+                    (void **)&g_original_history_item_create_view,
+                    "HistoryItem::createView"
+                );
+            } else {
+                patchgram_log("SKIP HistoryItem::createView hook: vmaddr not configured");
+            }
+            bool history_item_fact_check_hook = false;
+            if (PATCHGRAM_HISTORY_ITEM_HAS_UNREQUESTED_FACTCHECK_VMADDR != 0) {
+                history_item_fact_check_hook = patchgram_install_inline_hook(
+                    patchgram_resolve_vmaddr(PATCHGRAM_HISTORY_ITEM_HAS_UNREQUESTED_FACTCHECK_VMADDR),
+                    patchgram_history_item_has_unrequested_factcheck,
+                    history_item_has_unrequested_factcheck_expected,
+                    sizeof(history_item_has_unrequested_factcheck_expected),
+                    (void **)&g_original_history_item_has_unrequested_factcheck,
+                    "HistoryItem::hasUnrequestedFactcheck"
+                );
+            } else {
+                patchgram_log("SKIP HistoryItem::hasUnrequestedFactcheck hook: vmaddr not configured");
+            }
+            bool data_factchecks_request_for_hook = false;
+            if (PATCHGRAM_DATA_FACTCHECKS_REQUEST_FOR_VMADDR != 0) {
+                data_factchecks_request_for_hook = patchgram_install_inline_hook(
+                    patchgram_resolve_vmaddr(PATCHGRAM_DATA_FACTCHECKS_REQUEST_FOR_VMADDR),
+                    patchgram_data_factchecks_request_for,
+                    data_factchecks_request_for_expected,
+                    sizeof(data_factchecks_request_for_expected),
+                    (void **)&g_original_data_factchecks_request_for,
+                    "Data::Factchecks::requestFor"
+                );
+            } else {
+                patchgram_log("SKIP Data::Factchecks::requestFor hook: vmaddr not configured");
+            }
             const bool session_try_to_receive_hook = patchgram_install_inline_hook(
                 patchgram_resolve_vmaddr(PATCHGRAM_SESSION_PRIVATE_TRY_TO_RECEIVE_VMADDR),
                 patchgram_session_private_try_to_receive,
@@ -5131,12 +5739,15 @@ public final class BinaryPatchEngine {
                 "Lang::FormatCountDecimal"
             );
             patchgram_log(
-                "READY hooks userFlags=%d starsRating=direct user=%d channel=%d phone=%d isCollectiblePhone=%d sessionTryReceive=%d sessionSendPrepared=%d scheduledSendMessage=%d scheduledSendMedia=%d profileIdText=%d",
+                "READY hooks userFlags=%d starsRating=direct user=%d channel=%d phone=%d isCollectiblePhone=%d factCheckCreateView=%d factCheckTrigger=%d factCheckRequestFor=%d sessionTryReceive=%d sessionSendPrepared=%d scheduledSendMessage=%d scheduledSendMedia=%d profileIdText=%d",
                 user_flags_hook ? 1 : 0,
                 user_hook ? 1 : 0,
                 channel_hook ? 1 : 0,
                 phone_hook ? 1 : 0,
                 is_collectible_phone_hook ? 1 : 0,
+                history_item_create_view_hook ? 1 : 0,
+                history_item_fact_check_hook ? 1 : 0,
+                data_factchecks_request_for_hook ? 1 : 0,
                 session_try_to_receive_hook ? 1 : 0,
                 session_send_prepared_hook ? 1 : 0,
                 g_scheduled_send_message_hook_installed ? 1 : 0,
@@ -5335,6 +5946,7 @@ public final class BinaryPatchEngine {
         var selfIdentityConfigs = manifest.selfIdentityConfigs
         var localPersonalChannelConfigs = manifest.localPersonalChannelConfigs
         var fragmentPhoneConfigs = manifest.fragmentPhoneConfigs
+        var messageFactCheckConfigs = manifest.messageFactCheckConfigs
         var enabledAlternativeGroups = manifest.enabledAlternativeGroups
 
         for change in changes {
@@ -5383,6 +5995,14 @@ public final class BinaryPatchEngine {
                             ?? FragmentPhonePatchConfig.defaultConfig
                     ).normalized
                 }
+                if change.rule.id == Self.messageSettingsRuleId,
+                   enabledAlternativeGroups[change.rule.id]?.contains(Self.messageFactCheckAlternativeGroup) == true {
+                    messageFactCheckConfigs[change.rule.id] = (
+                        change.messageFactCheckConfig
+                            ?? messageFactCheckConfigs[change.rule.id]
+                            ?? MessageFactCheckPatchConfig.defaultConfig
+                    ).normalized
+                }
             } else {
                 enabled.remove(change.rule.id)
                 parameters.removeValue(forKey: change.rule.id)
@@ -5391,6 +6011,7 @@ public final class BinaryPatchEngine {
                 selfIdentityConfigs.removeValue(forKey: change.rule.id)
                 localPersonalChannelConfigs.removeValue(forKey: change.rule.id)
                 fragmentPhoneConfigs.removeValue(forKey: change.rule.id)
+                messageFactCheckConfigs.removeValue(forKey: change.rule.id)
                 enabledAlternativeGroups.removeValue(forKey: change.rule.id)
             }
         }
@@ -5403,6 +6024,10 @@ public final class BinaryPatchEngine {
         manifest.selfIdentityConfigs = selfIdentityConfigs.filter { enabled.contains($0.key) }
         manifest.localPersonalChannelConfigs = localPersonalChannelConfigs.filter { enabled.contains($0.key) }
         manifest.fragmentPhoneConfigs = fragmentPhoneConfigs.filter { enabled.contains($0.key) }
+        manifest.messageFactCheckConfigs = messageFactCheckConfigs.filter { ruleId, _ in
+            enabled.contains(ruleId)
+                && enabledAlternativeGroups[ruleId]?.contains(Self.messageFactCheckAlternativeGroup) == true
+        }
         manifest.enabledAlternativeGroups = enabledAlternativeGroups.filter { enabled.contains($0.key) }
         return manifest
     }
@@ -5434,7 +6059,8 @@ public final class BinaryPatchEngine {
             customLevelRatingConfigs: [:],
             selfIdentityConfigs: [:],
             localPersonalChannelConfigs: [:],
-            fragmentPhoneConfigs: [:]
+            fragmentPhoneConfigs: [:],
+            messageFactCheckConfigs: [:]
         )
         try writeManifest(manifest, appURL: appURL)
     }

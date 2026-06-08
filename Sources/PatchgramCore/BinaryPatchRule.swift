@@ -418,6 +418,59 @@ public struct FragmentPhonePatchConfig: Codable, Hashable, Sendable {
     }
 }
 
+public struct MessageFactCheckPatchConfig: Codable, Hashable, Sendable {
+    public static let defaultConfig = MessageFactCheckPatchConfig(
+        text: "Fact checked locally",
+        country: "",
+        hash: 0,
+        needCheck: false
+    )
+
+    public let text: String
+    public let country: String
+    public let hash: Int64
+    public let needCheck: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case text
+        case country
+        case hash
+        case needCheck
+    }
+
+    public init(text: String, country: String = "", hash: Int64 = 0, needCheck: Bool = false) {
+        self.text = text
+        self.country = country
+        self.hash = hash
+        self.needCheck = needCheck
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        country = try container.decodeIfPresent(String.self, forKey: .country) ?? ""
+        hash = try container.decodeIfPresent(Int64.self, forKey: .hash) ?? 0
+        needCheck = try container.decodeIfPresent(Bool.self, forKey: .needCheck) ?? false
+    }
+
+    public var normalized: MessageFactCheckPatchConfig {
+        MessageFactCheckPatchConfig(
+            text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+            country: country.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+            hash: hash,
+            needCheck: needCheck
+        )
+    }
+
+    public var displayValue: String {
+        let value = normalized.text
+        let countryValue = normalized.country.isEmpty ? "no country" : normalized.country
+        return value.isEmpty
+            ? "empty fact check"
+            : "\(value) - \(countryValue), hash \(normalized.hash), need_check \(normalized.needCheck ? "on" : "off")"
+    }
+}
+
 public struct BinaryPatchParameter: Hashable, Sendable {
     public let title: String
     public let prompt: String
@@ -797,11 +850,11 @@ public enum BinaryPatchRuleDefinitions {
         BinaryPatchRule(
             id: "binary.messages.settings",
             title: "Message settings",
-            methodName: "messages.setTyping / messages.readHistory / messages.saveDraft",
-            constructorId: "58943ee2 / e306d3a / cc104937 / 54ae308e",
+            methodName: "messages.setTyping / messages.readHistory / messages.saveDraft / messages.getFactCheck",
+            constructorId: "58943ee2 / e306d3a / cc104937 / 54ae308e / b9cdc5ee",
             kind: .poisonConstructor,
-            summary: "Groups message privacy tweaks: block typing activity, block read receipts, and keep drafts local by invalidating messages.saveDraft.",
-            disabledBehavior: "Restores Telegram's original message activity, read-history, and draft-sync constructors.",
+            summary: "Groups message privacy tweaks: block typing activity, block read receipts, keep drafts local, schedule sends locally, and locally inject custom Fact Check blocks.",
+            disabledBehavior: "Restores Telegram's original message activity, read-history, draft-sync, scheduled-send, and Fact Check behavior.",
             riskNote: "These are client-side serialization patches. Telegram can still update local state; this prevents the patched requests from being serialized with valid MTProto method ids.",
             supportedBuildNote: unsupportedBuild,
             replacements: [
@@ -840,6 +893,12 @@ public enum BinaryPatchRuleDefinitions {
                     originalHex: "",
                     patchedHex: "",
                     alternativeGroup: "messages.scheduled_send.local"
+                ),
+                BinaryReplacement(
+                    id: "messages.fact_check.runtime_flag",
+                    originalHex: "",
+                    patchedHex: "",
+                    alternativeGroup: "messages.fact_check.local"
                 )
             ]
         ),

@@ -19,19 +19,33 @@ struct ContentView: View {
             FooterBar(viewModel: viewModel)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .alert(item: $viewModel.writeAccessAlert) { alert in
-            Alert(
-                title: Text("Permission required"),
-                message: Text(alert.message),
-                primaryButton: .default(Text("Open Settings")) {
-                    viewModel.openFullDiskAccessSettings()
-                },
-                secondaryButton: .cancel()
-            )
+        .alert("Permission required", isPresented: writeAccessAlertBinding, presenting: viewModel.writeAccessAlert) { alert in
+            Button("Retry") {
+                viewModel.retryWriteAccessAction(alert.retryAction)
+            }
+            Button("Open Settings") {
+                viewModel.openFullDiskAccessSettings()
+            }
+            Button("Cancel", role: .cancel) {
+                viewModel.writeAccessAlert = nil
+            }
+        } message: { alert in
+            Text(alert.message)
         }
         .sheet(isPresented: $viewModel.isShowingBotVerificationSettings) {
             BotVerificationSettingsView(viewModel: viewModel)
         }
+    }
+
+    private var writeAccessAlertBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.writeAccessAlert != nil },
+            set: { isPresented in
+                if !isPresented {
+                    viewModel.writeAccessAlert = nil
+                }
+            }
+        )
     }
 }
 

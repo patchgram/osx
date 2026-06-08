@@ -18,7 +18,7 @@
 | Always offline | `dylib` | Держит аккаунт оффлайн локально, принудительно меняя значение offline в `account.updateStatus`. |
 | Block typing activity | `dylib` | Не даёт Telegram Desktop отправлять статус "печатает". |
 | Block read messages | `dylib` | Блокирует запросы прочтения истории, чтобы сообщения не отмечались прочитанными через пропатченный путь. |
-| Message settings | `dylib` | Общий патч приватности для статуса печати, прочтений, локальных черновиков и scheduled send. |
+| Message settings | `dylib` | Общий патч приватности для статуса печати, прочтений, локальных черновиков, scheduled send и локального Fact Check под постами каналов. |
 | Open links without warning | `dylib` | Открывает скрытые/внешние ссылки без дополнительного предупреждения Telegram. |
 | Don't share phone when adding contacts | `dylib` | Не даёт Telegram Desktop отправлять флаг исключения приватности номера при добавлении контакта. |
 | 999 accounts | `binary` | Поднимает локальный лимит аккаунтов в Telegram Desktop до 999. |
@@ -39,6 +39,7 @@
 | Read receipts | Не отправляет запросы прочтения через пропатченные пути. |
 | Local drafts | Оставляет черновики локальными, блокируя синхронизацию drafts. |
 | Scheduled send | Включает runtime-флаг Patchgram для локальной отложенной отправки. |
+| Custom Fact Check | Локально запускает в Telegram Desktop путь запроса Fact Check для видимых постов и подменяет ответы `messages.getFactCheck` на твой текст. |
 
 ## Подпатчи Disable Premium, Stars, TON & Gifts
 
