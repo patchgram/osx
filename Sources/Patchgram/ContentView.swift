@@ -530,7 +530,7 @@ private struct SubpatchToggleRow: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.blue)
                 }
-                if subpatch.showsChangeButton {
+                if subpatch.showsChangeButton && subpatch.desiredEnabled {
                     Button("Change") {
                         onChange(subpatch.id)
                     }

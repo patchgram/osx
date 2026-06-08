@@ -3,10 +3,15 @@ import SwiftUI
 
 @main
 struct PatchgramApp: App {
+    init() {
+        NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .frame(minWidth: 940, minHeight: 660)
+                .preferredColorScheme(.dark)
         }
         .windowStyle(.titleBar)
         .commands {
