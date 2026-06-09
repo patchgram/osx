@@ -867,7 +867,6 @@ private struct CustomListUsernamesSettingsView: View {
 
     @discardableResult
     private func save() -> Bool {
-        var seen = Set<String>()
         let sharedConfig: UsernameCollectibleInfoPatchConfig
         if let config = sharedInfo.config(statusMessage: $viewModel.statusMessage) {
             sharedConfig = config
@@ -879,11 +878,6 @@ private struct CustomListUsernamesSettingsView: View {
             let username = CustomUsernameEntryPatchConfig.normalizedUsername(draft.username)
             guard CustomUsernameEntryPatchConfig.isValidUsername(username) else {
                 viewModel.statusMessage = "Enter usernames up to \(CustomUsernameEntryPatchConfig.maxUsernameLength) characters using letters, digits, underscore, dot or dash."
-                return nil
-            }
-            let key = username.lowercased()
-            guard seen.insert(key).inserted else {
-                viewModel.statusMessage = "Remove duplicate username: \(username)."
                 return nil
             }
             let info: UsernameCollectibleInfoPatchConfig

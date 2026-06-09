@@ -1075,6 +1075,19 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertFalse(CustomUsernameEntryPatchConfig.isValidUsername("bad username"))
     }
 
+    func testCustomUsernameConfigKeepsDuplicateUsernames() throws {
+        let config = CustomListUsernamesPatchConfig(
+            entries: [
+                CustomUsernameEntryPatchConfig(username: "same", status: .default, isPrimary: true),
+                CustomUsernameEntryPatchConfig(username: "same", status: .collectible)
+            ]
+        ).normalized
+
+        XCTAssertEqual(config.entries.map(\.username), ["same", "same"])
+        XCTAssertEqual(config.entries.filter(\.isPrimary).count, 1)
+        XCTAssertTrue(config.runtimePayload.components(separatedBy: "\n").allSatisfy { $0.hasPrefix("same|") })
+    }
+
     func testSelfIdentityConfigDecodesLegacyNumericUserId() throws {
         let numeric = Data(#"{"phone":"+15551234567","userId":987654321}"#.utf8)
         let zero = Data(#"{"phone":"","userId":0}"#.utf8)

@@ -2491,6 +2491,8 @@ public final class BinaryPatchEngine {
         };
         static struct PatchgramCollectibleRequest g_fragment_phone_request_ids[PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS] = {0};
         static pthread_mutex_t g_fragment_phone_request_ids_mutex = PTHREAD_MUTEX_INITIALIZER;
+        static int32_t g_custom_username_full_user_request_ids[PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS] = {0};
+        static pthread_mutex_t g_custom_username_full_user_request_ids_mutex = PTHREAD_MUTEX_INITIALIZER;
         struct PatchgramFactCheckRequest {
             int32_t request_id;
             int32_t count;
@@ -3115,10 +3117,7 @@ public final class BinaryPatchEngine {
             );
         }
 
-        static void *patchgram_cxx_operator_new(size_t byte_count) {
-            if (byte_count == 0) {
-                return NULL;
-            }
+        static bool patchgram_resolve_cxx_operator_new(void) {
             if (!g_cxx_operator_new) {
                 g_cxx_operator_new = (PatchgramCxxOperatorNewFn)dlsym(RTLD_DEFAULT, "_Znwm");
             }
@@ -3130,6 +3129,16 @@ public final class BinaryPatchEngine {
                     g_custom_usernames_logs++;
                     patchgram_log("CUSTOM USERNAMES skip reason=missing-cxx-operator-new");
                 }
+                return false;
+            }
+            return true;
+        }
+
+        static void *patchgram_cxx_operator_new(size_t byte_count) {
+            if (byte_count == 0) {
+                return NULL;
+            }
+            if (!patchgram_resolve_cxx_operator_new()) {
                 return NULL;
             }
             return g_cxx_operator_new(byte_count);
@@ -3153,12 +3162,18 @@ public final class BinaryPatchEngine {
             if (!username || !username[0]) {
                 return NULL;
             }
+            struct PatchgramUsernameConfigEntry *first_match = NULL;
             for (size_t i = 0; i < g_custom_username_entry_count; i++) {
                 if (patchgram_username_equal(g_custom_username_entries[i].username, username)) {
-                    return &g_custom_username_entries[i];
+                    if (!first_match) {
+                        first_match = &g_custom_username_entries[i];
+                    }
+                    if (g_custom_username_entries[i].collectible) {
+                        return &g_custom_username_entries[i];
+                    }
                 }
             }
-            return NULL;
+            return first_match;
         }
 
         static void patchgram_configure_custom_username_entry_utf16(struct PatchgramUsernameConfigEntry *entry) {
@@ -4515,6 +4530,7 @@ public final class BinaryPatchEngine {
             patchgram_clear_self_phone_field(peer, "UserData::setFlags.after");
             patchgram_write_custom_level_rating(peer, "UserData::setFlags.after");
             patchgram_write_local_personal_channel(peer, "UserData::setFlags.after");
+            patchgram_apply_custom_usernames(peer, "UserData::setFlags.after");
         }
 
         static bool patchgram_user_is_self(void *peer) {
@@ -5170,6 +5186,85 @@ public final class BinaryPatchEngine {
             }
         }
 
+        static void patchgram_track_custom_username_full_user_request(int32_t request_id) {
+            if (request_id <= 0) {
+                return;
+            }
+            pthread_mutex_lock(&g_custom_username_full_user_request_ids_mutex);
+            for (size_t i = 0; i < PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS; i++) {
+                if (g_custom_username_full_user_request_ids[i] == request_id) {
+                    pthread_mutex_unlock(&g_custom_username_full_user_request_ids_mutex);
+                    return;
+                }
+            }
+            for (size_t i = 0; i < PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS; i++) {
+                if (g_custom_username_full_user_request_ids[i] == 0) {
+                    g_custom_username_full_user_request_ids[i] = request_id;
+                    pthread_mutex_unlock(&g_custom_username_full_user_request_ids_mutex);
+                    return;
+                }
+            }
+            g_custom_username_full_user_request_ids[0] = request_id;
+            pthread_mutex_unlock(&g_custom_username_full_user_request_ids_mutex);
+        }
+
+        static bool patchgram_take_custom_username_full_user_request(int32_t request_id) {
+            if (request_id <= 0) {
+                return false;
+            }
+            bool found = false;
+            pthread_mutex_lock(&g_custom_username_full_user_request_ids_mutex);
+            for (size_t i = 0; i < PATCHGRAM_MAX_TRACKED_FRAGMENT_REQUESTS; i++) {
+                if (g_custom_username_full_user_request_ids[i] == request_id) {
+                    g_custom_username_full_user_request_ids[i] = 0;
+                    found = true;
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&g_custom_username_full_user_request_ids_mutex);
+            return found;
+        }
+
+        static bool patchgram_custom_username_full_user_request_should_be_local(
+            void *request_ref,
+            int32_t *request_id_out
+        ) {
+            if (request_id_out) {
+                *request_id_out = 0;
+            }
+            if (!g_custom_list_usernames_enabled || g_custom_username_entry_count == 0 || !request_ref) {
+                return false;
+            }
+            void *request_data = NULL;
+            memcpy(&request_data, request_ref, sizeof(request_data));
+            if (!request_data) {
+                return false;
+            }
+            uint32_t *words = NULL;
+            int64_t word_count = 0;
+            memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+            memcpy(&word_count, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+            if (!words || word_count <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) {
+                return false;
+            }
+            int32_t request_id = 0;
+            memcpy(&request_id, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(request_id));
+            if (request_id <= 0) {
+                return false;
+            }
+            const size_t max_scan = (word_count < 64) ? (size_t)word_count : 64;
+            for (size_t i = PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION; i < max_scan; i++) {
+                if (words[i] != PATCHGRAM_TL_USERS_GET_FULL_USER) {
+                    continue;
+                }
+                if (request_id_out) {
+                    *request_id_out = request_id;
+                }
+                return true;
+            }
+            return false;
+        }
+
         static bool patchgram_response_has_custom_username_tl(const uint32_t *words, int64_t word_count) {
             if (!words || word_count <= 0) {
                 return false;
@@ -5668,6 +5763,9 @@ public final class BinaryPatchEngine {
             }
             int32_t request_id = 0;
             memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+            if (!patchgram_take_custom_username_full_user_request(request_id)) {
+                return false;
+            }
             uint32_t *words = NULL;
             int64_t word_count = 0;
             memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
@@ -6497,6 +6595,22 @@ public final class BinaryPatchEngine {
 
         static void patchgram_session_send_prepared(void *session, void *request_ref, int64_t ms_can_wait) {
             patchgram_log_custom_username_request_tl(request_ref, ms_can_wait);
+            int32_t custom_username_full_user_request_id = 0;
+            if (patchgram_custom_username_full_user_request_should_be_local(
+                    request_ref,
+                    &custom_username_full_user_request_id)) {
+                patchgram_track_custom_username_full_user_request(custom_username_full_user_request_id);
+                if (g_custom_username_request_logs < 96) {
+                    g_custom_username_request_logs++;
+                    patchgram_log(
+                        "CUSTOM USERNAMES full user request tracked requestId=%d msCanWait=%lld configured=%zu first=%s",
+                        (int)custom_username_full_user_request_id,
+                        (long long)ms_can_wait,
+                        g_custom_username_entry_count,
+                        g_custom_username_entries[0].username
+                    );
+                }
+            }
             int32_t request_id = 0;
             char collectible_username[PATCHGRAM_MAX_USERNAME_UTF8] = {0};
             if (patchgram_fragment_request_should_be_local(
@@ -7184,10 +7298,33 @@ public final class BinaryPatchEngine {
             if (!g_custom_list_usernames_enabled || g_custom_username_entry_count == 0) {
                 return;
             }
+            if (!patchgram_resolve_cxx_operator_new()) {
+                if (g_custom_usernames_logs < 96) {
+                    g_custom_usernames_logs++;
+                    patchgram_log(
+                        "CUSTOM USERNAMES model sync skipped reason=missing-allocator source=%s raw_peer=0x%llx peer_id=%llu count=%zu known_self=%llu first=%s",
+                        source ? source : "unknown",
+                        (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
+                        (unsigned long long)patchgram_user_id_from_peer(peer),
+                        g_custom_username_entry_count,
+                        (unsigned long long)g_self_user_id,
+                        g_custom_username_entries[0].username
+                    );
+                }
+                return;
+            }
+            patchgram_capture_original_usernames(peer, source ? source : "custom-usernames");
+            patchgram_write_username_vector(
+                peer,
+                g_custom_username_entries,
+                g_custom_username_entry_count,
+                0,
+                source ? source : "custom-usernames"
+            );
             if (g_custom_usernames_logs < 96) {
                 g_custom_usernames_logs++;
                 patchgram_log(
-                    "CUSTOM USERNAMES model sync skipped reason=unsafe-direct-vector source=%s raw_peer=0x%llx peer_id=%llu count=%zu known_self=%llu first=%s",
+                    "CUSTOM USERNAMES model sync applied source=%s raw_peer=0x%llx peer_id=%llu count=%zu known_self=%llu first=%s",
                     source ? source : "unknown",
                     (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
                     (unsigned long long)patchgram_user_id_from_peer(peer),
@@ -7211,6 +7348,7 @@ public final class BinaryPatchEngine {
                 patchgram_clear_self_phone_field(peers[index], source ? source : "tracked");
                 patchgram_write_custom_level_rating(peers[index], source ? source : "tracked");
                 patchgram_write_local_personal_channel(peers[index], source ? source : "tracked");
+                patchgram_apply_custom_usernames(peers[index], source ? source : "tracked");
             }
         }
 

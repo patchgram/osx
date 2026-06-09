@@ -606,11 +606,8 @@ public struct CustomListUsernamesPatchConfig: Codable, Hashable, Sendable {
     }
 
     public var normalized: CustomListUsernamesPatchConfig {
-        var seen = Set<String>()
         let rawEntries = entries.compactMap { entry -> CustomUsernameEntryPatchConfig? in
             guard let normalized = entry.normalized else { return nil }
-            let key = normalized.username.lowercased()
-            guard seen.insert(key).inserted else { return nil }
             let info = useSharedCollectibleInfo
                 ? sharedCollectibleInfo.normalized
                 : normalized.collectibleInfo.normalized
