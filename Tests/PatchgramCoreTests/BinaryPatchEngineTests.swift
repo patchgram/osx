@@ -586,8 +586,14 @@ final class BinaryPatchEngineTests: XCTestCase {
     func testDisableSpoilersUsesRuntimeMemoryPatch() throws {
         let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
         let rule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.disable_spoilers"))
-        XCTAssertEqual(rule.replacements.count, 8)
-        XCTAssertEqual(Set(rule.replacements.map(\.alternativeGroup)).count, rule.replacements.count)
+        // Base (6.8.5) replacements plus per-version `.vNNN` variants (6.9.0/6.9.1/…) that share
+        // the base alternativeGroup and target bytes only present on that build.
+        let isVersionVariant: (String) -> Bool = {
+            $0.range(of: #"\.v\d+$"#, options: .regularExpression) != nil
+        }
+        let baseReplacements = rule.replacements.filter { !isVersionVariant($0.id) }
+        XCTAssertEqual(baseReplacements.count, 8)
+        XCTAssertEqual(Set(baseReplacements.map(\.alternativeGroup)).count, baseReplacements.count)
 
         _ = try engine.applyRuleChanges(
             [BinaryPatchRuleChange(rule: rule, enabled: true)],
@@ -596,7 +602,9 @@ final class BinaryPatchEngineTests: XCTestCase {
         )
 
         let executable = try Data(contentsOf: wrappedExecutableURL)
-        for replacement in rule.replacements {
+        // The fixture carries the 6.8.5 byte windows; the .v690 variants target 6.9.0-only
+        // bytes that are legitimately absent here (they log a harmless runtime "not found").
+        for replacement in baseReplacements {
             XCTAssertNotNil(executable.range(of: replacement.original), replacement.id)
             XCTAssertNil(executable.range(of: replacement.patched), replacement.id)
         }
@@ -1119,7 +1127,10 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertTrue(report.changedExecutable)
         XCTAssertTrue(FileManager.default.fileExists(atPath: runtimeHookDylibURL.path))
         let dylib = try Data(contentsOf: runtimeHookDylibURL)
-        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_20260609_DISABLE_MONETIZATION_RUNTIME".utf8)))
+        // Marker is now a content-derived hash; assert the stable prefix is embedded and the
+        // placeholder was actually substituted (no literal placeholder left in the dylib).
+        XCTAssertNotNil(dylib.range(of: Data("PATCHGRAM_RUNTIME_BUILD_".utf8)))
+        XCTAssertNil(dylib.range(of: Data("__PATCHGRAM_BUILD_MARKER_PLACEHOLDER__".utf8)))
     }
 
     private var executableURL: URL {

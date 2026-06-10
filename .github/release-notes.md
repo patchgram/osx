@@ -1,3 +1,3 @@
 Release
 
-- Slightly updated Custom list usernames patch.
+- Added support for new Telegram Desktop versions.

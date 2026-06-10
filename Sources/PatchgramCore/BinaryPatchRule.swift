@@ -857,6 +857,12 @@ public struct BinaryReplacement: Hashable, Sendable {
     public let id: String
     public let alternativeGroup: String
     public let original: Data
+    /// Optional match mask (same length as `original`): 0xFF = byte must match, 0x00 = wildcard
+    /// (version-variant byte such as an adrp/bl immediate or a struct offset). When present, the
+    /// runtime memory patcher matches with the mask and writes ONLY the action bytes (where
+    /// `patched` differs from `original`), leaving wildcard bytes untouched — so one masked
+    /// pattern survives across Telegram builds instead of needing per-version `.vNNN` variants.
+    public let originalMask: Data?
     public let expectedOccurrences: Int
     public let mode: BinaryReplacementMode
     public let template: BinaryPatchTemplate?
@@ -871,6 +877,7 @@ public struct BinaryReplacement: Hashable, Sendable {
         id: String,
         originalHex: String,
         patchedHex: String,
+        maskHex: String? = nil,
         expectedOccurrences: Int = 1,
         mode: BinaryReplacementMode = .toggle,
         alternativeGroup: String? = nil,
@@ -881,11 +888,15 @@ public struct BinaryReplacement: Hashable, Sendable {
         self.alternativeGroup = alternativeGroup ?? id
         self.original = Data(hexString: originalHex)
         self.fixedPatched = Data(hexString: patchedHex)
+        self.originalMask = maskHex.map(Data.init(hexString:))
         self.expectedOccurrences = expectedOccurrences
         self.mode = mode
         self.template = template
         self.enabledParameterValues = enabledParameterValues.map(Set.init)
         precondition(self.original.count == self.patched.count, "Binary patches must keep byte length unchanged.")
+        if let mask = self.originalMask {
+            precondition(mask.count == self.original.count, "Mask length must match the pattern length.")
+        }
     }
 
     public func patchedData(parameterValue: UInt64?) -> Data {
@@ -1090,8 +1101,9 @@ public enum BinaryPatchRuleDefinitions {
                 BinaryReplacement(
                     id: "api.who_read_exists.unread_gate.keep_menu",
                     originalHex: "e00313aa17b78d94c0fc07372d000014",
-                    patchedHex: "e00313aa17b78d941f2003d52d000014"
-                )
+                    patchedHex: "e00313aa17b78d941f2003d52d000014",
+                    maskHex: "ffffffff000000ffffffffffffffffff",
+                ),
             ]
         ),
         BinaryPatchRule(
@@ -1135,6 +1147,15 @@ public enum BinaryPatchRuleDefinitions {
                     patchedHex: "880080522800be72",
                     alternativeGroup: "messages.drafts.local_only"
                 ),
+                // 6.9.0: messages.saveDraft constructor magic changed 0x54ae308e -> 0xad0fa15c
+                // (schema added effect/suggested_post/rich_message). Same w8 register + same
+                // no-op redirect (0xf0010004), so the patched bytes are unchanged.
+                BinaryReplacement(
+                    id: "messages.saveDraft.constructor.v690",
+                    originalHex: "882b9452e8a1b572",
+                    patchedHex: "880080522800be72",
+                    alternativeGroup: "messages.drafts.local_only"
+                ),
                 BinaryReplacement(
                     id: "messages.scheduled_send.runtime_flag",
                     originalHex: "",
@@ -1164,6 +1185,16 @@ public enum BinaryPatchRuleDefinitions {
                     id: "core.hidden_url.confirmation.branch.skip",
                     originalHex: "e0e301916d030094a0080036",
                     patchedHex: "890000141f2003d51f2003d5"
+                ),
+                // 6.9.0 variant: identical window except the `bl HiddenUrlRequiresConfirmation`
+                // PC-relative offset (6d030094 -> 73030094). The `add x0,sp,#0x78` and
+                // `tbz w0,#0,+0x14` bytes and the relative `b +0x224` skip target are byte-stable
+                // (verified: A+0x224 lands on the same continuation in both builds). Whichever
+                // variant does not match the running build logs a harmless "not found".
+                BinaryReplacement(
+                    id: "core.hidden_url.confirmation.branch.skip.v690",
+                    originalHex: "e0e3019173030094a0080036",
+                    patchedHex: "890000141f2003d51f2003d5"
                 )
             ]
         ),
@@ -1181,8 +1212,9 @@ public enum BinaryPatchRuleDefinitions {
                 BinaryReplacement(
                     id: "contacts.addContact.flags.clear_phone_privacy_exception",
                     originalHex: "88ca85524837bb72e81f02b9010b40f9e2730891e00318aa147fd997080340f9880000b4080140b91f090071cb000054e00318aa01008052020080d2030080d2437fd997e8b342b9e81f02b9010b40f9",
-                    patchedHex: "88ca85524837bb72e81f02b9010b40f9e2730891e00318aa147fd997080340f9880000b4080140b91f090071cb000054e00318aa01008052020080d2030080d2437fd99748008052e81f02b9010b40f9"
-                )
+                    patchedHex: "88ca85524837bb72e81f02b9010b40f9e2730891e00318aa147fd997080340f9880000b4080140b91f090071cb000054e00318aa01008052020080d2030080d2437fd99748008052e81f02b9010b40f9",
+                    maskHex: "ffffffffffffffffffffffffffffffffffffffffffffffff0000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000ffffffffffffffffffffffffffff",
+                ),
             ]
         ),
         BinaryPatchRule(
@@ -1297,6 +1329,13 @@ public enum BinaryPatchRuleDefinitions {
                     originalHex: "280440f915d041f9280600b4",
                     patchedHex: "080080d215d041f9280600b4"
                 ),
+                // 6.9.0 variant: the UserData collectible-profile-color field moved 0x3a0 -> 0x3a8
+                // (15d041f9 -> 15d441f9), same field shift as setBotVerifyDetails. Rest stable.
+                BinaryReplacement(
+                    id: "data.peer_profile_color.collectible.force_empty.v690",
+                    originalHex: "280440f915d441f9280600b4",
+                    patchedHex: "080080d215d441f9280600b4"
+                ),
                 BinaryReplacement(
                     id: "data.stars_rating_value.force_empty",
                     originalHex: "0a0080520b1c40f9eb0b00f9686141f9696541f9cb0000b46c3940398c3d50d36c0000b56a6548394a1505530b7d60921f0500314ad59f1a5f0100716a119f9a0a7d40b3ea2702a9",
@@ -1331,6 +1370,14 @@ public enum BinaryPatchRuleDefinitions {
                 BinaryReplacement(
                     id: "settings.privacy.gifts.skip",
                     originalHex: "60d2029000d00891f4430291e8430291a1018052",
+                    patchedHex: "4c0000141f2003d51f2003d51f2003d5a1018052"
+                ),
+                // 6.9.0: disambiguated by the adrp+add target deep-link string — the correct
+                // site references "privacy/gifts" (the other candidate referenced "privacy/calls").
+                // Same b+0x130 skip; verified the branch lands on the next settings row.
+                BinaryReplacement(
+                    id: "settings.privacy.gifts.skip.v690",
+                    originalHex: "40d5029000581291f4430291e8430291a1018052",
                     patchedHex: "4c0000141f2003d51f2003d51f2003d5a1018052"
                 ),
                 BinaryReplacement(
@@ -1382,7 +1429,8 @@ public enum BinaryPatchRuleDefinitions {
                 BinaryReplacement(
                     id: "data.allowed_reactions.paid.force_false",
                     originalHex: "8872003993760039e82f40f9a9270490290547f9290140f93f0108eb41020054",
-                    patchedHex: "887200399f760039e82f40f9a9270490290547f9290140f93f0108eb41020054"
+                    patchedHex: "887200399f760039e82f40f9a9270490290547f9290140f93f0108eb41020054",
+                    maskHex: "ffffffffffffffffffffffff0000ff00ff00ffffffffffffffffffffffffffff",
                 ),
                 BinaryReplacement(
                     id: "data.reaction_paid.decode_empty",
@@ -1394,6 +1442,15 @@ public enum BinaryPatchRuleDefinitions {
                     originalHex: "3a0200b4e803009140630091aa49f7975a2b40b9e1030091e00315aad907f8971a0000b9e81b40b91f05003100feff54287b68f8e0bf0091e103009100013fd6ebffff176908805248cf03b008393c910a6969385fbd0071000100545f710171c0000054290500d13f0500b121ffff54090080d20200001429050091a0d003d0001808910101098b62098052e46f19950e000014",
                     patchedHex: "7a0300b4e803009140630091aa49f797e81b40b928010035e90b40f9e90000b5287b68f8e0bf0091e103009100013fd61a008052eeffff175a2b40b9e1030091e00315aacf07f8971a0000b9e81b40b91f050031c0fcff54287b68f8e0bf0091e103009100013fd6e1ffff171a008052dfffff171f2003d51f2003d51f2003d51f2003d51f2003d51f2003d51f2003d51f2003d5"
                 ),
+                // NOTE: no `.v690` for message_reactions.skip_empty_counts. Unlike the other
+                // v690 variants (single-instruction / branch-skip rewrites), this one is a
+                // 148-byte in-place LOOP rewrite whose patched form contains relative branches
+                // that target OUTSIDE the window. The auto byte-transfer (keep 6.8.5 patched
+                // bytes where they differed) preserved those 6.8.5-relative offsets, which point
+                // into garbage at the 6.9.0 location → corrupted control flow → crash
+                // (PC=0x103fb7334, inside this region). Left inert on 6.9.0 (a minor cosmetic
+                // "hide empty reaction counts"; paid reactions are still disabled by the other
+                // patches). Re-deriving needs the branch offsets recomputed for the 6.9.0 layout.
                 BinaryReplacement(
                     id: "api.who_read_exists.chat_threshold.default_100",
                     originalHex: "41281391e0c30091dcacf5972809e8d20001679e",
@@ -1403,6 +1460,7 @@ public enum BinaryPatchRuleDefinitions {
                     id: "api.who_read_exists.chat_threshold.default_100.cstring_4ca",
                     originalHex: "41c004f021281391e0c30091dcacf5972809e8d20001679e",
                     patchedHex: "41c004f021281391e0c30091dcacf597280be8d20001679e",
+                    maskHex: "0000000000000000ffffffff00000000ffffffffffffffff",
                     alternativeGroup: "api.who_read_exists.chat_threshold.default_100"
                 ),
                 BinaryReplacement(
@@ -1966,48 +2024,88 @@ public enum BinaryPatchRuleDefinitions {
                     patchedHex: "e00319aae1031aaa821904f042b43a9183028052240080525ecf93971f2003d5",
                     alternativeGroup: "spoilers.text.parse.disable"
                 ),
+                // 6.9.0: the messageEntitySpoiler cstring copy used by parse moved
+                // (adrp+add shifted); the comparison/skip structure is unchanged.
+                BinaryReplacement(
+                    id: "api.message_entity_spoiler.parse.skip.v690",
+                    originalHex: "e00319aae1031aaae21e04d042e80c918302805224008052848c9397400b0034",
+                    patchedHex: "e00319aae1031aaae21e04d042e80c918302805224008052848c93971f2003d5",
+                    alternativeGroup: "spoilers.text.parse.disable"
+                ),
+                BinaryReplacement(
+                    id: "api.message_entity_spoiler.parse.skip.v691",
+                    originalHex: "e00319aae1031aaa821e04f042a80d918302805224008052848c9397400b0034",
+                    patchedHex: "e00319aae1031aaa821e04f042a80d918302805224008052848c93971f2003d5",
+                    expectedOccurrences: 1,
+                    alternativeGroup: "spoilers.text.parse.disable"
+                ),
                 BinaryReplacement(
                     id: "api.message_entity_spoiler.serialize.force_unknown",
                     originalHex: "48008052e8bb00f9e0a30391e2830591a11904b021b43a911c040094",
                     patchedHex: "e8031f2ae8bb00f9e0a30391e2830591a11904b021b43a911c040094",
                     alternativeGroup: "spoilers.text.serialize.disable"
                 ),
+                // 6.9.0: serialize structure identical, only the adrp+add to the moved
+                // cstring shifted; patch still forces the entity type to 0 (mov w8, wzr).
+                BinaryReplacement(
+                    id: "api.message_entity_spoiler.serialize.force_unknown.v690",
+                    originalHex: "48008052e8bb00f9e0a30391e2830591011f04b021e80c911c040094",
+                    patchedHex: "e8031f2ae8bb00f9e0a30391e2830591011f04b021e80c911c040094",
+                    alternativeGroup: "spoilers.text.serialize.disable"
+                ),
+                BinaryReplacement(
+                    id: "api.message_entity_spoiler.serialize.force_unknown.v691",
+                    originalHex: "48008052e8bb00f9e0a30391e2830591a11e04d021a80d911c040094",
+                    patchedHex: "e8031f2ae8bb00f9e0a30391e2830591a11e04d021a80d911c040094",
+                    expectedOccurrences: 1,
+                    alternativeGroup: "spoilers.text.serialize.disable"
+                ),
                 BinaryReplacement(
                     id: "data.create_media.photo_spoiler_flag.force_false",
                     originalHex: "4c640595f62b00b4f50300aa630e0353e10314aae20316aa",
                     patchedHex: "4c640595f62b00b4f50300aa03008052e10314aae20316aa",
+                    maskHex: "000000ffffffffffffffffffffffffffffffffffffffffff",
                     alternativeGroup: "spoilers.media.create.photo.disable"
                 ),
                 BinaryReplacement(
                     id: "data.create_media.document_spoiler_flag.force_false",
+                    // FIX: messageMediaDocument spoiler is flags.4 (bit 4), not flags.3 (that's
+                    // nopremium). The old patch zeroed bit 3 — copied from the photo patch where
+                    // spoiler IS flags.3 — so document/video spoilers were never cleared. Now zero
+                    // the bit-4 extraction (ubfx w8,w8,#4,#1 -> mov w8,#0). Bytes are identical on
+                    // 6.8.5/6.9.0; the schema bit is stable, so this corrects both builds.
                     originalHex: "3f0100f1e9079f1ae9530339090d0353e957033908110453",
-                    patchedHex: "3f0100f1e9079f1ae953033909008052e957033908110453",
+                    patchedHex: "3f0100f1e9079f1ae9530339090d0353e957033908008052",
                     alternativeGroup: "spoilers.media.create.document.disable"
                 ),
                 BinaryReplacement(
                     id: "history.media_spoiler.skip.first",
                     originalHex: "230d0094a87249391f050071a1460054f49742f9c15802b021003691",
                     patchedHex: "230d0094a87249391f05007135020014f49742f9c15802b021003691",
+                    maskHex: "ffffffffffffffffffffffffffffffffffffffff0000ff00ff0000ff",
                     alternativeGroup: "spoilers.media.skip.first"
                 ),
                 BinaryReplacement(
                     id: "history.media_spoiler.skip.second",
                     originalHex: "a81243391f05007101030054f49742f9c158029021003691e0431391",
                     patchedHex: "a81243391f05007118000014f49742f9c158029021003691e0431391",
+                    maskHex: "ffffffffffffffffffffffffffffffff0000ff00ff0000ffffffffff",
                     alternativeGroup: "spoilers.media.skip.second"
                 ),
                 BinaryReplacement(
                     id: "history.media_spoiler.skip.third",
                     originalHex: "680a46391f05007121030054880a40f9130140f9815802d021003691",
                     patchedHex: "680a46391f05007119000014880a40f9130140f9815802d021003691",
+                    maskHex: "ffffffffffffffffffffffffffffffffffffffff0000ff00ff0000ff",
                     alternativeGroup: "spoilers.media.skip.third"
                 ),
                 BinaryReplacement(
                     id: "history.media_spoiler.skip.fourth",
                     originalHex: "683240391f050071815e0054a80e40f9130140f9415802b021003691",
                     patchedHex: "683240391f050071f4020014a80e40f9130140f9415802b021003691",
+                    maskHex: "ffffffffffffffffffffffffffffffffffffffff0000ff00ff0000ff",
                     alternativeGroup: "spoilers.media.skip.fourth"
-                )
+                ),
             ]
         ),
         BinaryPatchRule(
@@ -2115,6 +2213,12 @@ public enum BinaryPatchRuleDefinitions {
                     id: "stories.getPeerMaxIDs.constructor",
                     originalHex: "092e92522909af72",
                     patchedHex: "c9618052a9d5bb72"
+                ),
+                // 6.9.0: same magic 0x78499170, just loaded into w10 instead of w9.
+                BinaryReplacement(
+                    id: "stories.getPeerMaxIDs.constructor.v690",
+                    originalHex: "0a2e92522a09af72",
+                    patchedHex: "ca618052aad5bb72"
                 ),
                 BinaryReplacement(
                     id: "stories.getChatsToSend.constructor",

@@ -569,6 +569,20 @@ final class PatchgramViewModel: ObservableObject {
         }
     }
 
+    /// Reveals the folder that holds Patchgram's logs (PatchgramPatch.log / PatchgramHook.log)
+    /// and the runtime config/manifest — i.e. `<app>/Contents/Resources` of the selected app.
+    func openLogsFolder() {
+        guard let appURL else { return }
+        let logsDirectory = appURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+        let hookLog = logsDirectory.appendingPathComponent("PatchgramHook.log")
+        // Select the hook log inside Finder when it exists, otherwise just open the folder.
+        if FileManager.default.fileExists(atPath: hookLog.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([hookLog])
+        } else {
+            NSWorkspace.shared.open(logsDirectory)
+        }
+    }
+
     func rescanApp(quick: Bool = false) {
         guard let appURL else {
             statusMessage = "Select Telegram.app or a copied app bundle to begin."

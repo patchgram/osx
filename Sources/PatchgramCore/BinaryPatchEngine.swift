@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public struct AppInspection: Hashable, Sendable {
     public let appURL: URL
@@ -418,7 +419,13 @@ public final class BinaryPatchEngine {
     private static let deprecatedBotVerificationRuntimeConfigName = "PatchgramBotVerification.json"
     private static let legacyRuntimeHookDylibName = "PatchgramDeletedIconHook.dylib"
     private static let legacyRuntimeHookSourceName = "PatchgramDeletedIconHook.c"
-    private static let runtimeHookBuildMarker = "PATCHGRAM_RUNTIME_BUILD_20260609_DISABLE_MONETIZATION_RUNTIME"
+    // The build marker is now CONTENT-DERIVED: a stable prefix plus a short SHA-256 of the
+    // generated dylib source template. Any change to what goes into the dylib — hook bodies,
+    // signatures, struct offsets, or memory-patch byte windows — changes the hash, so the
+    // staleness check in compileRuntimeHook recompiles automatically. No more manual bumps
+    // (forgetting one left the running dylib with stale patterns even though the source changed).
+    private static let runtimeHookMarkerPrefix = "PATCHGRAM_RUNTIME_BUILD_"
+    private static let runtimeHookMarkerPlaceholder = "__PATCHGRAM_BUILD_MARKER_PLACEHOLDER__"
     private static let patchLogName = "PatchgramPatch.log"
     private static let hookLogName = "PatchgramHook.log"
 
@@ -637,7 +644,8 @@ public final class BinaryPatchEngine {
         guard runtimeHookInstalled(for: inspection) else { return false }
         let dylibURL = botVerificationRuntimeHookDylibURL(for: appURL)
         guard let data = try? Data(contentsOf: dylibURL) else { return false }
-        return data.range(of: Data(Self.runtimeHookBuildMarker.utf8)) != nil
+        // "Is this a Patchgram dylib at all" — match the stable prefix, not the content hash.
+        return data.range(of: Data(Self.runtimeHookMarkerPrefix.utf8)) != nil
     }
 
     public func verifyPatchWriteAccess(appURL: URL) throws {
@@ -2018,9 +2026,11 @@ public final class BinaryPatchEngine {
     private func compileRuntimeHook(appURL: URL) throws -> Bool {
         let source = Data(runtimeHookSource().utf8)
         let dylibURL = botVerificationRuntimeHookDylibURL(for: appURL)
+        // Up-to-date only if the existing dylib embeds the CURRENT content-hash marker.
+        // Any source change yields a new hash ⇒ this fails ⇒ recompile.
         if fileManager.fileExists(atPath: dylibURL.path),
            let existing = try? Data(contentsOf: dylibURL),
-           existing.range(of: Data(Self.runtimeHookBuildMarker.utf8)) != nil {
+           existing.range(of: Data(runtimeHookBuildMarker().utf8)) != nil {
             return false
         }
         let sourceURL = fileManager.temporaryDirectory
@@ -2157,6 +2167,9 @@ public final class BinaryPatchEngine {
             let prefix = "g_runtime_patch_\(index)_\(cIdentifier(patch.replacement.id))"
             lines.append("static const uint8_t \(prefix)_original[] = { \(cBytes(patch.replacement.original)) };")
             lines.append("static const uint8_t \(prefix)_patched[] = { \(cBytes(patch.replacement.patched)) };")
+            if let mask = patch.replacement.originalMask {
+                lines.append("static const uint8_t \(prefix)_mask[] = { \(cBytes(mask)) };")
+            }
             if let values = patch.replacement.enabledParameterValues {
                 lines.append("static const uint64_t \(prefix)_enabled_values[] = { \(cValues(values)) };")
             }
@@ -2166,14 +2179,29 @@ public final class BinaryPatchEngine {
             let prefix = "g_runtime_patch_\(index)_\(cIdentifier(patch.replacement.id))"
             let valuesPointer = patch.replacement.enabledParameterValues == nil ? "NULL" : "\(prefix)_enabled_values"
             let valuesCount = patch.replacement.enabledParameterValues?.count ?? 0
-            lines.append("    { \"\(cString(patch.ruleId))\", \"\(cString(patch.replacement.alternativeGroup))\", \"\(cString(patch.replacement.id))\", \(prefix)_original, sizeof(\(prefix)_original), \(prefix)_patched, sizeof(\(prefix)_patched), \(patch.replacement.expectedOccurrences), \(templateKind(patch.replacement.template)), \(valuesPointer), \(valuesCount) },")
+            let maskPointer = patch.replacement.originalMask == nil ? "NULL" : "\(prefix)_mask"
+            lines.append("    { \"\(cString(patch.ruleId))\", \"\(cString(patch.replacement.alternativeGroup))\", \"\(cString(patch.replacement.id))\", \(prefix)_original, sizeof(\(prefix)_original), \(prefix)_patched, sizeof(\(prefix)_patched), \(maskPointer), \(patch.replacement.expectedOccurrences), \(templateKind(patch.replacement.template)), \(valuesPointer), \(valuesCount) },")
         }
         lines.append("};")
         lines.append("static const size_t g_memory_patch_count = sizeof(g_memory_patches) / sizeof(g_memory_patches[0]);")
         return lines.joined(separator: "\n")
     }
 
+    // Content hash of the source template → the build marker. Deterministic (the template is
+    // generated from rules/offsets), so identical source ⇒ identical marker.
+    private func runtimeHookBuildMarker() -> String {
+        let template = runtimeHookSourceTemplate()
+        let digest = SHA256.hash(data: Data(template.utf8))
+        let hex = digest.prefix(10).map { String(format: "%02x", $0) }.joined()
+        return Self.runtimeHookMarkerPrefix + hex
+    }
+
     private func runtimeHookSource() -> String {
+        runtimeHookSourceTemplate()
+            .replacingOccurrences(of: Self.runtimeHookMarkerPlaceholder, with: runtimeHookBuildMarker())
+    }
+
+    private func runtimeHookSourceTemplate() -> String {
         #"""
         #include <mach-o/loader.h>
         #include <mach-o/dyld.h>
@@ -2193,7 +2221,7 @@ public final class BinaryPatchEngine {
         #include <time.h>
         #include <unistd.h>
 
-        __attribute__((used)) static const char g_patchgram_runtime_build_marker[] = "\#(Self.runtimeHookBuildMarker)";
+        __attribute__((used)) static const char g_patchgram_runtime_build_marker[] = "\#(Self.runtimeHookMarkerPlaceholder)";
 
         #define PATCHGRAM_USER_SET_FLAGS_VMADDR 0x103fac220ULL
         #define PATCHGRAM_USER_SET_BOT_VERIFY_DETAILS_VMADDR 0x103c25284ULL
@@ -2210,6 +2238,7 @@ public final class BinaryPatchEngine {
         #define PATCHGRAM_MESSAGES_SEND_MEDIA_SERIALIZE_VMADDR 0x101f98694ULL
         #define PATCHGRAM_FORMAT_COUNT_DECIMAL_VMADDR 0x101aea7b8ULL
         #define PATCHGRAM_PROFILE_PEER_ID_TEXT_RETURN_VMADDR 0x10542febcULL
+        #define PATCHGRAM_PROFILE_PEER_ID_TEXT_CALLER_VMADDR 0x10542fd20ULL
         #define PATCHGRAM_INLINE_HOOK_SIZE 16
         #define PATCHGRAM_PEER_ID_OFFSET 0x8
         #define PATCHGRAM_USER_USERNAME_INFO_OFFSET 0x268
@@ -2307,6 +2336,7 @@ public final class BinaryPatchEngine {
             size_t original_size;
             const uint8_t *patched;
             size_t patched_size;
+            const uint8_t *mask; /* NULL = exact match; else 0xFF=fixed, 0x00=wildcard */
             size_t expected_occurrences;
             enum PatchgramPatchTemplate template_kind;
             const uint64_t *enabled_values;
@@ -2337,6 +2367,22 @@ public final class BinaryPatchEngine {
         static bool g_custom_user_id_enabled = false;
         static bool g_local_personal_channel_enabled = false;
         static bool g_fragment_phone_enabled = false;
+        /* Fragment phone needs the MTP request/response hooks live to fake the
+         * fragmentGetCollectibleInfo answer. If those hooks did not install (e.g. their
+         * addresses are stale on a newer build), claiming a phone is collectible makes
+         * Telegram request collectible-info that never arrives → null deref (+0x30) crash.
+         * Gate IsCollectiblePhone on this so fragment phone is inert (not crashing) until
+         * the MTP hooks resolve. */
+        static bool g_fragment_phone_hooks_live = false;
+        /* Custom-list-usernames does invasive TL surgery on the users.getFullUser response
+         * (patchgram_collect_self_username_vector_ranges parses the `user` constructor to
+         * locate the username vector) and writes UserData+USERNAME_INFO. The `user` TL
+         * constructor layout is schema-layer-specific and changed by 6.9.0, so the 6.8.5
+         * parser produces wrong ranges → a malformed response buffer → Telegram memmoves
+         * garbage and crashes. Until the 6.9.0 `user`/`userFull` TL layout (and the
+         * UserData username offset) are re-derived, keep this inert. Flip to true once the
+         * username TL parsing is verified for the running schema. */
+        static bool g_custom_usernames_runtime_safe = false;
         static bool g_custom_list_usernames_enabled = false;
         static bool g_visual_peer_badge_enabled = false;
         static bool g_force_offline_enabled = false;
@@ -2724,10 +2770,27 @@ public final class BinaryPatchEngine {
             return trampoline;
         }
 
-        static bool patchgram_install_inline_hook(
+        /* Masked compare: mask==NULL means every byte must match; otherwise only
+         * bytes where mask[i]!=0 are compared (0x00 entries are wildcards). */
+        static bool patchgram_masked_match(
+            const uint8_t *bytes,
+            const uint8_t *pattern,
+            const uint8_t *mask,
+            size_t len
+        ) {
+            for (size_t i = 0; i < len; i++) {
+                if ((!mask || mask[i]) && bytes[i] != pattern[i]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        static bool patchgram_install_inline_hook_masked(
             void *target,
             void *replacement,
             const uint8_t *expected,
+            const uint8_t *expected_mask,
             size_t expected_size,
             void **original,
             const char *name
@@ -2735,7 +2798,7 @@ public final class BinaryPatchEngine {
             if (!target || !replacement || !original) {
                 return false;
             }
-            if (memcmp(target, expected, expected_size) != 0) {
+            if (!patchgram_masked_match((const uint8_t *)target, expected, expected_mask, expected_size)) {
                 patchgram_log("ERROR %s signature mismatch, hook skipped", name);
                 return false;
             }
@@ -2755,6 +2818,18 @@ public final class BinaryPatchEngine {
             *original = trampoline;
             patchgram_log("HOOK %s installed", name);
             return true;
+        }
+
+        static bool patchgram_install_inline_hook(
+            void *target,
+            void *replacement,
+            const uint8_t *expected,
+            size_t expected_size,
+            void **original,
+            const char *name
+        ) {
+            return patchgram_install_inline_hook_masked(
+                target, replacement, expected, NULL, expected_size, original, name);
         }
 
         static char *patchgram_read_file(const char *path) {
@@ -3277,6 +3352,190 @@ public final class BinaryPatchEngine {
 
         static void *patchgram_resolve_vmaddr(uint64_t vmaddr) {
             return (void *)(uintptr_t)(vmaddr + patchgram_main_slide());
+        }
+
+        /* Locate the running Telegram executable's __TEXT segment (slid). */
+        static bool patchgram_text_segment(const uint8_t **out_base, size_t *out_size) {
+            uint32_t count = _dyld_image_count();
+            for (uint32_t image_index = 0; image_index < count; image_index++) {
+                const char *name = _dyld_get_image_name(image_index);
+                if (!patchgram_is_telegram_executable_image(name)) {
+                    continue;
+                }
+                const struct mach_header_64 *header =
+                    (const struct mach_header_64 *)_dyld_get_image_header(image_index);
+                intptr_t slide = _dyld_get_image_vmaddr_slide(image_index);
+                const uint8_t *command = (const uint8_t *)header + sizeof(struct mach_header_64);
+                for (uint32_t command_index = 0; command_index < header->ncmds; command_index++) {
+                    const struct load_command *load_command = (const struct load_command *)command;
+                    if (load_command->cmd == LC_SEGMENT_64) {
+                        const struct segment_command_64 *segment =
+                            (const struct segment_command_64 *)command;
+                        if (strncmp(segment->segname, "__TEXT", sizeof(segment->segname)) == 0) {
+                            *out_base = (const uint8_t *)(uintptr_t)(segment->vmaddr + slide);
+                            *out_size = (size_t)segment->vmsize;
+                            return true;
+                        }
+                    }
+                    command += load_command->cmdsize;
+                }
+            }
+            return false;
+        }
+
+        /*
+         * Version-resilient address resolution. A signature is an AOB pattern anchored
+         * at a function entry; mask bytes that are 0 are wildcards (used for adrp/adr/bl
+         * immediates that move between builds). The FIRST 4 bytes (one instruction) must
+         * be fixed (mask all-0xff) — they prime a fast 4-aligned prefilter. Returns the
+         * match only when it is UNIQUE in __TEXT; out_count reports how many matched
+         * (capped at 2). Functions are 4-byte aligned, so we scan on a 4-byte stride.
+         */
+        static const uint8_t *patchgram_find_signature(
+            const uint8_t *pattern,
+            const uint8_t *mask,
+            size_t len,
+            size_t *out_count
+        ) {
+            if (out_count) {
+                *out_count = 0;
+            }
+            const uint8_t *base = NULL;
+            size_t size = 0;
+            if (len < 4 || !patchgram_text_segment(&base, &size) || size < len) {
+                return NULL;
+            }
+            uint32_t first = 0;
+            memcpy(&first, pattern, sizeof(first));
+            const uint8_t *found = NULL;
+            size_t cnt = 0;
+            for (size_t off = 0; off + len <= size; off += 4) {
+                uint32_t word = 0;
+                memcpy(&word, base + off, sizeof(word));
+                if (word != first) {
+                    continue;
+                }
+                if (patchgram_masked_match(base + off, pattern, mask, len)) {
+                    if (!found) {
+                        found = base + off;
+                    }
+                    if (++cnt >= 2) {
+                        break;
+                    }
+                }
+            }
+            if (out_count) {
+                *out_count = cnt;
+            }
+            return (cnt == 1) ? found : NULL;
+        }
+
+        /*
+         * Resolve a hook target, version-resiliently:
+         *   1. if a signature is supplied, scan __TEXT for it; a UNIQUE hit wins and is
+         *      its own verification (we matched the entry bytes), so install verifies
+         *      against the signature itself;
+         *   2. otherwise (or on a miss / ambiguous match) fall back to the build-specific
+         *      static vmaddr and verify against the supplied prologue.
+         * A wrong/absent signature therefore degrades to "use the old address" and, if
+         * that is also wrong, install_inline_hook's masked verify makes it a safe no-op.
+         */
+        static bool patchgram_install_hook(
+            void *replacement,
+            const uint8_t *signature,
+            const uint8_t *signature_mask,
+            size_t signature_len,
+            uint64_t static_vmaddr,
+            const uint8_t *prologue,
+            size_t prologue_size,
+            void **original,
+            const char *name
+        ) {
+            void *target = NULL;
+            const uint8_t *verify = prologue;
+            const uint8_t *verify_mask = NULL;
+            size_t verify_size = prologue_size;
+            if (signature && signature_len >= 4) {
+                size_t cnt = 0;
+                const uint8_t *hit = patchgram_find_signature(signature, signature_mask, signature_len, &cnt);
+                if (hit) {
+                    target = (void *)hit;
+                    verify = signature;
+                    verify_mask = signature_mask;
+                    verify_size = signature_len;
+                    patchgram_log("RESOLVE %s via signature addr=%p", name, target);
+                } else {
+                    patchgram_log("RESOLVE %s signature miss (count=%zu), using static vmaddr", name, cnt);
+                }
+            }
+            if (!target) {
+                target = patchgram_resolve_vmaddr(static_vmaddr);
+            }
+            return patchgram_install_inline_hook_masked(
+                target, replacement, verify, verify_mask, verify_size, original, name);
+        }
+
+        /*
+         * Resolve a (non-hooked) address that we CALL — e.g. the HistoryItem::setFactcheck
+         * function pointer. Signature first (unique hit wins, works on any matching build),
+         * else the build-specific static vmaddr. Same version-resilience as install_hook,
+         * but returns the address instead of installing a trampoline.
+         */
+        static void *patchgram_resolve_addr(
+            const uint8_t *signature,
+            const uint8_t *signature_mask,
+            size_t signature_len,
+            uint64_t static_vmaddr,
+            const char *name
+        ) {
+            if (signature && signature_len >= 4) {
+                size_t cnt = 0;
+                const uint8_t *hit = patchgram_find_signature(signature, signature_mask, signature_len, &cnt);
+                if (hit) {
+                    patchgram_log("RESOLVE %s via signature addr=%p", name, (void *)hit);
+                    return (void *)hit;
+                }
+                patchgram_log("RESOLVE %s signature miss (count=%zu), using static vmaddr", name, cnt);
+            }
+            return patchgram_resolve_vmaddr(static_vmaddr);
+        }
+
+        /*
+         * Scan a resolved function for the first `bl <target>` and return the address
+         * immediately after it (the call's return address). Used to derive
+         * g_profile_peer_id_text_return at runtime: the FormatCountDecimal hook only
+         * substitutes the custom user id when its caller (x30) is the profile "ID" row, and
+         * that call-return address is build-specific. Decoding the actual call site makes it
+         * version-independent (no hardcoded return vmaddr). Returns 0 if not found.
+         */
+        static uintptr_t patchgram_find_bl_return(
+            const uint8_t *func,
+            size_t scan_bytes,
+            uintptr_t target,
+            const char *name
+        ) {
+            if (!func || !target) {
+                return 0;
+            }
+            for (size_t off = 0; off + 4 <= scan_bytes; off += 4) {
+                uint32_t insn = 0;
+                memcpy(&insn, func + off, sizeof(insn));
+                if ((insn & 0xFC000000U) == 0x94000000U) { /* BL imm26 */
+                    int32_t imm = (int32_t)(insn & 0x03FFFFFFU);
+                    if (imm & 0x02000000) {
+                        imm |= (int32_t)0xFC000000U; /* sign-extend 26-bit */
+                    }
+                    uintptr_t bl_addr = (uintptr_t)func + off;
+                    uintptr_t tgt = (uintptr_t)((intptr_t)bl_addr + ((intptr_t)imm << 2));
+                    if (tgt == target) {
+                        patchgram_log("RESOLVE %s call-return=%p (bl@%p -> %p)", name,
+                            (void *)(bl_addr + 4), (void *)bl_addr, (void *)target);
+                        return bl_addr + 4;
+                    }
+                }
+            }
+            patchgram_log("RESOLVE %s call-return not found", name);
+            return 0;
         }
 
         static uint32_t patchgram_arm64_instruction(uint32_t value) {
@@ -3808,12 +4067,91 @@ public final class BinaryPatchEngine {
             return true;
         }
 
+        /* Masked patches: match `pattern` under `mask` (0xFF fixed, 0x00 wildcard). */
+        static bool patchgram_match_masked_source(const uint8_t *bytes) {
+            const struct PatchgramMemoryPatch *p = g_current_memory_patch;
+            return p && p->mask && patchgram_masked_match(bytes, g_current_desired_patch /* = source pattern */, p->mask, p->original_size);
+        }
+        static bool patchgram_match_masked_dest(const uint8_t *bytes) {
+            const struct PatchgramMemoryPatch *p = g_current_memory_patch;
+            return p && p->mask && patchgram_masked_match(bytes, g_current_rendered_patch /* = dest pattern */, p->mask, p->patched_size);
+        }
+
+        /*
+         * Differential write for a masked patch: overlay ONLY the action bytes (positions where
+         * `patched` differs from `original`) onto the bytes already at `address`, leaving every
+         * wildcard / version-variant byte untouched. So one masked pattern works on any build.
+         */
+        static bool patchgram_write_masked(
+            uintptr_t address,
+            const struct PatchgramMemoryPatch *patch,
+            bool enabled
+        ) {
+            uint8_t buffer[256];
+            if (patch->patched_size > sizeof(buffer)) {
+                return false;
+            }
+            memcpy(buffer, (const void *)address, patch->patched_size);
+            for (size_t i = 0; i < patch->patched_size; i++) {
+                if (patch->patched[i] != patch->original[i]) {
+                    buffer[i] = enabled ? patch->patched[i] : patch->original[i];
+                }
+            }
+            return patchgram_write_process_memory(address, buffer, patch->patched_size);
+        }
+
+        static void patchgram_apply_masked_memory_patch(
+            const struct PatchgramMemoryPatch *patch,
+            const uint8_t *base,
+            size_t size
+        ) {
+            const bool enabled = patchgram_rule_enabled(patch);
+            const char *action = enabled ? "wrote" : "restored";
+            uintptr_t matches[PATCHGRAM_MAX_MEMORY_PATCH_OCCURRENCES] = {0};
+            g_current_memory_patch = patch;
+            /* Source state to find: enabled -> original (unpatched), disabled -> patched. */
+            g_current_desired_patch = enabled ? patch->original : patch->patched;
+            g_current_rendered_patch = enabled ? patch->patched : patch->original;
+            size_t count = patchgram_find_memory_matches(
+                base, size, patch->original_size,
+                patchgram_match_masked_source, matches, PATCHGRAM_MAX_MEMORY_PATCH_OCCURRENCES);
+            if (count == patch->expected_occurrences) {
+                size_t written = 0;
+                for (size_t i = 0; i < count; i++) {
+                    if (patchgram_write_masked(matches[i], patch, enabled)) {
+                        written++;
+                    }
+                }
+                patchgram_log("MEMORY PATCH %s %s %zu/%zu (masked)", patch->patch_id, action, written, count);
+                return;
+            }
+            if (count > 0) {
+                patchgram_log("ERROR Memory patch %s occurrence mismatch while %s (masked): found=%zu expected=%zu",
+                    patch->patch_id, enabled ? "enabling" : "disabling", count, patch->expected_occurrences);
+                return;
+            }
+            /* Already in the desired state? */
+            count = patchgram_find_memory_matches(
+                base, size, patch->patched_size,
+                patchgram_match_masked_dest, matches, PATCHGRAM_MAX_MEMORY_PATCH_OCCURRENCES);
+            if (count == patch->expected_occurrences) {
+                patchgram_log("MEMORY PATCH %s already %s (masked)", patch->patch_id, enabled ? "applied" : "restored");
+                return;
+            }
+            patchgram_log("ERROR Memory patch %s not found while %s (masked)",
+                patch->patch_id, enabled ? "enabling" : "disabling");
+        }
+
         static void patchgram_apply_memory_patch_in_range(
             const struct PatchgramMemoryPatch *patch,
             const uint8_t *base,
             size_t size
         ) {
             if (!patch || !base || size == 0) {
+                return;
+            }
+            if (patch->mask) {
+                patchgram_apply_masked_memory_patch(patch, base, size);
                 return;
             }
             uint8_t rendered[160];
@@ -5758,6 +6096,11 @@ public final class BinaryPatchEngine {
         }
 
         static bool patchgram_apply_custom_username_list_response(void *response) {
+            /* Response rewrite is now version-robust (in-place writeback, no QList buffer
+             * swap), so it is enabled directly. The separate UserData username-vector write
+             * (patchgram_apply_custom_usernames, UserData+0x268) stays gated behind
+             * g_custom_usernames_runtime_safe until that offset is verified for 6.9.0 — TG
+             * repopulates UserData from this rewritten response anyway. */
             if (!response || !g_custom_list_usernames_enabled || g_custom_username_entry_count == 0) {
                 return false;
             }
@@ -5845,10 +6188,31 @@ public final class BinaryPatchEngine {
                 }
             }
             int64_t new_word_count = (int64_t)(new_byte_count / sizeof(uint32_t));
-            void *data_header = NULL;
-            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_D_OFFSET, &data_header, sizeof(data_header));
-            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, &new_bytes, sizeof(new_bytes));
-            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_word_count, sizeof(new_word_count));
+            /*
+             * Robust writeback: overwrite the EXISTING Qt-owned buffer in place and shrink
+             * the QList size, never swapping the data pointer or nulling the QArrayData
+             * header. The previous approach set d=NULL + a raw calloc pointer (a "borrowed"
+             * QList); 6.9.0's Qt mishandles that — a later deep-copy of the response reads
+             * {begin=NULL, end=garbage}, computes a giant size, and memmoves from NULL →
+             * crash. Writing into the original buffer keeps Qt's ownership model intact and
+             * is version-independent. If the replacement would not fit, skip (no rewrite)
+             * rather than risk corruption.
+             */
+            if (new_byte_count <= old_byte_count) {
+                memcpy((uint8_t *)words, new_bytes, new_byte_count);
+                memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_word_count, sizeof(new_word_count));
+                free(new_bytes);
+            } else {
+                free(new_bytes);
+                if (g_custom_username_tl_patch_logs < 160) {
+                    g_custom_username_tl_patch_logs++;
+                    patchgram_log(
+                        "CUSTOM USERNAMES TL response skip: replacement (%zu) larger than original buffer (%zu) requestId=%d",
+                        new_byte_count, old_byte_count, (int)request_id
+                    );
+                }
+                return false;
+            }
             if (g_custom_username_tl_patch_logs < 160) {
                 g_custom_username_tl_patch_logs++;
                 patchgram_log(
@@ -6760,6 +7124,15 @@ public final class BinaryPatchEngine {
             if (!should_patch) {
                 return original;
             }
+            if (!g_fragment_phone_hooks_live) {
+                /* No MTP interception on this build → cannot supply collectible info.
+                 * Claiming collectible here would crash Telegram (null +0x30). Stay inert. */
+                if (g_fragment_phone_logs < 4) {
+                    g_fragment_phone_logs++;
+                    patchgram_log("FRAGMENT PHONE inert: MTP collectible-info hooks not live (skipping collectible claim to avoid crash)");
+                }
+                return original;
+            }
             patchgram_remember_fragment_phone_self(peer);
             if (g_fragment_phone_logs < 48) {
                 g_fragment_phone_logs++;
@@ -7295,7 +7668,8 @@ public final class BinaryPatchEngine {
             if (!peer || !patchgram_peer_is_self_user(peer)) {
                 return;
             }
-            if (!g_custom_list_usernames_enabled || g_custom_username_entry_count == 0) {
+            if (!g_custom_list_usernames_enabled || g_custom_username_entry_count == 0
+                || !g_custom_usernames_runtime_safe) {
                 return;
             }
             if (!patchgram_resolve_cxx_operator_new()) {
@@ -7447,6 +7821,18 @@ public final class BinaryPatchEngine {
                 0xfd, 0x03, 0x01, 0x91, 0xf3, 0x03, 0x00, 0xaa,
                 0x28, 0x04, 0x40, 0xf9, 0x15, 0xd0, 0x41, 0xf9
             };
+            static const uint8_t user_set_bot_verify_details_sig[] = {
+                0xff, 0x43, 0x01, 0xd1, 0xf6, 0x57, 0x02, 0xa9, 0xf4, 0x4f, 0x03, 0xa9,
+                0xfd, 0x7b, 0x04, 0xa9, 0xfd, 0x03, 0x01, 0x91, 0xf3, 0x03, 0x00, 0xaa,
+                0x28, 0x04, 0x40, 0xf9, 0x15, 0xd4, 0x41, 0xf9, 0x28, 0x06, 0x00, 0xb4,
+                0xf4, 0x03, 0x01, 0xaa, 0x75, 0x06, 0x00, 0xb4, 0xa9, 0x02, 0x40, 0xf9
+            };
+            static const uint8_t user_set_bot_verify_details_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff
+            };
             static const uint8_t channel_expected[] = {
                 0xff, 0x43, 0x01, 0xd1, 0xf6, 0x57, 0x02, 0xa9,
                 0xf4, 0x4f, 0x03, 0xa9, 0xfd, 0x7b, 0x04, 0xa9,
@@ -7461,19 +7847,140 @@ public final class BinaryPatchEngine {
                 0xff, 0x83, 0x02, 0xd1, 0xf6, 0x57, 0x07, 0xa9,
                 0xf4, 0x4f, 0x08, 0xa9, 0xfd, 0x7b, 0x09, 0xa9
             };
+            /* 6.9.0 entry signatures for bot-verification + phone. UserData layout is
+             * unchanged 6.8.5↔6.9.0 (USER_FLAGS 0x218, PHONE 0x288, value->user 0x10 all
+             * identical by diff), so these are offset-safe; only addresses moved. setFlags
+             * and IsCollectiblePhone changed their entry bytes, so their signatures are
+             * taken from the 6.9.0 entry (on 6.8.5 they miss → fall back to the 6.8.5
+             * vmaddr); PhoneOrHiddenValue and ChannelData::setBotVerifyDetails kept stable
+             * entries (signature matches both builds). */
+            static const uint8_t user_set_flags_sig[] = {
+                0xff, 0x43, 0x02, 0xd1, 0xfa, 0x67, 0x04, 0xa9, 0xf8, 0x5f, 0x05, 0xa9,
+                0xf6, 0x57, 0x06, 0xa9, 0xf4, 0x4f, 0x07, 0xa9, 0xfd, 0x7b, 0x08, 0xa9,
+                0xfd, 0x03, 0x02, 0x91, 0xf3, 0x03, 0x00, 0xaa, 0x68, 0x1c, 0x04, 0x90,
+                0x08, 0x15, 0x47, 0xf9, 0x08, 0x01, 0x40, 0xf9, 0xe8, 0x1f, 0x00, 0xf9,
+                0x08, 0x08, 0x41, 0xf9, 0x29, 0x78, 0x04, 0x12
+            };
+            // Robust across 6.9.x: also wildcard the singleton accessor (ldr x8,[x8,#0xNNN])
+            // and the UserData-flags ldr (ldr x8,[x8,#0x2NN]) — these immediates drift between
+            // minor versions while the prologue + mov x19,x0 + structure stay fixed (still
+            // unique). The adrp at 32-35 was already wildcarded.
+            static const uint8_t user_set_flags_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff
+            };
+            static const uint8_t is_collectible_phone_sig[] = {
+                0xff, 0x83, 0x02, 0xd1, 0xf6, 0x57, 0x07, 0xa9, 0xf4, 0x4f, 0x08, 0xa9,
+                0xfd, 0x7b, 0x09, 0xa9, 0xfd, 0x43, 0x02, 0x91, 0xc8, 0x71, 0x03, 0x90,
+                0x08, 0x15, 0x47, 0xf9, 0x08, 0x01, 0x40, 0xf9, 0xa8, 0x83, 0x1d, 0xf8,
+                0x08, 0x08, 0x40, 0xf9, 0x08, 0x01, 0x40, 0xf9, 0x08, 0x09, 0x40, 0xf9,
+                0x14, 0x3d, 0x40, 0xf9, 0xf4, 0x14, 0x00, 0xb4
+            };
+            static const uint8_t is_collectible_phone_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00
+            };
+            static const uint8_t phone_or_hidden_value_sig[] = {
+                0xff, 0xc3, 0x03, 0xd1, 0xf4, 0x4f, 0x0d, 0xa9, 0xfd, 0x7b, 0x0e, 0xa9,
+                0xfd, 0x83, 0x03, 0x91, 0x08, 0x01, 0x80, 0x92, 0xe8, 0xff, 0xe7, 0xf2,
+                0x29, 0x08, 0x40, 0xf9, 0x3f, 0x01, 0x08, 0xeb, 0xc2, 0x19, 0x00, 0x54,
+                0xf4, 0x03, 0x01, 0xaa, 0xf3, 0x03, 0x00, 0xaa, 0x29, 0x01, 0x00, 0xb5,
+                0x89, 0x22, 0x40, 0xf9, 0x3f, 0x01, 0x08, 0xeb
+            };
+            static const uint8_t phone_or_hidden_value_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+            };
+            static const uint8_t channel_set_bot_verify_details_sig[] = {
+                0xff, 0x43, 0x01, 0xd1, 0xf6, 0x57, 0x02, 0xa9, 0xf4, 0x4f, 0x03, 0xa9,
+                0xfd, 0x7b, 0x04, 0xa9, 0xfd, 0x03, 0x01, 0x91, 0xf3, 0x03, 0x00, 0xaa,
+                0x28, 0x04, 0x40, 0xf9, 0x15, 0x5c, 0x41, 0xf9, 0x28, 0x06, 0x00, 0xb4,
+                0xf4, 0x03, 0x01, 0xaa, 0x75, 0x06, 0x00, 0xb4, 0xa9, 0x02, 0x40, 0xf9,
+                0x8a, 0x02, 0x40, 0xf9, 0x3f, 0x01, 0x0a, 0xeb
+            };
+            static const uint8_t channel_set_bot_verify_details_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+            };
             static const uint8_t history_item_create_view_expected[] = {
                 0xe9, 0x23, 0xb9, 0x6d, 0xfc, 0x6f, 0x01, 0xa9,
                 0xfa, 0x67, 0x02, 0xa9, 0xf8, 0x5f, 0x03, 0xa9
+            };
+            /* HistoryItem::createView entry signature (40 bytes, fully fixed — the FP/GP
+             * register-save prologue is identical on 6.8.5 and 6.9.0; only the address
+             * moved). Lets the hook resolve on any build whose prologue matches. */
+            static const uint8_t history_item_create_view_sig[] = {
+                0xe9, 0x23, 0xb9, 0x6d, 0xfc, 0x6f, 0x01, 0xa9,
+                0xfa, 0x67, 0x02, 0xa9, 0xf8, 0x5f, 0x03, 0xa9,
+                0xf6, 0x57, 0x04, 0xa9, 0xf4, 0x4f, 0x05, 0xa9,
+                0xfd, 0x7b, 0x06, 0xa9, 0xfd, 0x83, 0x01, 0x91,
+                0xff, 0x03, 0x08, 0xd1, 0xf7, 0x03, 0x03, 0xaa
             };
             static const uint8_t history_item_has_unrequested_factcheck_expected[] = {
                 0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x03, 0x00, 0x91,
                 0x08, 0x14, 0x40, 0xf9, 0x08, 0x05, 0x63, 0x92,
                 0x09, 0x00, 0xa4, 0x52, 0x1f, 0x01, 0x09, 0xeb
             };
+            static const uint8_t history_item_has_unrequested_factcheck_sig[] = {
+                0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0x08, 0x14, 0x40, 0xf9,
+                0x08, 0x05, 0x63, 0x92, 0x09, 0x00, 0xa4, 0x52, 0x1f, 0x01, 0x09, 0xeb,
+                0x81, 0x05, 0x00, 0x54, 0x08, 0x00, 0x40, 0xf9, 0x08, 0x01, 0x40, 0xf9,
+                0xc9, 0x48, 0x04, 0xf0, 0x29, 0x01, 0x2e, 0x91, 0x2a, 0xc1, 0xbf, 0xb8
+            };
+            static const uint8_t history_item_has_unrequested_factcheck_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+            };
             static const uint8_t data_factchecks_request_for_expected[] = {
                 0xff, 0xc3, 0x01, 0xd1, 0xf8, 0x5f, 0x03, 0xa9,
                 0xf6, 0x57, 0x04, 0xa9, 0xf4, 0x4f, 0x05, 0xa9,
                 0xfd, 0x7b, 0x06, 0xa9, 0xfd, 0x83, 0x01, 0x91
+            };
+            /* 6.9.0 signatures (entry bytes from 6.8.5, unique in 6.9.0). The fact-check
+             * path touches only the FactCheck struct it builds (layout unchanged, verified
+             * via setFactcheck being byte-identical) — no HistoryItem field offsets — so
+             * these are safe to signature-resolve on 6.9.0. */
+            static const uint8_t history_item_set_factcheck_sig[] = {
+                0xff, 0x83, 0x01, 0xd1, 0xf8, 0x5f, 0x02, 0xa9, 0xf6, 0x57, 0x03, 0xa9,
+                0xf4, 0x4f, 0x04, 0xa9, 0xfd, 0x7b, 0x05, 0xa9, 0xfd, 0x43, 0x01, 0x91,
+                0x08, 0x01, 0x80, 0x92, 0xe8, 0xff, 0xe7, 0xf2, 0x29, 0x08, 0x40, 0xf9,
+                0x3f, 0x01, 0x08, 0xeb, 0x62, 0x27, 0x00, 0x54, 0xf4, 0x03, 0x01, 0xaa,
+                0xf3, 0x03, 0x00, 0xaa
+            };
+            static const uint8_t history_item_set_factcheck_mask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff
+            };
+            static const uint8_t data_factchecks_request_for_sig[] = {
+                0xff, 0xc3, 0x01, 0xd1, 0xf8, 0x5f, 0x03, 0xa9, 0xf6, 0x57, 0x04, 0xa9,
+                0xf4, 0x4f, 0x05, 0xa9, 0xfd, 0x7b, 0x06, 0xa9, 0xfd, 0x83, 0x01, 0x91,
+                0xf5, 0x03, 0x01, 0xaa, 0xf3, 0x03, 0x00, 0xaa, 0x00, 0x02, 0x80, 0x52,
+                0x27, 0x98, 0x0f, 0x94, 0xf4, 0x03, 0x00, 0xaa, 0xe1, 0x03, 0x13, 0xaa,
+                0x93, 0xf1, 0x5c, 0x96
+            };
+            static const uint8_t data_factchecks_request_for_mask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00
             };
             static const uint8_t session_private_try_to_receive_expected[] = {
                 0xfc, 0x6f, 0xba, 0xa9, 0xfa, 0x67, 0x01, 0xa9,
@@ -7483,6 +7990,42 @@ public final class BinaryPatchEngine {
                 0xff, 0x83, 0x02, 0xd1, 0xf8, 0x5f, 0x06, 0xa9,
                 0xf6, 0x57, 0x07, 0xa9, 0xf4, 0x4f, 0x08, 0xa9
             };
+            /* 6.9.0 entry signatures for the fragment-phone MTP interception. The hook
+             * bodies read MTP offsets SESSION_PRIVATE_DATA 0x28, RECEIVED_BEGIN/END
+             * 0x120/0x128, REQUEST_DATA_REQUEST_ID 0x30 — all verified byte-identical
+             * 6.8.5↔6.9.0 (only unrelated singleton offsets shifted), so these are
+             * offset-safe. Entries changed, so sigs are from the 6.9.0 entry (6.8.5 misses
+             * → falls back to its vmaddr). */
+            static const uint8_t session_try_to_receive_sig[] = {
+                0xfc, 0x6f, 0xba, 0xa9, 0xfa, 0x67, 0x01, 0xa9, 0xf8, 0x5f, 0x02, 0xa9,
+                0xf6, 0x57, 0x03, 0xa9, 0xf4, 0x4f, 0x04, 0xa9, 0xfd, 0x7b, 0x05, 0xa9,
+                0xfd, 0x43, 0x01, 0x91, 0xff, 0x83, 0x07, 0xd1, 0x08, 0x2d, 0x03, 0xf0,
+                0x08, 0x15, 0x47, 0xf9, 0x08, 0x01, 0x40, 0xf9, 0xa8, 0x03, 0x1a, 0xf8,
+                0x08, 0x20, 0x41, 0x39, 0x1f, 0x05, 0x00, 0x71
+            };
+            static const uint8_t session_try_to_receive_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+            };
+            static const uint8_t session_send_prepared_sig[] = {
+                0xff, 0x83, 0x02, 0xd1, 0xf8, 0x5f, 0x06, 0xa9, 0xf6, 0x57, 0x07, 0xa9,
+                0xf4, 0x4f, 0x08, 0xa9, 0xfd, 0x7b, 0x09, 0xa9, 0xfd, 0x43, 0x02, 0x91,
+                0xf4, 0x03, 0x02, 0xaa, 0xf5, 0x03, 0x01, 0xaa, 0xf3, 0x03, 0x00, 0xaa,
+                0xc8, 0x2c, 0x03, 0xd0, 0x08, 0x15, 0x47, 0xf9, 0x08, 0x01, 0x40, 0xf9,
+                0xa8, 0x83, 0x1c, 0xf8, 0x57, 0x8a, 0x03, 0xf0, 0xe0, 0x76, 0x42, 0xf9,
+                0x60, 0x06, 0x00, 0xb4, 0x08, 0x00, 0x40, 0xf9, 0x08, 0x05, 0x40, 0xf9
+            };
+            static const uint8_t session_send_prepared_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+            };
             static const uint8_t messages_send_message_serialize_expected[] = {
                 0xfc, 0x6f, 0xba, 0xa9, 0xfa, 0x67, 0x01, 0xa9,
                 0xf8, 0x5f, 0x02, 0xa9, 0xf6, 0x57, 0x03, 0xa9
@@ -7491,53 +8034,209 @@ public final class BinaryPatchEngine {
                 0xff, 0xc3, 0x03, 0xd1, 0xfa, 0x67, 0x0a, 0xa9,
                 0xf8, 0x5f, 0x0b, 0xa9, 0xf6, 0x57, 0x0c, 0xa9
             };
+            /* scheduled-send serialize signatures (6.9.0 entry; SendMedia needs len=320
+             * to disambiguate the shared prologue). Request offsets flags 0x18/0x70 and
+             * schedule_date 0x88/0xf0 verified byte-identical 6.8.5<->6.9.0. */
+            static const uint8_t messages_send_message_serialize_sig[] = {
+                0xfc, 0x6f, 0xba, 0xa9, 0xfa, 0x67, 0x01, 0xa9, 0xf8, 0x5f, 0x02, 0xa9,
+                0xf6, 0x57, 0x03, 0xa9, 0xf4, 0x4f, 0x04, 0xa9, 0xfd, 0x7b, 0x05, 0xa9,
+                0xfd, 0x43, 0x01, 0x91, 0xff, 0x43, 0x0f, 0xd1, 0xf3, 0x03, 0x00, 0xaa,
+                0x28, 0x30, 0x04, 0xb0, 0x08, 0x15, 0x47, 0xf9, 0x08, 0x01, 0x40, 0xf9,
+                0xa8, 0x83, 0x19, 0xf8, 0x20, 0x0c, 0x40, 0xf9, 0xc0, 0x00, 0x00, 0xb4,
+                0x1f, 0x00, 0x01, 0xeb, 0xc0, 0x00, 0x00, 0x54, 0xe0, 0x8f, 0x00, 0xf9
+            };
+            static const uint8_t messages_send_message_serialize_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff
+            };
+
+            static const uint8_t messages_send_media_serialize_sig[] = {
+                0xff, 0xc3, 0x03, 0xd1, 0xfa, 0x67, 0x0a, 0xa9, 0xf8, 0x5f, 0x0b, 0xa9,
+                0xf6, 0x57, 0x0c, 0xa9, 0xf4, 0x4f, 0x0d, 0xa9, 0xfd, 0x7b, 0x0e, 0xa9,
+                0xfd, 0x83, 0x03, 0x91, 0xf3, 0x03, 0x00, 0xaa, 0xa8, 0x1d, 0x05, 0xb0,
+                0x08, 0x15, 0x47, 0xf9, 0x08, 0x01, 0x40, 0xf9, 0xa8, 0x83, 0x1b, 0xf8,
+                0x08, 0x00, 0x40, 0xf9, 0x19, 0x01, 0x40, 0xf9, 0x00, 0x18, 0x40, 0xf9,
+                0xe0, 0x00, 0x00, 0xb4, 0x68, 0x62, 0x00, 0x91, 0x1f, 0x00, 0x08, 0xeb,
+                0xc0, 0x00, 0x00, 0x54, 0xe0, 0x2b, 0x00, 0xf9, 0x7f, 0x1a, 0x00, 0xf9,
+                0x09, 0x00, 0x00, 0x14, 0xff, 0x2b, 0x00, 0xf9, 0x07, 0x00, 0x00, 0x14,
+                0xe8, 0xe3, 0x00, 0x91, 0xe8, 0x2b, 0x00, 0xf9, 0x08, 0x00, 0x40, 0xf9,
+                0x08, 0x0d, 0x40, 0xf9, 0xe1, 0xe3, 0x00, 0x91, 0x00, 0x01, 0x3f, 0xd6,
+                0xe0, 0x63, 0x00, 0x91, 0x61, 0xe2, 0x00, 0x91, 0xe2, 0x03, 0x13, 0xaa,
+                0xef, 0x4c, 0xfb, 0x97, 0x75, 0x0a, 0x40, 0xb9, 0x76, 0x0a, 0x40, 0xf9,
+                0x77, 0xd2, 0x4c, 0x29, 0xe0, 0x2b, 0x40, 0xf9, 0xe0, 0x00, 0x00, 0xb4,
+                0xe8, 0xe3, 0x00, 0x91, 0x1f, 0x00, 0x08, 0xeb, 0xc0, 0x00, 0x00, 0x54,
+                0xe0, 0x3b, 0x00, 0xf9, 0xff, 0x2b, 0x00, 0xf9, 0x09, 0x00, 0x00, 0x14,
+                0xff, 0x3b, 0x00, 0xf9, 0x07, 0x00, 0x00, 0x14, 0xe8, 0x63, 0x01, 0x91,
+                0xe8, 0x3b, 0x00, 0xf9, 0x08, 0x00, 0x40, 0xf9, 0x08, 0x0d, 0x40, 0xf9,
+                0xe1, 0x63, 0x01, 0x91, 0x00, 0x01, 0x3f, 0xd6, 0xe8, 0x1b, 0x40, 0xf9,
+                0xff, 0x1b, 0x00, 0xf9, 0xe8, 0x4b, 0x00, 0xf9, 0x74, 0x01, 0x00, 0x35,
+                0x48, 0x74, 0x05, 0xd0, 0x08, 0x41, 0x03, 0x91, 0x29, 0x00, 0x80, 0x52,
+                0x09, 0x01, 0xe9, 0xb8, 0x34, 0x05, 0x00, 0x11, 0x09, 0x00, 0xb8, 0x12,
+                0x9f, 0x02, 0x09, 0x6b, 0x61, 0x00, 0x00, 0x54, 0x1f, 0xfd, 0x9f, 0x88,
+                0x14, 0x00, 0xb8, 0x12, 0x08, 0x01, 0x80, 0x52, 0xe8, 0x17, 0x00, 0xb9,
+                0x68, 0x82, 0x40, 0xb9, 0x48, 0x3b, 0x00, 0x34, 0x88, 0x01, 0x80, 0x52,
+                0xe8, 0x17, 0x00, 0xb9, 0x60, 0xe2, 0x01, 0x91, 0xe1, 0x53, 0x00, 0x91,
+                0x5c, 0xda, 0x44, 0x95, 0x68, 0xc2, 0x41, 0x39, 0x28, 0x01, 0x00, 0x36,
+                0x68, 0x92, 0x40, 0xb9, 0xa8, 0x44, 0x00, 0x34
+            };
+            static const uint8_t messages_send_media_serialize_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00
+            };
             static const uint8_t format_count_decimal_expected[] = {
                 0x09, 0x00, 0x40, 0xf9, 0x2a, 0x19, 0x40, 0xb9,
                 0x0b, 0x04, 0x80, 0x52, 0x65, 0x15, 0x2a, 0x0a
             };
+            static const uint8_t format_count_decimal_sig[] = {
+                0x09, 0x00, 0x40, 0xf9, 0x2a, 0x19, 0x40, 0xb9, 0x0b, 0x04, 0x80, 0x52,
+                0x65, 0x15, 0x2a, 0x0a, 0x20, 0x01, 0x40, 0xf9, 0x02, 0x00, 0x80, 0x12,
+                0x43, 0x01, 0x80, 0x52, 0x04, 0x00, 0x80, 0x12, 0x01, 0x00, 0x00, 0x14,
+                0xff, 0x43, 0x02, 0xd1, 0xfa, 0x67, 0x04, 0xa9, 0xf8, 0x5f, 0x05, 0xa9,
+                0xf6, 0x57, 0x06, 0xa9, 0xf4, 0x4f, 0x07, 0xa9, 0xfd, 0x7b, 0x08, 0xa9,
+                0xfd, 0x03, 0x02, 0x91, 0xf3, 0x03, 0x05, 0xaa, 0xf4, 0x03, 0x04, 0xaa,
+                0xf5, 0x03, 0x03, 0xaa, 0xf6, 0x03, 0x02, 0xaa, 0xf9, 0x03, 0x01, 0xaa,
+                0xf7, 0x03, 0x00, 0xaa, 0xf8, 0x03, 0x08, 0xaa, 0x28, 0x43, 0x05, 0xb0,
+                0x08, 0x15, 0x47, 0xf9, 0x08, 0x01, 0x40, 0xf9, 0xe8, 0x1f, 0x00, 0xf9,
+                0x3f, 0x00, 0x00, 0xf1, 0x3a, 0x54, 0x81, 0xda, 0xe8, 0xf3, 0x01, 0xb2,
+                0xe8, 0xa3, 0x02, 0xa9, 0xe8, 0x13, 0x00, 0xf9
+            };
+            static const uint8_t format_count_decimal_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+            };
 
-            g_profile_peer_id_text_return = (uintptr_t)patchgram_resolve_vmaddr(
-                PATCHGRAM_PROFILE_PEER_ID_TEXT_RETURN_VMADDR
+            static const uint8_t profile_peer_id_text_caller_sig[] = {
+                0xff, 0x83, 0x05, 0xd1, 0xf8, 0x5f, 0x12, 0xa9, 0xf6, 0x57, 0x13, 0xa9,
+                0xf4, 0x4f, 0x14, 0xa9, 0xfd, 0x7b, 0x15, 0xa9, 0xfd, 0x43, 0x05, 0x91,
+                0x75, 0xcd, 0x03, 0xd0, 0xa8, 0x42, 0x46, 0xb9, 0x28, 0x41, 0x00, 0x35,
+                0xf4, 0x03, 0x01, 0xaa
+            };
+            static const uint8_t profile_peer_id_text_caller_sigmask[] = {
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+                0xff, 0xff, 0xff, 0xff
+            };
+
+            /* Resolve the profile "ID" call-return address at runtime: find FormatCountDecimal
+             * and the profile-id caller by signature, then decode the caller's bl to
+             * FormatCountDecimal. Version-independent (no hardcoded return vmaddr). */
+            void *g_format_count_decimal_addr = patchgram_resolve_addr(
+                format_count_decimal_sig,
+                format_count_decimal_sigmask,
+                sizeof(format_count_decimal_sig),
+                PATCHGRAM_FORMAT_COUNT_DECIMAL_VMADDR,
+                "Lang::FormatCountDecimal"
             );
-            g_history_item_set_factcheck = (PatchgramHistoryItemSetFactcheckFn)patchgram_resolve_vmaddr(
-                PATCHGRAM_HISTORY_ITEM_SET_FACTCHECK_VMADDR
+            void *g_profile_peer_id_text_caller_addr = patchgram_resolve_addr(
+                profile_peer_id_text_caller_sig,
+                profile_peer_id_text_caller_sigmask,
+                sizeof(profile_peer_id_text_caller_sig),
+                PATCHGRAM_PROFILE_PEER_ID_TEXT_CALLER_VMADDR,
+                "ProfilePeerIdText caller"
+            );
+            g_profile_peer_id_text_return = patchgram_find_bl_return(
+                (const uint8_t *)g_profile_peer_id_text_caller_addr,
+                0x1000,
+                (uintptr_t)g_format_count_decimal_addr,
+                "ProfilePeerIdText"
+            );
+            g_history_item_set_factcheck = (PatchgramHistoryItemSetFactcheckFn)patchgram_resolve_addr(
+                history_item_set_factcheck_sig,
+                history_item_set_factcheck_mask,
+                sizeof(history_item_set_factcheck_sig),
+                PATCHGRAM_HISTORY_ITEM_SET_FACTCHECK_VMADDR,
+                "HistoryItem::setFactcheck"
             );
 
-            const bool user_flags_hook = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_USER_SET_FLAGS_VMADDR),
+            const bool user_flags_hook = patchgram_install_hook(
                 patchgram_user_set_flags,
+                user_set_flags_sig,
+                user_set_flags_sigmask,
+                sizeof(user_set_flags_sig),
+                PATCHGRAM_USER_SET_FLAGS_VMADDR,
                 user_flags_expected,
                 sizeof(user_flags_expected),
                 (void **)&g_original_user_set_flags,
                 "UserData::setFlags"
             );
-            const bool user_hook = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_USER_SET_BOT_VERIFY_DETAILS_VMADDR),
+            const bool user_hook = patchgram_install_hook(
                 patchgram_user_set_bot_verify_details,
+                user_set_bot_verify_details_sig,
+                user_set_bot_verify_details_sigmask,
+                sizeof(user_set_bot_verify_details_sig),
+                PATCHGRAM_USER_SET_BOT_VERIFY_DETAILS_VMADDR,
                 user_expected,
                 sizeof(user_expected),
                 (void **)&g_original_user_set_bot_verify_details,
                 "UserData::setBotVerifyDetails"
             );
-            const bool channel_hook = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_CHANNEL_SET_BOT_VERIFY_DETAILS_VMADDR),
+            const bool channel_hook = patchgram_install_hook(
                 patchgram_channel_set_bot_verify_details,
+                channel_set_bot_verify_details_sig,
+                channel_set_bot_verify_details_sigmask,
+                sizeof(channel_set_bot_verify_details_sig),
+                PATCHGRAM_CHANNEL_SET_BOT_VERIFY_DETAILS_VMADDR,
                 channel_expected,
                 sizeof(channel_expected),
                 (void **)&g_original_channel_set_bot_verify_details,
                 "ChannelData::setBotVerifyDetails"
             );
-            const bool phone_hook = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_PHONE_OR_HIDDEN_VALUE_MAP_VMADDR),
+            const bool phone_hook = patchgram_install_hook(
                 patchgram_phone_or_hidden_value_map,
+                phone_or_hidden_value_sig,
+                phone_or_hidden_value_sigmask,
+                sizeof(phone_or_hidden_value_sig),
+                PATCHGRAM_PHONE_OR_HIDDEN_VALUE_MAP_VMADDR,
                 phone_or_hidden_value_expected,
                 sizeof(phone_or_hidden_value_expected),
                 (void **)&g_original_phone_or_hidden_value_map,
                 "Info::Profile::PhoneOrHiddenValue"
             );
-            const bool is_collectible_phone_hook = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_IS_COLLECTIBLE_PHONE_VMADDR),
+            const bool is_collectible_phone_hook = patchgram_install_hook(
                 patchgram_is_collectible_phone,
+                is_collectible_phone_sig,
+                is_collectible_phone_sigmask,
+                sizeof(is_collectible_phone_sig),
+                PATCHGRAM_IS_COLLECTIBLE_PHONE_VMADDR,
                 is_collectible_phone_expected,
                 sizeof(is_collectible_phone_expected),
                 (void **)&g_original_is_collectible_phone,
@@ -7545,9 +8244,20 @@ public final class BinaryPatchEngine {
             );
             bool history_item_create_view_hook = false;
             if (PATCHGRAM_HISTORY_ITEM_CREATE_VIEW_VMADDR != 0) {
-                history_item_create_view_hook = patchgram_install_inline_hook(
-                    patchgram_resolve_vmaddr(PATCHGRAM_HISTORY_ITEM_CREATE_VIEW_VMADDR),
+                /*
+                 * createView's hook body only calls patchgram_set_local_fact_check_on_item
+                 * (which builds a layout-stable FactCheck struct and calls the correctly
+                 * resolved g_history_item_set_factcheck) + the original — it reads NO
+                 * HistoryItem field offsets. The earlier +0xac crash was g_history_item_set_factcheck
+                 * being called at the wrong (6.8.5) address on 6.9.0; now that it is
+                 * signature-resolved, activating createView by signature is safe.
+                 */
+                history_item_create_view_hook = patchgram_install_hook(
                     patchgram_history_item_create_view,
+                    history_item_create_view_sig,
+                    NULL,
+                    sizeof(history_item_create_view_sig),
+                    PATCHGRAM_HISTORY_ITEM_CREATE_VIEW_VMADDR,
                     history_item_create_view_expected,
                     sizeof(history_item_create_view_expected),
                     (void **)&g_original_history_item_create_view,
@@ -7558,9 +8268,12 @@ public final class BinaryPatchEngine {
             }
             bool history_item_fact_check_hook = false;
             if (PATCHGRAM_HISTORY_ITEM_HAS_UNREQUESTED_FACTCHECK_VMADDR != 0) {
-                history_item_fact_check_hook = patchgram_install_inline_hook(
-                    patchgram_resolve_vmaddr(PATCHGRAM_HISTORY_ITEM_HAS_UNREQUESTED_FACTCHECK_VMADDR),
+                history_item_fact_check_hook = patchgram_install_hook(
                     patchgram_history_item_has_unrequested_factcheck,
+                    history_item_has_unrequested_factcheck_sig,
+                    history_item_has_unrequested_factcheck_sigmask,
+                    sizeof(history_item_has_unrequested_factcheck_sig),
+                    PATCHGRAM_HISTORY_ITEM_HAS_UNREQUESTED_FACTCHECK_VMADDR,
                     history_item_has_unrequested_factcheck_expected,
                     sizeof(history_item_has_unrequested_factcheck_expected),
                     (void **)&g_original_history_item_has_unrequested_factcheck,
@@ -7571,9 +8284,12 @@ public final class BinaryPatchEngine {
             }
             bool data_factchecks_request_for_hook = false;
             if (PATCHGRAM_DATA_FACTCHECKS_REQUEST_FOR_VMADDR != 0) {
-                data_factchecks_request_for_hook = patchgram_install_inline_hook(
-                    patchgram_resolve_vmaddr(PATCHGRAM_DATA_FACTCHECKS_REQUEST_FOR_VMADDR),
+                data_factchecks_request_for_hook = patchgram_install_hook(
                     patchgram_data_factchecks_request_for,
+                    data_factchecks_request_for_sig,
+                    data_factchecks_request_for_mask,
+                    sizeof(data_factchecks_request_for_sig),
+                    PATCHGRAM_DATA_FACTCHECKS_REQUEST_FOR_VMADDR,
                     data_factchecks_request_for_expected,
                     sizeof(data_factchecks_request_for_expected),
                     (void **)&g_original_data_factchecks_request_for,
@@ -7582,41 +8298,57 @@ public final class BinaryPatchEngine {
             } else {
                 patchgram_log("SKIP Data::Factchecks::requestFor hook: vmaddr not configured");
             }
-            const bool session_try_to_receive_hook = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_SESSION_PRIVATE_TRY_TO_RECEIVE_VMADDR),
+            const bool session_try_to_receive_hook = patchgram_install_hook(
                 patchgram_session_private_try_to_receive,
+                session_try_to_receive_sig,
+                session_try_to_receive_sigmask,
+                sizeof(session_try_to_receive_sig),
+                PATCHGRAM_SESSION_PRIVATE_TRY_TO_RECEIVE_VMADDR,
                 session_private_try_to_receive_expected,
                 sizeof(session_private_try_to_receive_expected),
                 (void **)&g_original_session_private_try_to_receive,
                 "MTP::details::SessionPrivate::tryToReceive"
             );
-            const bool session_send_prepared_hook = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_SESSION_SEND_PREPARED_VMADDR),
+            const bool session_send_prepared_hook = patchgram_install_hook(
                 patchgram_session_send_prepared,
+                session_send_prepared_sig,
+                session_send_prepared_sigmask,
+                sizeof(session_send_prepared_sig),
+                PATCHGRAM_SESSION_SEND_PREPARED_VMADDR,
                 session_send_prepared_expected,
                 sizeof(session_send_prepared_expected),
                 (void **)&g_original_session_send_prepared,
                 "MTP::details::Session::sendPrepared"
             );
-            g_scheduled_send_message_hook_installed = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_MESSAGES_SEND_MESSAGE_SERIALIZE_VMADDR),
+            g_fragment_phone_hooks_live = session_try_to_receive_hook && session_send_prepared_hook;
+            g_scheduled_send_message_hook_installed = patchgram_install_hook(
                 patchgram_messages_send_message_serialize,
+                messages_send_message_serialize_sig,
+                messages_send_message_serialize_sigmask,
+                sizeof(messages_send_message_serialize_sig),
+                PATCHGRAM_MESSAGES_SEND_MESSAGE_SERIALIZE_VMADDR,
                 messages_send_message_serialize_expected,
                 sizeof(messages_send_message_serialize_expected),
                 (void **)&g_original_messages_send_message_serialize,
                 "MTPmessages_SendMessage::serialize"
             );
-            g_scheduled_send_media_hook_installed = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_MESSAGES_SEND_MEDIA_SERIALIZE_VMADDR),
+            g_scheduled_send_media_hook_installed = patchgram_install_hook(
                 patchgram_messages_send_media_serialize,
+                messages_send_media_serialize_sig,
+                messages_send_media_serialize_sigmask,
+                sizeof(messages_send_media_serialize_sig),
+                PATCHGRAM_MESSAGES_SEND_MEDIA_SERIALIZE_VMADDR,
                 messages_send_media_serialize_expected,
                 sizeof(messages_send_media_serialize_expected),
                 (void **)&g_original_messages_send_media_serialize,
                 "MTPmessages_SendMedia::serialize"
             );
-            const bool profile_id_text_hook = patchgram_install_inline_hook(
-                patchgram_resolve_vmaddr(PATCHGRAM_FORMAT_COUNT_DECIMAL_VMADDR),
+            const bool profile_id_text_hook = patchgram_install_hook(
                 patchgram_format_count_decimal,
+                format_count_decimal_sig,
+                format_count_decimal_sigmask,
+                sizeof(format_count_decimal_sig),
+                PATCHGRAM_FORMAT_COUNT_DECIMAL_VMADDR,
                 format_count_decimal_expected,
                 sizeof(format_count_decimal_expected),
                 &g_original_format_count_decimal,
@@ -7659,13 +8391,23 @@ public final class BinaryPatchEngine {
                 patchgram_log("SKIP Patchgram runtime hook for non-Telegram image=%s", patchgram_main_image_name());
                 return;
             }
-            if (!patchgram_load_runtime_config(g_config_path, true, "initial")) {
+            // IMPORTANT: load the config but DEFER memory patches (apply_memory_patches=false).
+            // Runtime memory patches rewrite mid-body code, and some legitimately land inside a
+            // hooked function (e.g. data.user.verification_status.* writes at UserData::setFlags
+            // +0x34, which overlaps the tail of setFlags' resolution signature). If patches ran
+            // first they would corrupt the very bytes the signature matches on → "signature miss"
+            // → the hook silently dies (userFlags=0 → custom phone / local channel / usernames
+            // break). So resolve+install hooks against the PRISTINE binary first, THEN apply the
+            // memory patches: the trampoline lives at the function entry, the patch lands mid-body,
+            // and the two coexist.
+            if (!patchgram_load_runtime_config(g_config_path, false, "initial")) {
                 return;
             }
             if (g_bot_verification_enabled && !g_configured_icon_id) {
                 patchgram_log("ERROR Missing customEmojiId");
             }
             patchgram_install_bot_verification_hooks();
+            patchgram_apply_memory_patches("initial");
             patchgram_start_runtime_reload_thread();
         }
         """#

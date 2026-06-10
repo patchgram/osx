@@ -93,6 +93,13 @@ private struct HeaderBar: View {
                 .font(.system(size: 22, weight: .semibold))
                 Spacer()
                 Button {
+                    viewModel.openLogsFolder()
+                } label: {
+                    Label("Logs", systemImage: "doc.text.magnifyingglass")
+                }
+                .disabled(viewModel.appURL == nil)
+                .help("Open the folder with Patchgram logs")
+                Button {
                     viewModel.rescanApp()
                 } label: {
                     Label("Rescan", systemImage: "arrow.clockwise")
