@@ -79,6 +79,9 @@ struct BinaryRuleRowState: Identifiable, Hashable {
 
     var canUpdateAppliedPatch: Bool {
         (desiredEnabled && status.state == .partial)
+            // Applied rule whose definition changed under it (e.g. a fetched patch update) — offer
+            // to re-apply the new definition cleanly.
+            || (status.state == .applied && status.definitionChanged)
             || (status.state == .applied && (status.rule.parameter != nil
                 || status.rule.kind == .botVerification
                 || status.rule.kind == .customLevelRating
@@ -288,6 +291,7 @@ final class PatchgramViewModel: ObservableObject {
     @Published var isShowingAppSettings = false
     @Published var availableUpdate: PatchgramAvailableUpdate?
     @Published var isCheckingForUpdates = false
+    @Published var isUpdatingPatches = false
 
     private let binaryEngine = BinaryPatchEngine()
     private static let updateChecksEnabledKey = "Patchgram.updateChecks.enabled"
@@ -520,6 +524,35 @@ final class PatchgramViewModel: ObservableObject {
         }
         didCheckForUpdatesOnLaunch = true
         await checkForUpdates(isUserInitiated: false)
+    }
+
+    /// Fetch + verify + install the latest signed patch bundle from GitHub, then hot-reload the
+    /// catalog so the new patches/engine take effect on the next apply (no app rebuild needed).
+    func updatePatches() async {
+        guard !isUpdatingPatches else {
+            return
+        }
+        isUpdatingPatches = true
+        statusMessage = "Checking GitHub for patch updates..."
+        defer {
+            isUpdatingPatches = false
+        }
+        do {
+            let outcome = try await PatchBundleUpdater.checkAndApply(appVersion: PatchgramUpdater.currentVersion)
+            switch outcome {
+            case let .upToDate(version):
+                statusMessage = "Patches are up to date (bundle v\(version))."
+            case let .updated(from, to, notes):
+                BinaryPatchRuleCatalog.reloadFromDisk()
+                if appURL != nil {
+                    rescanApp()
+                }
+                let note = (notes?.isEmpty == false) ? " \(notes!)" : ""
+                statusMessage = "Updated patches v\(from) → v\(to).\(note) Re-apply enabled patches to recompile."
+            }
+        } catch {
+            statusMessage = "Patch update failed: \(error.localizedDescription)"
+        }
     }
 
     func checkForUpdates(isUserInitiated: Bool = true) async {

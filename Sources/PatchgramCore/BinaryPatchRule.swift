@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public enum BinaryPatchRuleKind: String, Codable, Sendable {
     case forceSerializedBool
@@ -780,7 +781,7 @@ public struct BinaryPatchParameter: Hashable, Sendable {
     }
 }
 
-public enum BinaryPatchTemplate: Hashable, Sendable {
+public enum BinaryPatchTemplate: String, Codable, Hashable, Sendable {
     case creditsStarsAmount
     case creditsTonAmount
 
@@ -992,6 +993,14 @@ private extension BinaryPatchTemplate {
     }
 }
 
+/// How a rule reaches Telegram. `nil` means "use the engine's built-in classification" (the existing
+/// rules); a fetched/added rule sets `runtimeMemory` so it joins the dylib memory-patch table without
+/// an app rebuild (the engine's hardcoded id sets can't know a brand-new rule's id).
+public enum BinaryPatchDelivery: String, Codable, Hashable, Sendable {
+    case runtimeMemory
+    case disk
+}
+
 public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
     public let id: String
     public let title: String
@@ -1004,6 +1013,7 @@ public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
     public let supportedBuildNote: String
     public let parameter: BinaryPatchParameter?
     public let replacements: [BinaryReplacement]
+    public let delivery: BinaryPatchDelivery?
 
     public init(
         id: String,
@@ -1016,7 +1026,8 @@ public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
         riskNote: String,
         supportedBuildNote: String,
         parameter: BinaryPatchParameter? = nil,
-        replacements: [BinaryReplacement]
+        replacements: [BinaryReplacement],
+        delivery: BinaryPatchDelivery? = nil
     ) {
         self.id = id
         self.title = title
@@ -1029,6 +1040,29 @@ public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
         self.supportedBuildNote = supportedBuildNote
         self.parameter = parameter
         self.replacements = replacements
+        self.delivery = delivery
+    }
+
+    /// Stable hash of what this rule would write (bytes/masks/structure), independent of user
+    /// parameter choices. Recorded in the manifest at apply time; if a fetched update changes the
+    /// definition while the rule is enabled, the new digest differs and the row offers "Update".
+    public var definitionDigest: String {
+        var hasher = SHA256()
+        hasher.update(data: Data(id.utf8))
+        if let delivery {
+            hasher.update(data: Data(("delivery:" + delivery.rawValue).utf8))
+        }
+        for replacement in replacements {
+            hasher.update(data: Data(replacement.id.utf8))
+            hasher.update(data: replacement.original)
+            hasher.update(data: replacement.patched)
+            if let mask = replacement.originalMask {
+                hasher.update(data: mask)
+            }
+            let meta = "|\(replacement.expectedOccurrences)|\(replacement.mode.rawValue)|\(replacement.alternativeGroup)|\(replacement.template?.rawValue ?? "")"
+            hasher.update(data: Data(meta.utf8))
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -2281,7 +2315,8 @@ public enum BinaryPatchRuleDefinitions {
     ]
 
     public static func rules(withIds ids: [String]) -> [BinaryPatchRule] {
-        let rulesById = Dictionary(uniqueKeysWithValues: builtInRules.map { ($0.id, $0) })
+        // Resolve against the loaded catalog (patches.json) so modules reflect fetched updates.
+        let rulesById = Dictionary(BinaryPatchRuleCatalog.rules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return ids.compactMap { rulesById[$0] }
     }
 }
@@ -2300,5 +2335,52 @@ extension Data {
             index = next
         }
         self = Data(bytes)
+    }
+
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+// MARK: - Codable (externalized patch catalog)
+
+extension BinaryPatchParameterChoice: Codable {}
+extension BinaryPatchParameterChoiceGroup: Codable {}
+extension BinaryPatchParameter: Codable {}
+extension BinaryPatchRule: Codable {}
+
+extension BinaryReplacement: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id, originalHex, patchedHex, maskHex, expectedOccurrences, mode, alternativeGroup, template, enabledParameterValues
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decode(String.self, forKey: .id),
+            originalHex: try c.decode(String.self, forKey: .originalHex),
+            patchedHex: try c.decode(String.self, forKey: .patchedHex),
+            maskHex: try c.decodeIfPresent(String.self, forKey: .maskHex),
+            expectedOccurrences: try c.decodeIfPresent(Int.self, forKey: .expectedOccurrences) ?? 1,
+            mode: try c.decodeIfPresent(BinaryReplacementMode.self, forKey: .mode) ?? .toggle,
+            alternativeGroup: try c.decodeIfPresent(String.self, forKey: .alternativeGroup),
+            template: try c.decodeIfPresent(BinaryPatchTemplate.self, forKey: .template),
+            enabledParameterValues: try c.decodeIfPresent([UInt64].self, forKey: .enabledParameterValues)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(original.hexString, forKey: .originalHex)
+        // Encode the STORED patched bytes (fixedPatched), never the template-rendered `patched`,
+        // so template replacements round-trip to their template instead of a baked default value.
+        try c.encode(fixedPatched.hexString, forKey: .patchedHex)
+        try c.encodeIfPresent(originalMask?.hexString, forKey: .maskHex)
+        try c.encode(expectedOccurrences, forKey: .expectedOccurrences)
+        try c.encode(mode, forKey: .mode)
+        try c.encode(alternativeGroup, forKey: .alternativeGroup)
+        try c.encodeIfPresent(template, forKey: .template)
+        try c.encodeIfPresent(enabledParameterValues.map { $0.sorted() }, forKey: .enabledParameterValues)
     }
 }

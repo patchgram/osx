@@ -1133,6 +1133,114 @@ final class BinaryPatchEngineTests: XCTestCase {
         XCTAssertNil(dylib.range(of: Data("__PATCHGRAM_BUILD_MARKER_PLACEHOLDER__".utf8)))
     }
 
+    func testPatchesJSONRoundTripsToBuiltInRules() throws {
+        // Every rule loaded from the externalized patches.json must field-equal its Swift seed,
+        // proving the JSON catalog is byte-faithful (masks, template identity, fixedPatched, etc.).
+        let builtInById = Dictionary(
+            BinaryPatchRuleDefinitions.builtInRules.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        XCTAssertEqual(BinaryPatchRuleCatalog.rules.count, 23)
+        for rule in BinaryPatchRuleCatalog.rules {
+            let seed = try XCTUnwrap(builtInById[rule.id], "no built-in seed for \(rule.id)")
+            XCTAssertEqual(rule, seed, "patches.json round-trip mismatch for \(rule.id)")
+        }
+    }
+
+    func testPatchBundleVerifierAcceptsSignedBundleAndRejectsTampering() throws {
+        let provider = PatchgramResourceProvider()
+        let manifestData = provider.bundledData(named: "patch-manifest.json")
+        let signature = try XCTUnwrap(Data(base64Encoded: "JdU2dpBmzWwj8qEdI6lQVYduLMW1qtMLWSctJQAXr9EigcJayCgbeteJ1Ri6EYq7X/VMk0zxfPJZzKEQoE05Cg=="))
+        let files: [String: Data] = [
+            "patches.json": provider.bundledData(named: "patches.json"),
+            "engine.c.template": provider.bundledData(named: "engine.c.template")
+        ]
+        let verifier = PatchBundleVerifier()
+
+        // Valid signed bundle is accepted (proves openssl-signed → CryptoKit-verified, pinned key).
+        let manifest = try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.0.4")
+        XCTAssertEqual(manifest.bundleVersion, 1)
+
+        // Tampered file → rejected.
+        var tampered = files
+        tampered["patches.json"] = Data("tampered".utf8)
+        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: signature, files: tampered, appVersion: "1.0.4"))
+
+        // Forged signature → rejected.
+        var badSig = signature
+        badSig[0] ^= 0xFF
+        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: badSig, files: files, appVersion: "1.0.4"))
+
+        // App older than minAppVersion → rejected.
+        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.0.0"))
+    }
+
+    func testResourceProviderPrefersCacheThenFallsBackToBundle() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let provider = PatchgramResourceProvider(cacheDirectory: dir)
+        // No cache file -> bundled default.
+        XCTAssertEqual(provider.patchesJSON(), provider.bundledData(named: PatchgramResourceProvider.patchesJSONName))
+        // Cache file present -> overrides.
+        let override = Data(#"{"schemaVersion":1,"modules":[]}"#.utf8)
+        try override.write(to: dir.appendingPathComponent(PatchgramResourceProvider.patchesJSONName))
+        XCTAssertEqual(provider.patchesJSON(), override)
+    }
+
+    func testCatalogLoaderAppliesCachedBundleOverride() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let provider = PatchgramResourceProvider(cacheDirectory: dir)
+
+        // No cache → full bundled catalog.
+        XCTAssertEqual(PatchCatalogLoader.load(provider: provider).count, 23)
+
+        // A written cache bundle (what a verified update produces) is loaded with full fidelity —
+        // this is the hot-reload path: writeCacheFiles + reload → catalog reflects the new patches.
+        let onlyRule = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.disable_spoilers"))
+        let custom = PatchCatalogFile(schemaVersion: 1, modules: [
+            PatchCatalogModule(moduleId: "Test", order: 1, rules: [onlyRule])
+        ])
+        try provider.writeCacheFiles([PatchgramResourceProvider.patchesJSONName: try JSONEncoder().encode(custom)])
+
+        let loaded = PatchCatalogLoader.load(provider: provider)
+        XCTAssertEqual(loaded.map(\.id), ["binary.visual.disable_spoilers"])
+        XCTAssertEqual(loaded.first, onlyRule)
+    }
+
+    func testDefinitionDigestIsDeterministicAndDistinct() throws {
+        let a = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.visual.disable_spoilers"))
+        let b = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: "binary.stories.hide"))
+        XCTAssertEqual(a.definitionDigest, a.definitionDigest)
+        XCTAssertNotEqual(a.definitionDigest, b.definitionDigest)
+        XCTAssertEqual(a.definitionDigest.count, 64)
+    }
+
+    func testManifestStatusFlagsDefinitionChange() throws {
+        let engine = BinaryPatchEngine(processRunner: StubProcessRunner())
+        let ruleId = "binary.links.open_without_warning"
+        let realDigest = try XCTUnwrap(BinaryPatchRuleCatalog.rule(id: ruleId)).definitionDigest
+        let manifestURL = appURL.appendingPathComponent("Contents/Resources/PatchgramManifest.json")
+        try FileManager.default.createDirectory(at: manifestURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        func writeManifest(hash: String) throws {
+            let json = #"{"updatedAt":"2026-01-01T00:00:00Z","enabledRuleIds":["\#(ruleId)"],"appliedDefinitionHashes":{"\#(ruleId)":"\#(hash)"}}"#
+            try Data(json.utf8).write(to: manifestURL)
+        }
+
+        // Recorded digest differs from the current rule → flagged as changed.
+        try writeManifest(hash: "stale-digest")
+        let changed = try XCTUnwrap(try engine.manifestStatuses(appURL: appURL)).first { $0.id == ruleId }
+        XCTAssertEqual(changed?.definitionChanged, true)
+
+        // Recorded digest matches → not changed.
+        try writeManifest(hash: realDigest)
+        let unchanged = try XCTUnwrap(try engine.manifestStatuses(appURL: appURL)).first { $0.id == ruleId }
+        XCTAssertEqual(unchanged?.definitionChanged, false)
+    }
+
     private var executableURL: URL {
         appURL.appendingPathComponent("Contents/MacOS/Telegram")
     }

@@ -8,6 +8,9 @@ LOGO="$ROOT/Sources/Patchgram/Resources/PatchgramLogo.svg"
 TELEGRAM_LOGO="$ROOT/Sources/Patchgram/Resources/TelegramLogo.svg"
 APP_ICON_SVG_SOURCE="$ROOT/assets/PatchgramAppIcon.svg"
 RESOURCE_BUNDLE="$ROOT/.build/release/Patchgram_Patchgram.bundle"
+# PatchgramCore ships patches.json + engine.c.template via Bundle.module; its resource bundle must
+# sit next to the executable in the installed .app or Bundle.module fails to resolve at runtime.
+CORE_RESOURCE_BUNDLE="$ROOT/.build/release/Patchgram_PatchgramCore.bundle"
 SWIFTPM_CACHE="$ROOT/.build/swiftpm-cache"
 SWIFTPM_CONFIG="$ROOT/.build/swiftpm-config"
 SWIFTPM_SECURITY="$ROOT/.build/swiftpm-security"
@@ -55,6 +58,10 @@ cp "$TELEGRAM_LOGO" "$APP/Contents/Resources/TelegramLogo.svg"
 if [ -d "$RESOURCE_BUNDLE" ]; then
   rm -rf "$APP/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
   cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
+fi
+if [ -d "$CORE_RESOURCE_BUNDLE" ]; then
+  rm -rf "$APP/Contents/Resources/$(basename "$CORE_RESOURCE_BUNDLE")"
+  cp -R "$CORE_RESOURCE_BUNDLE" "$APP/Contents/Resources/"
 fi
 
 rm -rf "$ICON_WORK"

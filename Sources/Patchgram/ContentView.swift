@@ -300,6 +300,12 @@ private struct Sidebar: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                if !viewModel.binaryRows.isEmpty {
+                    let available = viewModel.binaryRows.filter { $0.status.state != .unavailable }.count
+                    Text("\(available) of \(viewModel.binaryRows.count) patches available for this client version")
+                        .font(.caption)
+                        .foregroundStyle(available == viewModel.binaryRows.count ? .green : .secondary)
+                }
                 Text("The selected bundle must be writable before patching.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -399,6 +405,13 @@ private struct RuleList: View {
                     .padding(14)
                     .frame(width: 260)
                 }
+                Button {
+                    Task { await viewModel.updatePatches() }
+                } label: {
+                    Label("Update patches", systemImage: "arrow.down.circle")
+                }
+                .disabled(viewModel.isUpdatingPatches || viewModel.isWorking)
+                .help("Fetch the latest signed patch bundle (engine + patches) from GitHub")
                 Spacer()
             }
             .padding(18)
@@ -446,6 +459,7 @@ private struct BinaryRuleCard: View {
                     HStack(spacing: 8) {
                         Text(row.status.rule.title)
                             .font(.system(size: 17, weight: .semibold))
+                        AvailabilityBadge(isAvailable: row.status.state != .unavailable)
                         DeliveryBadge(label: row.patchDeliveryLabel, usesDylib: row.usesDylibPatch)
                         StateBadge(state: row.status.state, pendingState: row.needsApply ? (isWorking ? .pending : .selected) : nil)
                     }
@@ -1081,6 +1095,23 @@ private struct DeliveryBadge: View {
             .foregroundStyle(usesDylib ? .indigo : .brown)
             .background((usesDylib ? Color.indigo : Color.brown).opacity(0.14))
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+private struct AvailabilityBadge: View {
+    let isAvailable: Bool
+
+    var body: some View {
+        Text(isAvailable ? "Available" : "Unavailable")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .foregroundStyle(isAvailable ? .green : .red)
+            .background((isAvailable ? Color.green : Color.red).opacity(0.14))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .help(isAvailable
+                ? "This patch matches the selected Telegram version."
+                : "This patch does not match the selected Telegram version and can't be toggled.")
     }
 }
 

@@ -1,0 +1,53 @@
+name: Patch bundle
+
+# Publishes a signed patch bundle (patches.json + engine.c.template) that installed apps fetch via
+# the "Update patches" button — no app rebuild needed. Tag as `patches-vN` (N = bundleVersion):
+#   git tag patches-v2 && git push origin patches-v2
+# Requires repo secret PATCHGRAM_SIGNING_KEY = the Ed25519 private key PEM
+# (scripts/generate-signing-key.sh prints the matching public key to pin in the app).
+
+on:
+  push:
+    tags:
+      - "patches-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    name: Build + sign patch bundle
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build + sign bundle
+        env:
+          PATCHGRAM_SIGNING_KEY: ${{ secrets.PATCHGRAM_SIGNING_KEY }}
+        run: |
+          if [ -z "${PATCHGRAM_SIGNING_KEY:-}" ]; then
+            echo "Missing PATCHGRAM_SIGNING_KEY secret (the Ed25519 private key PEM)." >&2
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#patches-v}"
+          # Minimum app version compatible with this patch format. Bump only on a format change.
+          MIN_APP="1.0.4"
+          KEY="$RUNNER_TEMP/patchgram-signing.pem"
+          printf '%s' "$PATCHGRAM_SIGNING_KEY" > "$KEY"
+          ./scripts/build-patch-bundle.sh "$VERSION" "$MIN_APP" "$KEY" "$RUNNER_TEMP/dist" "Patch bundle $GITHUB_REF_NAME"
+          rm -f "$KEY"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" \
+            "$RUNNER_TEMP/dist/patches.json" \
+            "$RUNNER_TEMP/dist/engine.c.template" \
+            "$RUNNER_TEMP/dist/patch-manifest.json" \
+            "$RUNNER_TEMP/dist/patch-manifest.json.sig" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Patch bundle $TAG_NAME" \
+            --notes "Signed patch bundle. Update via the app's \"Update patches\" button."
