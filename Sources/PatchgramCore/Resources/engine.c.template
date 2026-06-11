@@ -27,6 +27,56 @@ __attribute__((used)) static const char g_patchgram_runtime_build_marker[] = "__
 #define PATCHGRAM_HISTORY_ITEM_CREATE_VIEW_VMADDR 0x1044e15f8ULL
 #define PATCHGRAM_HISTORY_ITEM_HAS_UNREQUESTED_FACTCHECK_VMADDR 0x1044e58f4ULL
 #define PATCHGRAM_DATA_FACTCHECKS_REQUEST_FOR_VMADDR 0x108215c38ULL
+/* HistoryItem::_flags (uint64 MessageFlags) struct offset and the internal
+ * NoForwards bit. Offset 0x28 verified on the live 6.9.1 binary: the real
+ * HistoryItem::hasUnrequestedFactcheck reads `item[5]` (= *(item+0x28)) as the
+ * flags word (`(_flags & 0x60000000) != 0x20000000`), and the 6.8.5 offset-probe
+ * found _flags at 0x28 too (early HistoryItem layout is stable). NoForwards =
+ * MessageFlag(1ULL<<17) = 0x20000 (authoritative data_types.h enum). Wire flags.26
+ * (message#7600b9d3 noforwards) maps to this internal bit via FlagsFromMTP;
+ * clearing it makes forbidsForward()/forbidsSaving() return false so text can be
+ * copied and media saved from restricted messages.
+ * NOTE: an earlier build used 0x1e8 here from a mis-identified gate on a DIFFERENT
+ * struct (also a MessageFlags field, but not HistoryItem's) -> it wrote into a
+ * QString/pointer field and crashed. Do not change this without confirming against
+ * a known HistoryItem method that reads item+offset as flags. */
+#define PATCHGRAM_HISTORY_ITEM_FLAGS_OFFSET 0x28ULL
+#define PATCHGRAM_MESSAGE_FLAG_NO_FORWARDS 0x20000ULL
+/* Channel-level "restrict saving content": the copy/save menu gate is
+ * peer->allowsForwarding() && !item->forbidsSaving(). Clearing the item flag
+ * above is not enough when the restriction is set on the channel, so also clear
+ * ChannelData's NoForwards flag on the peer. Chain + offsets verified on 6.9.1:
+ * item->_history @ 0x10; History::peer @ 0x2f8 (a restriction thunk does
+ * `peer = history->[0x2f8]`); ChannelData flags (uint64) @ 0x1e8 with
+ * ChannelDataFlag::NoForwards = (1<<20) = 0x100000 (sub_104AFD21C reads
+ * `*(peer+0x1e8) & 0x100000` on the channel path). Peer type byte (peer_id>>48)
+ * == 2 for channels/supergroups (patchgram_peer_type_from_peer). */
+#define PATCHGRAM_HISTORY_ITEM_HISTORY_OFFSET 0x10ULL
+#define PATCHGRAM_HISTORY_PEER_OFFSET 0x2f8ULL
+#define PATCHGRAM_PEER_FLAGS_OFFSET 0x1e8ULL
+#define PATCHGRAM_CHANNEL_FLAG_NO_FORWARDS 0x100000ULL
+#define PATCHGRAM_PEER_TYPE_CHANNEL 2
+/* Basic group (ChatData): the same restriction fn reads chat NoForwards as
+ * `*(uint8*)(peer+0x289) & 1` = bit 8 of the uint32 flags @ 0x288 = 0x100. */
+#define PATCHGRAM_PEER_TYPE_CHAT 1
+#define PATCHGRAM_CHAT_FLAGS_OFFSET 0x288ULL
+#define PATCHGRAM_CHAT_FLAG_NO_FORWARDS 0x100U
+/* Disable TTL. HistoryItem: _date (uint32) @ 0x78, _ttlDestroyAt (uint32) @ 0x7c
+ * (auto-delete time = _date + ttl_period). Zeroing _ttlDestroyAt disables the
+ * message ttl_period auto-delete; guarded by destroy>date>sane so a wrong offset
+ * or _date is never touched. Media ttl_seconds (view-once video/document) is forced
+ * to 0 at construction by the create_media memory patch (see messages.ttl.disable). */
+#define PATCHGRAM_HISTORY_ITEM_DATE_OFFSET 0x78ULL
+#define PATCHGRAM_HISTORY_ITEM_TTL_DESTROY_OFFSET 0x7cULL
+/* Patching MediaFile::ttlSeconds() (getter) to 0 bypasses the "view on phone" gate
+ * but the view-once blur/layout reads the STORED _ttlSeconds field, so cached media
+ * stays hidden. Also zero the field on the MediaFile object before the Element is
+ * built. item->_media @ 0x60; MediaFile vtable static vmaddr 0x10c680818 (the ctor
+ * stores &off_10C680818 at media+0); MediaFile::_ttlSeconds @ media+0x20. vtable-
+ * guarded so only MediaFile is touched (MediaPhoto/other media are skipped). */
+#define PATCHGRAM_HISTORY_ITEM_MEDIA_OFFSET 0x60ULL
+#define PATCHGRAM_MEDIA_FILE_VTABLE_VMADDR 0x10c680818ULL
+#define PATCHGRAM_MEDIA_FILE_TTL_SECONDS_OFFSET 0x20ULL
 #define PATCHGRAM_SESSION_PRIVATE_TRY_TO_RECEIVE_VMADDR 0x105d6b498ULL
 #define PATCHGRAM_SESSION_SEND_PREPARED_VMADDR 0x105d74850ULL
 #define PATCHGRAM_MESSAGES_SEND_MESSAGE_SERIALIZE_VMADDR 0x103d35b74ULL
@@ -192,6 +242,8 @@ static bool g_message_typing_enabled = false;
 static bool g_message_read_receipts_enabled = false;
 static bool g_message_local_drafts_enabled = false;
 static bool g_message_fact_check_enabled = false;
+static bool g_message_allow_noforwards_copy = false;
+static bool g_message_disable_ttl = false;
 static bool g_local_premium_enabled = false;
 static bool g_disable_monetization_enabled = false;
 static bool g_disable_monetization_app_config_enabled = false;
@@ -274,6 +326,8 @@ static bool g_previous_message_typing_enabled = false;
 static bool g_previous_message_read_receipts_enabled = false;
 static bool g_previous_message_local_drafts_enabled = false;
 static bool g_previous_message_fact_check_enabled = false;
+static bool g_previous_message_allow_noforwards_copy = false;
+static bool g_previous_message_disable_ttl = false;
 static bool g_previous_local_premium_enabled = false;
 static bool g_previous_disable_monetization_enabled = false;
 static bool g_previous_disable_monetization_app_config_enabled = false;
@@ -1566,6 +1620,12 @@ static bool patchgram_rule_enabled(const struct PatchgramMemoryPatch *patch) {
         if (strcmp(alternative_group, "messages.fact_check.local") == 0) {
             return g_message_settings_enabled && g_message_fact_check_enabled;
         }
+        if (strcmp(alternative_group, "messages.noforwards.allow_copy") == 0) {
+            return g_message_settings_enabled && g_message_allow_noforwards_copy;
+        }
+        if (strcmp(alternative_group, "messages.ttl.disable") == 0) {
+            return g_message_settings_enabled && g_message_disable_ttl;
+        }
         return g_message_settings_enabled;
     }
     if (strcmp(rule_id, "binary.config.disable_monetization") == 0) {
@@ -1681,6 +1741,12 @@ static bool patchgram_rule_previously_enabled(const char *rule_id, const char *a
         if (strcmp(alternative_group, "messages.fact_check.local") == 0) {
             return g_previous_message_settings_enabled && g_previous_message_fact_check_enabled;
         }
+        if (strcmp(alternative_group, "messages.noforwards.allow_copy") == 0) {
+            return g_previous_message_settings_enabled && g_previous_message_allow_noforwards_copy;
+        }
+        if (strcmp(alternative_group, "messages.ttl.disable") == 0) {
+            return g_previous_message_settings_enabled && g_previous_message_disable_ttl;
+        }
         return g_previous_message_settings_enabled;
     }
     if (strcmp(rule_id, "binary.config.disable_monetization") == 0) {
@@ -1730,6 +1796,8 @@ static void patchgram_remember_runtime_enabled_state(void) {
     g_previous_message_read_receipts_enabled = g_message_read_receipts_enabled;
     g_previous_message_local_drafts_enabled = g_message_local_drafts_enabled;
     g_previous_message_fact_check_enabled = g_message_fact_check_enabled;
+    g_previous_message_allow_noforwards_copy = g_message_allow_noforwards_copy;
+    g_previous_message_disable_ttl = g_message_disable_ttl;
     g_previous_local_premium_enabled = g_local_premium_enabled;
     g_previous_disable_monetization_enabled = g_disable_monetization_enabled;
     g_previous_disable_monetization_app_config_enabled = g_disable_monetization_app_config_enabled;
@@ -2338,6 +2406,8 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     g_message_read_receipts_enabled = patchgram_json_bool(json, "messageReadReceiptsEnabled", false);
     g_message_local_drafts_enabled = patchgram_json_bool(json, "messageLocalDraftsEnabled", false);
     g_message_fact_check_enabled = patchgram_json_bool(json, "messageFactCheckEnabled", false);
+    g_message_allow_noforwards_copy = patchgram_json_bool(json, "messageNoForwardsCopyEnabled", false);
+    g_message_disable_ttl = patchgram_json_bool(json, "messageDisableTtlEnabled", false);
     g_local_premium_enabled = patchgram_json_bool(json, "localPremiumEnabled", false);
     g_disable_monetization_enabled = patchgram_json_bool(json, "disableMonetizationEnabled", false);
     g_disable_monetization_app_config_enabled = patchgram_json_bool(json, "disableMonetizationAppConfigEnabled", g_disable_monetization_enabled);
@@ -4595,6 +4665,155 @@ static bool patchgram_should_force_fact_check_item(void *item) {
     return should_force;
 }
 
+/* Force message#7600b9d3 noforwards (flags.26) to false on the constructed
+ * HistoryItem by clearing the internal MessageFlag::NoForwards bit (1<<17) in
+ * _flags @ 0x1e8. forbidsForward()/forbidsSaving() read this live each time, so
+ * clearing it makes copy-text and save-media available on restricted messages.
+ * Offset + bit verified on 6.9.1; the write is a same-width read-modify-write of
+ * the exact 8-byte field the inlined gate loads (LDR X,[item,#0x1e8]). */
+/* A heap object pointer on arm64 macOS: above the 4 GB image base, within the
+ * 48-bit canonical range, and 8-byte aligned. Rejects NULL, misread text/scalars
+ * (e.g. the UTF-16 "ages" word 0x0073006500670061 has bits >= 48 set), and
+ * misaligned values, so a wrong struct offset fails the guard instead of faulting
+ * or corrupting memory. */
+static bool patchgram_ptr_looks_valid(const void *p) {
+    const uintptr_t v = (uintptr_t)p;
+    return v >= 0x100000000ULL && (v >> 48) == 0 && (v & 0x7ULL) == 0;
+}
+
+static void patchgram_clear_noforwards_on_item(void *item) {
+    if (!item || !g_message_settings_enabled || !g_message_allow_noforwards_copy) {
+        return;
+    }
+    /* (1) Item-level: HistoryItem::_flags NoForwards -> forbidsSaving() == false. */
+    uint64_t *flags = (uint64_t *)((uint8_t *)item + PATCHGRAM_HISTORY_ITEM_FLAGS_OFFSET);
+    const uint64_t before = *flags;
+    if (before & PATCHGRAM_MESSAGE_FLAG_NO_FORWARDS) {
+        const uint64_t after = before & ~PATCHGRAM_MESSAGE_FLAG_NO_FORWARDS;
+        *flags = after;
+        static uint32_t logs = 0;
+        if (logs < 64) {
+            logs++;
+            patchgram_log(
+                "NOFORWARDS clear item=%p flagsBefore=0x%llx flagsAfter=0x%llx",
+                item,
+                (unsigned long long)before,
+                (unsigned long long)after
+            );
+        }
+    }
+    /* (2) Channel-level: clear ChannelData NoForwards so peer->allowsForwarding()
+     * returns true (the other half of the copy/save menu gate). Guarded every step:
+     * a wrong offset yields an invalid pointer or a non-channel type and is skipped,
+     * never written. Only channels/supergroups (ChannelData layout @ 0x1e8); chats
+     * and users are left untouched. */
+    void *history = NULL;
+    memcpy(&history, (const uint8_t *)item + PATCHGRAM_HISTORY_ITEM_HISTORY_OFFSET, sizeof(history));
+    if (!patchgram_ptr_looks_valid(history)) {
+        return;
+    }
+    void *peer = NULL;
+    memcpy(&peer, (const uint8_t *)history + PATCHGRAM_HISTORY_PEER_OFFSET, sizeof(peer));
+    if (!patchgram_ptr_looks_valid(peer)) {
+        return;
+    }
+    const uint8_t peer_type = patchgram_peer_type_from_peer(peer);
+    if (peer_type == PATCHGRAM_PEER_TYPE_CHANNEL) {
+        uint64_t *peer_flags = (uint64_t *)((uint8_t *)peer + PATCHGRAM_PEER_FLAGS_OFFSET);
+        const uint64_t peer_before = *peer_flags;
+        if (peer_before & PATCHGRAM_CHANNEL_FLAG_NO_FORWARDS) {
+            const uint64_t peer_after = peer_before & ~PATCHGRAM_CHANNEL_FLAG_NO_FORWARDS;
+            *peer_flags = peer_after;
+            static uint32_t channel_logs = 0;
+            if (channel_logs < 64) {
+                channel_logs++;
+                patchgram_log(
+                    "NOFORWARDS channel clear peer=%p rawPeer=0x%llx flagsBefore=0x%llx flagsAfter=0x%llx",
+                    peer,
+                    (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
+                    (unsigned long long)peer_before,
+                    (unsigned long long)peer_after
+                );
+            }
+        }
+    } else if (peer_type == PATCHGRAM_PEER_TYPE_CHAT) {
+        uint32_t *chat_flags = (uint32_t *)((uint8_t *)peer + PATCHGRAM_CHAT_FLAGS_OFFSET);
+        const uint32_t chat_before = *chat_flags;
+        if (chat_before & PATCHGRAM_CHAT_FLAG_NO_FORWARDS) {
+            const uint32_t chat_after = chat_before & ~PATCHGRAM_CHAT_FLAG_NO_FORWARDS;
+            *chat_flags = chat_after;
+            static uint32_t chat_logs = 0;
+            if (chat_logs < 64) {
+                chat_logs++;
+                patchgram_log(
+                    "NOFORWARDS chat clear peer=%p rawPeer=0x%llx flagsBefore=0x%x flagsAfter=0x%x",
+                    peer,
+                    (unsigned long long)patchgram_raw_peer_id_from_peer(peer),
+                    chat_before,
+                    chat_after
+                );
+            }
+        }
+    }
+}
+
+/* Disable message ttl_period (auto-delete) by zeroing HistoryItem::_ttlDestroyAt.
+ * Only acts when the field holds a plausible auto-delete time (destroy strictly
+ * after a sane _date), which both confirms the 0x7c offset and avoids ever touching
+ * _date (0x78) or firing on a non-ttl message — so a wrong offset is a safe no-op,
+ * never a crash. View-once media ttl_seconds is handled at construction by the
+ * create_media memory patch, not here. */
+static void patchgram_disable_ttl_on_item(void *item) {
+    if (!item || !g_message_settings_enabled || !g_message_disable_ttl) {
+        return;
+    }
+    uint32_t date = 0;
+    uint32_t destroy = 0;
+    memcpy(&date, (const uint8_t *)item + PATCHGRAM_HISTORY_ITEM_DATE_OFFSET, sizeof(date));
+    memcpy(&destroy, (const uint8_t *)item + PATCHGRAM_HISTORY_ITEM_TTL_DESTROY_OFFSET, sizeof(destroy));
+    if (destroy != 0 && date > 1000000000u && destroy > date) {
+        const uint32_t zero = 0;
+        memcpy((uint8_t *)item + PATCHGRAM_HISTORY_ITEM_TTL_DESTROY_OFFSET, &zero, sizeof(zero));
+        static uint32_t logs = 0;
+        if (logs < 64) {
+            logs++;
+            patchgram_log(
+                "TTL clear item=%p date=%u destroyBefore=%u",
+                item,
+                date,
+                destroy
+            );
+        }
+    }
+    /* Media self-destruct (view-once video/voice/document): zero MediaFile::_ttlSeconds
+     * on the object so the Element about to be built renders it as normal media. */
+    void *media = NULL;
+    memcpy(&media, (const uint8_t *)item + PATCHGRAM_HISTORY_ITEM_MEDIA_OFFSET, sizeof(media));
+    if (!patchgram_ptr_looks_valid(media)) {
+        return;
+    }
+    void *media_vtable = NULL;
+    memcpy(&media_vtable, media, sizeof(media_vtable));
+    if (media_vtable != patchgram_resolve_vmaddr(PATCHGRAM_MEDIA_FILE_VTABLE_VMADDR)) {
+        return;
+    }
+    uint64_t *media_ttl = (uint64_t *)((uint8_t *)media + PATCHGRAM_MEDIA_FILE_TTL_SECONDS_OFFSET);
+    if (*media_ttl != 0) {
+        const uint64_t before = *media_ttl;
+        *media_ttl = 0;
+        static uint32_t media_logs = 0;
+        if (media_logs < 64) {
+            media_logs++;
+            patchgram_log(
+                "TTL media clear item=%p media=%p ttlBefore=%llu",
+                item,
+                media,
+                (unsigned long long)before
+            );
+        }
+    }
+}
+
 static bool patchgram_set_local_fact_check_on_item(void *item) {
     if (!item
         || !g_history_item_set_factcheck
@@ -4676,6 +4895,8 @@ static void patchgram_history_item_create_view(
     void *delegate,
     void *replacing
 ) {
+    patchgram_clear_noforwards_on_item(item);
+    patchgram_disable_ttl_on_item(item);
     const bool direct_set = patchgram_set_local_fact_check_on_item(item);
     if (direct_set && g_message_fact_check_early_layout_logs < 256) {
         g_message_fact_check_early_layout_logs++;
@@ -4713,6 +4934,51 @@ static void patchgram_data_factchecks_request_for(void *factchecks, void *item) 
     }
 }
 
+/* Strip `noforwards` from incoming MTP objects in the raw received word-buffer,
+ * BEFORE Telegram deserializes it. This is the robust fix that defeats channelFull
+ * re-setting the channel flag (which beat the render-time createView flag-clears):
+ * the flag is gone from the wire data, so it is never set on the HistoryItem or the
+ * ChannelData in the first place. Both are `?true` flags -> clearing the bit does NOT
+ * change the serialized length, so the rest of the buffer stays valid.
+ *   message#7600b9d3 : noforwards = flags.26 (0x04000000), flags is the word after the magic
+ *   channel#1c32b11c : noforwards = flags.27 (0x08000000), flags is the word after the magic
+ * A flat magic scan finds every (possibly nested) message/channel object. */
+static void patchgram_strip_noforwards_in_response(void *response) {
+    if (!response || !g_message_settings_enabled || !g_message_allow_noforwards_copy) {
+        return;
+    }
+    uint32_t *words = NULL;
+    int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count <= 1) {
+        return;
+    }
+    const int64_t scan = (word_count < 262144) ? word_count : 262144;
+    static uint32_t strip_logs = 0;
+    for (int64_t i = 0; i + 1 < scan; i++) {
+        if (words[i] == 0x7600b9d3u) {
+            if (words[i + 1] & 0x04000000u) {
+                words[i + 1] &= ~0x04000000u;
+                if (strip_logs < 96) {
+                    strip_logs++;
+                    patchgram_log("NOFORWARDS wire strip message word=%lld flagsAfter=0x%x",
+                                  (long long)i, words[i + 1]);
+                }
+            }
+        } else if (words[i] == 0x1c32b11cu) {
+            if (words[i + 1] & 0x08000000u) {
+                words[i + 1] &= ~0x08000000u;
+                if (strip_logs < 96) {
+                    strip_logs++;
+                    patchgram_log("NOFORWARDS wire strip channel word=%lld flagsAfter=0x%x",
+                                  (long long)i, words[i + 1]);
+                }
+            }
+        }
+    }
+}
+
 static void patchgram_apply_fragment_phone_received_queue(void *session_private) {
     if (!session_private) {
         return;
@@ -4734,6 +5000,7 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
         return;
     }
     for (uint8_t *response = begin; response < end; response += PATCHGRAM_RESPONSE_SIZE) {
+        patchgram_strip_noforwards_in_response(response);
         patchgram_apply_custom_username_list_response(response);
         patchgram_log_custom_username_response_tl(response);
         if (g_fragment_phone_enabled || g_custom_list_usernames_enabled) {

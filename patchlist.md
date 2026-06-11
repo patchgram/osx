@@ -15,6 +15,7 @@ This file describes the patches available in Patchgram in plain language.
 
 | Patch | Type | What it does |
 | --- | --- | --- |
+| Dylib injection | `dylib` | Injects Patchgram's runtime library (`Patchgram.dylib`) into Telegram Desktop through a `DYLD_INSERT_LIBRARIES` launcher wrapper. This is the base hook every runtime patch loads through; on its own it loads the library with no behavior change. |
 | Always offline | `dylib` | Keeps your account shown as offline by forcing the local `account.updateStatus` offline value. |
 | Block typing activity | `dylib` | Stops Telegram Desktop from sending typing activity by invalidating the typing request. |
 | Block read messages | `dylib` | Blocks read-history requests so messages are not marked as read through the patched request path. |
@@ -40,6 +41,8 @@ This file describes the patches available in Patchgram in plain language.
 | Local drafts | Keeps drafts local by blocking draft sync requests. |
 | Scheduled send | Enables Patchgram's local scheduled-send runtime flag. |
 | Custom Fact Check | Locally triggers Telegram Desktop's Fact Check request path for visible posts and replaces `messages.getFactCheck` responses with your own Fact Check text. |
+| Copy/save protect content | Forces `message#7600b9d3` `noforwards` (flags.26) to false on each message locally, so you can copy text and save media from chats/channels that restrict saving. (Forwarding can still be blocked by the separate channel-level restriction.) |
+| Disable TTL | Disables self-destruct/auto-delete timers locally: forces media `ttl_seconds` (view-once video/document) to 0 at construction, and zeroes the message `ttl_period` auto-delete time so timed messages are not removed locally. |
 
 ## Disable Premium, Stars, TON & Gifts Subpatches
 

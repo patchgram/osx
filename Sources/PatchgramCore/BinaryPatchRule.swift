@@ -1070,6 +1070,31 @@ public enum BinaryPatchRuleDefinitions {
     public static let unsupportedBuild = "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match."
 
     public static let builtInRules: [BinaryPatchRule] = [
+        // The base hook every runtime patch loads through. Enabling it installs the
+        // DYLD_INSERT_LIBRARIES launcher wrapper that loads Patchgram.dylib into Telegram,
+        // with no behavior change of its own (no byte patch — the empty-hex flag is a no-op,
+        // and the dylib's hooks stay inert until a feature patch turns them on). Kept first in
+        // the catalog so it reads as the foundation. delivery: .runtimeMemory classifies it as a
+        // runtime rule so the engine wraps + compiles the dylib when it is enabled.
+        BinaryPatchRule(
+            id: "binary.dylib.inject",
+            title: "Dylib injection",
+            methodName: "DYLD_INSERT_LIBRARIES wrapper",
+            constructorId: "dylib-inject",
+            kind: .runtimeMemory,
+            summary: "Injects Patchgram.dylib into Telegram Desktop through a DYLD_INSERT_LIBRARIES launcher wrapper. This is the base hook every runtime patch loads through; enabling it on its own loads the dylib with no behavior change so the runtime hooks are present.",
+            disabledBehavior: "Removes the dylib launcher wrapper once no runtime patch still needs it, restoring the original Telegram executable launch.",
+            riskNote: "The wrapper only sets DYLD_INSERT_LIBRARIES for Telegram; it does not modify Telegram's own bytes. The dylib's hooks stay inert until a feature patch enables them.",
+            supportedBuildNote: "Dylib injection installs a DYLD_INSERT_LIBRARIES launcher wrapper and is independent of the Telegram Desktop build version.",
+            replacements: [
+                BinaryReplacement(
+                    id: "dylib.inject.runtime_flag",
+                    originalHex: "",
+                    patchedHex: ""
+                )
+            ],
+            delivery: .runtimeMemory
+        ),
         BinaryPatchRule(
             id: "binary.presence.force_offline",
             title: "Always offline",
@@ -1201,6 +1226,47 @@ public enum BinaryPatchRuleDefinitions {
                     originalHex: "",
                     patchedHex: "",
                     alternativeGroup: "messages.fact_check.local"
+                ),
+                // Runtime-flag subpatch (no on-disk bytes). Drives the createView
+                // dylib hook to clear MessageFlag::NoForwards on each HistoryItem
+                // (and the channel/chat NoForwards on its peer) so the forward path
+                // and text selection see "allowed".
+                BinaryReplacement(
+                    id: "messages.noforwards.allow_copy.runtime_flag",
+                    originalHex: "",
+                    patchedHex: "",
+                    alternativeGroup: "messages.noforwards.allow_copy"
+                ),
+                // Disable TTL. Runtime flag drives the createView hook to zero the
+                // message ttl_period auto-delete (_ttlDestroyAt). The byte patch forces
+                // view-once media (video/document) ttl_seconds to 0 at construction:
+                // in create_media the read `LDRSW X9,[X19,#0x4C]` (ttl_seconds) becomes
+                // `MOV X9,#0`, so the media is built without a self-destruct timer.
+                // 6.9.1 window (unique); other builds harmlessly "not found".
+                BinaryReplacement(
+                    id: "messages.ttl.disable.runtime_flag",
+                    originalHex: "",
+                    patchedHex: "",
+                    alternativeGroup: "messages.ttl.disable"
+                ),
+                BinaryReplacement(
+                    id: "data.create_media.ttl_seconds.force_zero",
+                    originalHex: "680e40b948001036694e80b9e96300f9",
+                    patchedHex: "680e40b948001036090080d2e96300f9",
+                    alternativeGroup: "messages.ttl.disable"
+                ),
+                // The "view this on your phone" tooltip for view-once video/voice/round
+                // media is gated on `media->ttlSeconds() > 0` (and allowsForward()=!ttlSeconds()).
+                // The construction patch above only affects NEWLY received media; this one
+                // forces MediaFile::ttlSeconds() (the virtual getter @ vtable off_10C680818)
+                // to always return 0 — `LDR X0,[X0,#0x20]` -> `MOV X0,#0` — so already-cached
+                // view-once media also opens on desktop. 6.9.1 window includes the preceding
+                // accessor for uniqueness; other builds harmlessly "not found".
+                BinaryReplacement(
+                    id: "data.media_file.ttl_seconds.force_zero",
+                    originalHex: "00184139c0035fd6001040f9c0035fd6",
+                    patchedHex: "00184139c0035fd6000080d2c0035fd6",
+                    alternativeGroup: "messages.ttl.disable"
                 )
             ]
         ),

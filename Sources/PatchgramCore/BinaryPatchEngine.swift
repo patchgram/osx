@@ -219,6 +219,8 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let messageFactCheckCountry: String
     let messageFactCheckHash: Int64
     let messageFactCheckNeedCheck: Bool
+    let messageNoForwardsCopyEnabled: Bool
+    let messageDisableTtlEnabled: Bool
     let localPremiumEnabled: Bool
     let disableMonetizationEnabled: Bool
     let disableMonetizationAppConfigEnabled: Bool
@@ -343,6 +345,8 @@ public final class BinaryPatchEngine {
     private static let messageLocalDraftsAlternativeGroup = "messages.drafts.local_only"
     private static let scheduledSendAlternativeGroup = "messages.scheduled_send.local"
     private static let messageFactCheckAlternativeGroup = "messages.fact_check.local"
+    private static let messageNoForwardsAllowCopyAlternativeGroup = "messages.noforwards.allow_copy"
+    private static let messageTtlDisableAlternativeGroup = "messages.ttl.disable"
     private static let disableMonetizationRuleId = "binary.config.disable_monetization"
     private static let localPremiumRuleId = "binary.premium.local"
     private static let scheduledSendRuleId = "binary.messages.scheduled_send"
@@ -2019,6 +2023,10 @@ public final class BinaryPatchEngine {
             messageFactCheckCountry: messageFactCheckConfig.country,
             messageFactCheckHash: messageFactCheckConfig.hash,
             messageFactCheckNeedCheck: messageFactCheckConfig.needCheck,
+            messageNoForwardsCopyEnabled: enabled.contains(Self.messageSettingsRuleId)
+                && messageGroups.contains(Self.messageNoForwardsAllowCopyAlternativeGroup),
+            messageDisableTtlEnabled: enabled.contains(Self.messageSettingsRuleId)
+                && messageGroups.contains(Self.messageTtlDisableAlternativeGroup),
             localPremiumEnabled: enabled.contains(Self.localPremiumRuleId),
             disableMonetizationEnabled: enabled.contains(Self.disableMonetizationRuleId),
             disableMonetizationAppConfigEnabled: enabled.contains(Self.disableMonetizationRuleId)

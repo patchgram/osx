@@ -1252,7 +1252,7 @@ private struct FooterBar: View {
             } label: {
                 Label("Disable All", systemImage: "power")
             }
-            .disabled(viewModel.isWorking || !viewModel.isValidApp)
+            .disabled(viewModel.isWorking || !viewModel.isValidApp || !viewModel.hasAnyAppliedBinary)
             .alert("Disable all patches?", isPresented: $isConfirmingDisableAll) {
                 Button("Cancel", role: .cancel) {}
                 Button("Disable All", role: .destructive) {

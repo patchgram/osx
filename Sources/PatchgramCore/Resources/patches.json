@@ -5,6 +5,28 @@
       "order" : 10,
       "rules" : [
         {
+          "constructorId" : "dylib-inject",
+          "delivery" : "runtimeMemory",
+          "disabledBehavior" : "Removes the dylib launcher wrapper once no runtime patch still needs it, restoring the original Telegram executable launch.",
+          "id" : "binary.dylib.inject",
+          "kind" : "runtimeMemory",
+          "methodName" : "DYLD_INSERT_LIBRARIES wrapper",
+          "replacements" : [
+            {
+              "alternativeGroup" : "dylib.inject.runtime_flag",
+              "expectedOccurrences" : 1,
+              "id" : "dylib.inject.runtime_flag",
+              "mode" : "toggle",
+              "originalHex" : "",
+              "patchedHex" : ""
+            }
+          ],
+          "riskNote" : "The wrapper only sets DYLD_INSERT_LIBRARIES for Telegram; it does not modify Telegram's own bytes. The dylib's hooks stay inert until a feature patch enables them.",
+          "summary" : "Injects Patchgram.dylib into Telegram Desktop through a DYLD_INSERT_LIBRARIES launcher wrapper. This is the base hook every runtime patch loads through; enabling it on its own loads the dylib with no behavior change so the runtime hooks are present.",
+          "supportedBuildNote" : "Dylib injection installs a DYLD_INSERT_LIBRARIES launcher wrapper and is independent of the Telegram Desktop build version.",
+          "title" : "Dylib injection"
+        },
+        {
           "constructorId" : "6628562c",
           "disabledBehavior" : "Restores the original load-and-branch instructions from the executable backup pattern.",
           "id" : "binary.presence.force_offline",
@@ -103,6 +125,38 @@
               "mode" : "toggle",
               "originalHex" : "",
               "patchedHex" : ""
+            },
+            {
+              "alternativeGroup" : "messages.noforwards.allow_copy",
+              "expectedOccurrences" : 1,
+              "id" : "messages.noforwards.allow_copy.runtime_flag",
+              "mode" : "toggle",
+              "originalHex" : "",
+              "patchedHex" : ""
+            },
+            {
+              "alternativeGroup" : "messages.ttl.disable",
+              "expectedOccurrences" : 1,
+              "id" : "messages.ttl.disable.runtime_flag",
+              "mode" : "toggle",
+              "originalHex" : "",
+              "patchedHex" : ""
+            },
+            {
+              "alternativeGroup" : "messages.ttl.disable",
+              "expectedOccurrences" : 1,
+              "id" : "data.create_media.ttl_seconds.force_zero",
+              "mode" : "toggle",
+              "originalHex" : "680e40b948001036694e80b9e96300f9",
+              "patchedHex" : "680e40b948001036090080d2e96300f9"
+            },
+            {
+              "alternativeGroup" : "messages.ttl.disable",
+              "expectedOccurrences" : 1,
+              "id" : "data.media_file.ttl_seconds.force_zero",
+              "mode" : "toggle",
+              "originalHex" : "00184139c0035fd6001040f9c0035fd6",
+              "patchedHex" : "00184139c0035fd6000080d2c0035fd6"
             }
           ],
           "riskNote" : "These are client-side serialization patches. Telegram can still update local state; this prevents the patched requests from being serialized with valid MTProto method ids.",

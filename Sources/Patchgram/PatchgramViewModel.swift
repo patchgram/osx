@@ -333,6 +333,7 @@ final class PatchgramViewModel: ObservableObject {
         "binary.premium.local"
     ]
     private static let runtimeRuleIds: Set<String> = [
+        "binary.dylib.inject",
         "binary.visual.bot_verification",
         "binary.visual.custom_level_rating",
         "binary.visual.hide_self_phone",
@@ -380,7 +381,9 @@ final class PatchgramViewModel: ObservableObject {
         BinaryCompositeSubpatchDefinition(id: "read_receipts", title: "Read receipts"),
         BinaryCompositeSubpatchDefinition(id: "local_drafts", title: "Local drafts"),
         BinaryCompositeSubpatchDefinition(id: "scheduled_send", title: "Scheduled send"),
-        BinaryCompositeSubpatchDefinition(id: messageFactCheckSubpatchId, title: "Custom Fact Check", showsChangeButton: true)
+        BinaryCompositeSubpatchDefinition(id: messageFactCheckSubpatchId, title: "Custom Fact Check", showsChangeButton: true),
+        BinaryCompositeSubpatchDefinition(id: "noforwards_copy", title: "Copy/save protect content"),
+        BinaryCompositeSubpatchDefinition(id: "disable_ttl", title: "Disable TTL")
     ]
     private static let appConfigSubpatchDefinitions: [BinaryCompositeSubpatchDefinition] = [
         BinaryCompositeSubpatchDefinition(id: "app_config", title: "App config"),
@@ -512,6 +515,14 @@ final class PatchgramViewModel: ObservableObject {
 
     var enabledCount: Int {
         binaryRows.filter { $0.desiredEnabled }.count
+    }
+
+    /// True when at least one patch is actually applied (on disk / recorded in the
+    /// manifest), so "Disable All" has something to revert. Deliberately ignores
+    /// `desiredEnabled`: merely *selecting* a patch (without Apply) must NOT activate
+    /// the button — there is nothing applied to disable yet.
+    var hasAnyAppliedBinary: Bool {
+        binaryRows.contains { $0.status.state.isEnabled }
     }
 
     var patchStateSummary: String {
@@ -1970,6 +1981,12 @@ final class PatchgramViewModel: ObservableObject {
             }
             if group == Self.messageFactCheckAlternativeGroup {
                 return Self.messageFactCheckSubpatchId
+            }
+            if group == "messages.noforwards.allow_copy" {
+                return "noforwards_copy"
+            }
+            if group == "messages.ttl.disable" {
+                return "disable_ttl"
             }
         }
         if ruleId == adsFeatureRuleId {
