@@ -315,6 +315,7 @@ final class PatchgramViewModel: ObservableObject {
     private static let localPersonalChannelRuleId = "binary.visual.local_personal_channel"
     private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
     private static let customListUsernamesRuleId = "binary.visual.custom_list_usernames"
+    private static let dylibInjectionRuleId = "binary.dylib.inject"
     private static let appConfigDesiredSubpatchIdsKey = "Patchgram.appConfigSubpatches.desired"
     private static let appConfigAppliedSubpatchIdsKey = "Patchgram.appConfigSubpatches.applied"
     private static let appConfigFeatureRuleId = "binary.config.disable_monetization"
@@ -907,9 +908,23 @@ final class PatchgramViewModel: ObservableObject {
             return
         }
         binaryRows[index].desiredEnabled = enabled
+        if enabled {
+            autoEnableDylibInjectionIfNeeded(for: row.id)
+        }
         if Self.compositeFeatureRuleIds.contains(row.id) {
             binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
         }
+    }
+
+    /// When any dylib (runtime) patch is turned on, also turn on the "Dylib injection"
+    /// patch so the runtime library stays injected. Only ever *enables* it — never auto-
+    /// disables — so turning another dylib patch back off does not drop the injection.
+    private func autoEnableDylibInjectionIfNeeded(for ruleId: String) {
+        guard ruleId != Self.dylibInjectionRuleId,
+              Self.runtimeRuleIds.contains(ruleId) || Self.compositeFeatureRuleIds.contains(ruleId),
+              let index = binaryRows.firstIndex(where: { $0.id == Self.dylibInjectionRuleId }),
+              !binaryRows[index].desiredEnabled else { return }
+        binaryRows[index].desiredEnabled = true
     }
 
     func setSubpatch(ruleId: String, subpatchId: String, enabled: Bool) {
@@ -942,6 +957,9 @@ final class PatchgramViewModel: ObservableObject {
         setDesiredSubpatchIds(desired, for: ruleId)
         guard let index = binaryRows.firstIndex(where: { $0.id == ruleId }) else { return }
         binaryRows[index].desiredEnabled = !desired.isEmpty
+        if !desired.isEmpty {
+            autoEnableDylibInjectionIfNeeded(for: ruleId)
+        }
         binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
     }
 
@@ -971,6 +989,9 @@ final class PatchgramViewModel: ObservableObject {
         }
         guard let index = binaryRows.firstIndex(where: { $0.id == ruleId }) else { return }
         binaryRows[index].desiredEnabled = !desiredSubpatchIds(for: ruleId).isEmpty
+        if !desiredSubpatchIds(for: ruleId).isEmpty {
+            autoEnableDylibInjectionIfNeeded(for: ruleId)
+        }
         binaryRows[index].subpatches = subpatchRows(for: binaryRows[index].status)
     }
 
