@@ -13,24 +13,44 @@ This file describes the patches available in Patchgram in plain language.
 
 ## Patches
 
+Patchgram's main screen groups patches into four sections — **Accounts**, **Messages**, **Optimizations**, and **Misc**. Each patch below is listed under the section it appears in.
+
+### Accounts
+
+| Patch | Type | What it does |
+| --- | --- | --- |
+| Always offline | `dylib` | Keeps your account shown as offline by forcing the local `account.updateStatus` offline value. |
+| 999 accounts | `binary` | Raises the local account limit from Telegram Desktop's normal limit to 999 accounts. |
+| Custom account settings | `dylib` | A grouped local account customization patch. It contains visual balance, badge, Premium, verification, identity, attached channel, Fragment phone, and custom usernames subpatches. |
+| Block typing activity | `dylib` | Stops Telegram Desktop from sending typing activity by invalidating the typing request. |
+| Don't share phone when adding contacts | `dylib` | Prevents Telegram Desktop from sending the phone privacy exception flag when adding a contact. |
+
+### Messages
+
+| Patch | Type | What it does |
+| --- | --- | --- |
+| Message settings | `dylib` | A grouped privacy patch for typing activity, read receipts, local drafts, scheduled send, and local channel post Fact Check text. |
+| Show bot callback-data on hover | `dylib` | Shows bot button callback data locally when hovering/copying inline button text. |
+| Sensitive blur | `dylib` | Disables local sensitive-content blur checks. |
+| Open links without warning | `dylib` | Opens hidden/external links without Telegram's extra confirmation warning. |
+| Disable media spoilers | `dylib` | Shows spoiler-marked photos/videos normally instead of blurring them locally. |
+| Block read messages | `dylib` | Blocks read-history requests so messages are not marked as read through the patched request path. |
+
+### Optimizations
+
+| Patch | Type | What it does |
+| --- | --- | --- |
+| Disable Premium, Stars, TON & Gifts | `dylib` | Disables selected monetization UI and request paths at runtime: Premium, Stars, TON, Gifts, boosts, paid reactions, emoji statuses, and related app config parts. |
+| Disable premium effects | `dylib` | Stops Premium sticker/effect animations from starting locally. |
+| Hide stories | `dylib` | Hides story state locally and blocks known story fetch/read/view request paths. |
+| Disable ads | `dylib` | Blocks Telegram Ads and proxy sponsor promotion surfaces. |
+
+### Misc
+
 | Patch | Type | What it does |
 | --- | --- | --- |
 | Dylib injection | `dylib` | Injects Patchgram's runtime library (`Patchgram.dylib`) into Telegram Desktop through a `DYLD_INSERT_LIBRARIES` launcher wrapper. This is the base hook every runtime patch loads through; on its own it loads the library with no behavior change. |
-| Always offline | `dylib` | Keeps your account shown as offline by forcing the local `account.updateStatus` offline value. |
-| Block typing activity | `dylib` | Stops Telegram Desktop from sending typing activity by invalidating the typing request. |
-| Block read messages | `dylib` | Blocks read-history requests so messages are not marked as read through the patched request path. |
-| Message settings | `dylib` | A grouped privacy patch for typing activity, read receipts, local drafts, scheduled send, and local channel post Fact Check text. |
-| Open links without warning | `dylib` | Opens hidden/external links without Telegram's extra confirmation warning. |
-| Don't share phone when adding contacts | `dylib` | Prevents Telegram Desktop from sending the phone privacy exception flag when adding a contact. |
-| 999 accounts | `binary` | Raises the local account limit from Telegram Desktop's normal limit to 999 accounts. |
-| Show bot callback-data on hover | `dylib` | Shows bot button callback data locally when hovering/copying inline button text. |
-| Disable Premium, Stars, TON & Gifts | `dylib` | Disables selected monetization UI and request paths at runtime: Premium, Stars, TON, Gifts, boosts, paid reactions, emoji statuses, and related app config parts. |
-| Custom account settings | `dylib` | A grouped local account customization patch. It contains visual balance, badge, Premium, verification, identity, attached channel, Fragment phone, and custom usernames subpatches. |
-| Disable premium effects | `dylib` | Stops Premium sticker/effect animations from starting locally. |
-| Disable media spoilers | `dylib` | Shows spoiler-marked photos/videos normally instead of blurring them locally. |
-| Sensitive blur | `dylib` | Disables local sensitive-content blur checks. |
-| Hide stories | `dylib` | Hides story state locally and blocks known story fetch/read/view request paths. |
-| Disable ads | `dylib` | Blocks Telegram Ads and proxy sponsor promotion surfaces. |
+| Profile rain overlay | `dylib` | Shows a native AppKit overlay inside Telegram: a floating button opens a panel where you pick a `.png` image or an animated `.tgs` sticker plus an animation style (rain / snow / float / burst), with size, speed and opacity sliders. With it on, the chosen image rains over an open profile and auto-follows it (both the centred profile card and the right info column). Drawn entirely by `Patchgram.dylib` — no Telegram bytes are patched. |
 
 ## Message Settings Subpatches
 

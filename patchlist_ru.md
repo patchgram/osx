@@ -13,24 +13,44 @@
 
 ## Патчи
 
+Главный экран Patchgram группирует патчи по четырём разделам — **Accounts**, **Messages**, **Optimizations** и **Misc**. Каждый патч ниже указан в том разделе, в котором он находится.
+
+### Accounts
+
+| Патч | Тип | Что делает |
+| --- | --- | --- |
+| Always offline | `dylib` | Держит аккаунт оффлайн локально, принудительно меняя значение offline в `account.updateStatus`. |
+| 999 accounts | `binary` | Поднимает локальный лимит аккаунтов в Telegram Desktop до 999. |
+| Custom account settings | `dylib` | Общий патч локальной кастомизации аккаунта: балансы, бейджи, Premium, верификация, номер, userID, канал в профиле, Fragment phone и кастомные юзернеймы. |
+| Block typing activity | `dylib` | Не даёт Telegram Desktop отправлять статус "печатает". |
+| Don't share phone when adding contacts | `dylib` | Не даёт Telegram Desktop отправлять флаг исключения приватности номера при добавлении контакта. |
+
+### Messages
+
+| Патч | Тип | Что делает |
+| --- | --- | --- |
+| Message settings | `dylib` | Общий патч приватности для статуса печати, прочтений, локальных черновиков, scheduled send и локального Fact Check под постами каналов. |
+| Show bot callback-data on hover | `dylib` | Показывает callback-data inline-кнопок бота при наведении/копировании текста кнопки. |
+| Sensitive blur | `dylib` | Отключает локальный блюр sensitive-контента. |
+| Open links without warning | `dylib` | Открывает скрытые/внешние ссылки без дополнительного предупреждения Telegram. |
+| Disable media spoilers | `dylib` | Показывает фото/видео со спойлером сразу, без локального блюра. |
+| Block read messages | `dylib` | Блокирует запросы прочтения истории, чтобы сообщения не отмечались прочитанными через пропатченный путь. |
+
+### Optimizations
+
+| Патч | Тип | Что делает |
+| --- | --- | --- |
+| Disable Premium, Stars, TON & Gifts | `dylib` | Отключает выбранные monetization-разделы и запросы через runtime: Premium, Stars, TON, Gifts, boosts, paid reactions, emoji statuses и части app config. |
+| Disable premium effects | `dylib` | Отключает локальный запуск Premium-эффектов и анимаций стикеров. |
+| Hide stories | `dylib` | Скрывает stories локально и блокирует известные запросы получения/прочтения/просмотра stories. |
+| Disable ads | `dylib` | Отключает Telegram Ads и промо от proxy sponsor. |
+
+### Misc
+
 | Патч | Тип | Что делает |
 | --- | --- | --- |
 | Dylib injection | `dylib` | Инжектит runtime-библиотеку Patchgram (`Patchgram.dylib`) в Telegram Desktop через лаунчер-обёртку `DYLD_INSERT_LIBRARIES`. Базовый хук, через который грузятся все runtime-патчи; сам по себе просто загружает библиотеку без изменения поведения. |
-| Always offline | `dylib` | Держит аккаунт оффлайн локально, принудительно меняя значение offline в `account.updateStatus`. |
-| Block typing activity | `dylib` | Не даёт Telegram Desktop отправлять статус "печатает". |
-| Block read messages | `dylib` | Блокирует запросы прочтения истории, чтобы сообщения не отмечались прочитанными через пропатченный путь. |
-| Message settings | `dylib` | Общий патч приватности для статуса печати, прочтений, локальных черновиков, scheduled send и локального Fact Check под постами каналов. |
-| Open links without warning | `dylib` | Открывает скрытые/внешние ссылки без дополнительного предупреждения Telegram. |
-| Don't share phone when adding contacts | `dylib` | Не даёт Telegram Desktop отправлять флаг исключения приватности номера при добавлении контакта. |
-| 999 accounts | `binary` | Поднимает локальный лимит аккаунтов в Telegram Desktop до 999. |
-| Show bot callback-data on hover | `dylib` | Показывает callback-data inline-кнопок бота при наведении/копировании текста кнопки. |
-| Disable Premium, Stars, TON & Gifts | `dylib` | Отключает выбранные monetization-разделы и запросы через runtime: Premium, Stars, TON, Gifts, boosts, paid reactions, emoji statuses и части app config. |
-| Custom account settings | `dylib` | Общий патч локальной кастомизации аккаунта: балансы, бейджи, Premium, верификация, номер, userID, канал в профиле, Fragment phone и кастомные юзернеймы. |
-| Disable premium effects | `dylib` | Отключает локальный запуск Premium-эффектов и анимаций стикеров. |
-| Disable media spoilers | `dylib` | Показывает фото/видео со спойлером сразу, без локального блюра. |
-| Sensitive blur | `dylib` | Отключает локальный блюр sensitive-контента. |
-| Hide stories | `dylib` | Скрывает stories локально и блокирует известные запросы получения/прочтения/просмотра stories. |
-| Disable ads | `dylib` | Отключает Telegram Ads и промо от proxy sponsor. |
+| Profile rain overlay | `dylib` | Показывает нативный AppKit-оверлей внутри Telegram: плавающая кнопка открывает панель, где можно выбрать картинку `.png` или анимированный стикер `.tgs` и стиль анимации (rain / snow / float / burst), с ползунками размера, скорости и прозрачности. При включении выбранная картинка «дождём» падает поверх открытого профиля и автоматически следует за ним (и за центральной карточкой профиля, и за правой инфо-колонкой). Рисуется целиком `Patchgram.dylib` — байты Telegram не патчатся. |
 
 ## Подпатчи Message Settings
 
