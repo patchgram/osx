@@ -221,6 +221,7 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let messageFactCheckNeedCheck: Bool
     let messageNoForwardsCopyEnabled: Bool
     let messageDisableTtlEnabled: Bool
+    let overlayEnabled: Bool
     let localPremiumEnabled: Bool
     let disableMonetizationEnabled: Bool
     let disableMonetizationAppConfigEnabled: Bool
@@ -349,6 +350,7 @@ public final class BinaryPatchEngine {
     private static let messageTtlDisableAlternativeGroup = "messages.ttl.disable"
     private static let disableMonetizationRuleId = "binary.config.disable_monetization"
     private static let localPremiumRuleId = "binary.premium.local"
+    private static let overlayRuleId = "binary.overlay.profile_rain"
     private static let scheduledSendRuleId = "binary.messages.scheduled_send"
     private static let sensitiveBlurRuleId = "binary.visual.sensitive_blur"
     private static let hideStoriesRuleId = "binary.stories.hide"
@@ -1954,6 +1956,32 @@ public final class BinaryPatchEngine {
         let visualPeerBadgeRule = BinaryPatchRuleCatalog.rule(id: Self.visualPeerBadgeRuleId)
         let tonRule = BinaryPatchRuleCatalog.rule(id: Self.customTonRuleId)
         let starsRule = BinaryPatchRuleCatalog.rule(id: Self.customStarsRuleId)
+        // Pre-computed to keep the big PatchgramRuntimeConfigFile initializer under the Swift
+        // type-checker's complexity ceiling — the 8 inline monetization closures plus ~50 fields
+        // otherwise "unable to type-check in reasonable time" (tipped over by the overlay flag).
+        let monetizationOn: (String) -> Bool = { sub in
+            enabled.contains(Self.disableMonetizationRuleId)
+                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == sub }
+        }
+        let messageSettingsOn = enabled.contains(Self.messageSettingsRuleId)
+        let identityOverrideOn = enabled.contains(Self.selfIdentityOverrideRuleId)
+        let adsOn = enabled.contains(Self.disableAdsRuleId)
+        let customPhoneNumberOn = identityOverrideOn && identityGroups.contains("self_identity.custom_phone_number")
+        let customUserIdOn = identityOverrideOn && identityGroups.contains("self_identity.custom_user_id")
+        let messageTypingOn = messageSettingsOn && messageGroups.contains(Self.messageTypingAlternativeGroup)
+        let messageReadReceiptsOn = messageSettingsOn && messageGroups.contains(where: Self.isMessageReadReceiptsAlternativeGroup)
+        let messageLocalDraftsOn = messageSettingsOn && messageGroups.contains(Self.messageLocalDraftsAlternativeGroup)
+        let messageFactCheckOn = messageSettingsOn && messageGroups.contains(Self.messageFactCheckAlternativeGroup)
+        let messageNoForwardsCopyOn = messageSettingsOn && messageGroups.contains(Self.messageNoForwardsAllowCopyAlternativeGroup)
+        let messageDisableTtlOn = messageSettingsOn && messageGroups.contains(Self.messageTtlDisableAlternativeGroup)
+        let scheduledSendOn = enabled.contains(Self.scheduledSendRuleId) || (messageSettingsOn && messageGroups.contains(Self.scheduledSendAlternativeGroup))
+        let disableTelegramAdsOn = adsOn && adsGroups.contains(Self.disableTelegramAdsAlternativeGroup)
+        let disableProxySponsorOn = adsOn && adsGroups.contains(where: Self.isProxySponsorAlternativeGroup)
+        let visualPeerBadgeValue: UInt64 = manifest.parameterValues[Self.visualPeerBadgeRuleId] ?? visualPeerBadgeRule?.parameter?.defaultValue ?? 1
+        let customTonValue: UInt64 = manifest.parameterValues[Self.customTonRuleId] ?? tonRule?.parameter?.defaultValue ?? 999
+        let customStarsValue: UInt64 = manifest.parameterValues[Self.customStarsRuleId] ?? starsRule?.parameter?.defaultValue ?? 999
+        let localPersonalChannelId: UInt64 = localPersonalChannelConfig.channelId ?? 0
+        let fragmentPhonePurchaseDate = fragmentPhoneConfig.purchaseDateUnix ?? 0
         let payload = PatchgramRuntimeConfigFile(
             version: 1,
             enabledRuleIds: manifest.enabledRuleIds.filter { Self.runtimeRuleIds.contains($0) }.sorted(),
@@ -1971,22 +1999,20 @@ public final class BinaryPatchEngine {
             customLevelRatingNextLevelRating: ratingConfig.nextLevelRating,
             hideSelfPhoneEnabled: enabled.contains(Self.hideSelfPhoneRuleId),
             selfIdentityOverrideEnabled: enabled.contains(Self.selfIdentityOverrideRuleId),
-            customPhoneNumberEnabled: enabled.contains(Self.selfIdentityOverrideRuleId)
-                && identityGroups.contains("self_identity.custom_phone_number"),
+            customPhoneNumberEnabled: customPhoneNumberOn,
             customPhoneNumberTargetMode: identityConfig.phoneTargetMode,
-            customUserIdEnabled: enabled.contains(Self.selfIdentityOverrideRuleId)
-                && identityGroups.contains("self_identity.custom_user_id"),
+            customUserIdEnabled: customUserIdOn,
             customUserIdTargetMode: identityConfig.userIdTargetMode,
             selfIdentityOverridePhone: identityConfig.phone,
             selfIdentityOverrideUserId: identityConfig.userId,
             localPersonalChannelEnabled: enabled.contains(Self.localPersonalChannelRuleId),
             localPersonalChannelTargetMode: localPersonalChannelConfig.targetMode,
             localPersonalChannelReference: localPersonalChannelConfig.channelReference,
-            localPersonalChannelId: localPersonalChannelConfig.channelId ?? 0,
+            localPersonalChannelId: localPersonalChannelId,
             localPersonalChannelMessageId: localPersonalChannelConfig.messageId,
             fragmentPhoneEnabled: enabled.contains(Self.fragmentPhoneRuleId),
             fragmentPhoneTargetMode: fragmentPhoneConfig.targetMode,
-            fragmentPhonePurchaseDate: fragmentPhoneConfig.purchaseDateUnix ?? 0,
+            fragmentPhonePurchaseDate: fragmentPhonePurchaseDate,
             fragmentPhoneCurrency: fragmentPhoneConfig.currency,
             fragmentPhoneAmount: fragmentPhoneConfig.amount,
             fragmentPhoneCryptoCurrency: fragmentPhoneConfig.cryptoCurrency,
@@ -1995,15 +2021,13 @@ public final class BinaryPatchEngine {
             customListUsernamesEnabled: enabled.contains(Self.customListUsernamesRuleId),
             customListUsernamesPayload: customListUsernamesConfig.runtimePayload,
             visualPeerBadgeEnabled: enabled.contains(Self.visualPeerBadgeRuleId),
-            visualPeerBadgeValue: manifest.parameterValues[Self.visualPeerBadgeRuleId]
-                ?? visualPeerBadgeRule?.parameter?.defaultValue
-                ?? 1,
+            visualPeerBadgeValue: visualPeerBadgeValue,
             noPremiumAnimEnabled: enabled.contains(Self.noPremiumAnimRuleId),
             disableSpoilersEnabled: enabled.contains(Self.disableSpoilersRuleId),
             customTonEnabled: enabled.contains(Self.customTonRuleId),
-            customTonValue: manifest.parameterValues[Self.customTonRuleId] ?? tonRule?.parameter?.defaultValue ?? 999,
+            customTonValue: customTonValue,
             customStarsEnabled: enabled.contains(Self.customStarsRuleId),
-            customStarsValue: manifest.parameterValues[Self.customStarsRuleId] ?? starsRule?.parameter?.defaultValue ?? 999,
+            customStarsValue: customStarsValue,
             forceOfflineEnabled: enabled.contains(Self.forceOfflineRuleId),
             openLinksWithoutWarningEnabled: enabled.contains(Self.openLinksWithoutWarningRuleId),
             noPhoneOnAddEnabled: enabled.contains(Self.noPhoneOnAddRuleId),
@@ -2011,50 +2035,33 @@ public final class BinaryPatchEngine {
             blockTypingEnabled: enabled.contains(Self.blockTypingRuleId),
             blockReadMessagesEnabled: enabled.contains(Self.blockReadMessagesRuleId),
             messageSettingsEnabled: enabled.contains(Self.messageSettingsRuleId),
-            messageTypingEnabled: enabled.contains(Self.messageSettingsRuleId)
-                && messageGroups.contains(Self.messageTypingAlternativeGroup),
-            messageReadReceiptsEnabled: enabled.contains(Self.messageSettingsRuleId)
-                && messageGroups.contains(where: Self.isMessageReadReceiptsAlternativeGroup),
-            messageLocalDraftsEnabled: enabled.contains(Self.messageSettingsRuleId)
-                && messageGroups.contains(Self.messageLocalDraftsAlternativeGroup),
-            messageFactCheckEnabled: enabled.contains(Self.messageSettingsRuleId)
-                && messageGroups.contains(Self.messageFactCheckAlternativeGroup),
+            messageTypingEnabled: messageTypingOn,
+            messageReadReceiptsEnabled: messageReadReceiptsOn,
+            messageLocalDraftsEnabled: messageLocalDraftsOn,
+            messageFactCheckEnabled: messageFactCheckOn,
             messageFactCheckText: messageFactCheckConfig.text,
             messageFactCheckCountry: messageFactCheckConfig.country,
             messageFactCheckHash: messageFactCheckConfig.hash,
             messageFactCheckNeedCheck: messageFactCheckConfig.needCheck,
-            messageNoForwardsCopyEnabled: enabled.contains(Self.messageSettingsRuleId)
-                && messageGroups.contains(Self.messageNoForwardsAllowCopyAlternativeGroup),
-            messageDisableTtlEnabled: enabled.contains(Self.messageSettingsRuleId)
-                && messageGroups.contains(Self.messageTtlDisableAlternativeGroup),
+            messageNoForwardsCopyEnabled: messageNoForwardsCopyOn,
+            messageDisableTtlEnabled: messageDisableTtlOn,
+            overlayEnabled: enabled.contains(Self.overlayRuleId),
             localPremiumEnabled: enabled.contains(Self.localPremiumRuleId),
             disableMonetizationEnabled: enabled.contains(Self.disableMonetizationRuleId),
-            disableMonetizationAppConfigEnabled: enabled.contains(Self.disableMonetizationRuleId)
-                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "app_config" },
-            disableMonetizationPremiumUIEnabled: enabled.contains(Self.disableMonetizationRuleId)
-                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "premium_ui" },
-            disableMonetizationGiftsEnabled: enabled.contains(Self.disableMonetizationRuleId)
-                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "gifts" },
-            disableMonetizationPaidReactionsEnabled: enabled.contains(Self.disableMonetizationRuleId)
-                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "paid_reactions" },
-            disableMonetizationEmojiStatusesEnabled: enabled.contains(Self.disableMonetizationRuleId)
-                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "emoji_statuses" },
-            disableMonetizationStarsTonCollectiblesEnabled: enabled.contains(Self.disableMonetizationRuleId)
-                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "stars_ton_collectibles" },
-            disableMonetizationBoostsEnabled: enabled.contains(Self.disableMonetizationRuleId)
-                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "boosts" },
-            disableMonetizationReadReceiptsEnabled: enabled.contains(Self.disableMonetizationRuleId)
-                && monetizationGroups.contains { Self.disableMonetizationSubpatchId(for: $0) == "read_receipts" },
-            scheduledSendEnabled: enabled.contains(Self.scheduledSendRuleId)
-                || (enabled.contains(Self.messageSettingsRuleId)
-                    && messageGroups.contains(Self.scheduledSendAlternativeGroup)),
+            disableMonetizationAppConfigEnabled: monetizationOn("app_config"),
+            disableMonetizationPremiumUIEnabled: monetizationOn("premium_ui"),
+            disableMonetizationGiftsEnabled: monetizationOn("gifts"),
+            disableMonetizationPaidReactionsEnabled: monetizationOn("paid_reactions"),
+            disableMonetizationEmojiStatusesEnabled: monetizationOn("emoji_statuses"),
+            disableMonetizationStarsTonCollectiblesEnabled: monetizationOn("stars_ton_collectibles"),
+            disableMonetizationBoostsEnabled: monetizationOn("boosts"),
+            disableMonetizationReadReceiptsEnabled: monetizationOn("read_receipts"),
+            scheduledSendEnabled: scheduledSendOn,
             sensitiveBlurEnabled: enabled.contains(Self.sensitiveBlurRuleId),
             hideStoriesEnabled: enabled.contains(Self.hideStoriesRuleId),
             disableAdsEnabled: enabled.contains(Self.disableAdsRuleId),
-            disableTelegramAdsEnabled: enabled.contains(Self.disableAdsRuleId)
-                && adsGroups.contains(Self.disableTelegramAdsAlternativeGroup),
-            disableProxySponsorEnabled: enabled.contains(Self.disableAdsRuleId)
-                && adsGroups.contains(where: Self.isProxySponsorAlternativeGroup)
+            disableTelegramAdsEnabled: disableTelegramAdsOn,
+            disableProxySponsorEnabled: disableProxySponsorOn
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -2100,17 +2107,42 @@ public final class BinaryPatchEngine {
             try? fileManager.removeItem(at: sourceURL)
         }
 
+        // Link the bundled rlottie static lib when present so the overlay can render .tgs animated
+        // stickers. Gated by a macro the engine source checks; absent on older apps → .tgs disabled,
+        // PNG still works. The .a comes from the app (not the signed patch bundle), so the bundle
+        // format/manifest is unchanged.
+        let rlottieLib = PatchgramResourceProvider.shared.rlottieLibraryURL()
+        let haveRlottie = rlottieLib.map { fileManager.fileExists(atPath: $0.path) } ?? false
+
+        var arguments: [String] = [
+            "-dynamiclib",
+            "-arch", "arm64",
+            // Compiled as Objective-C so the dylib can host a native AppKit overlay
+            // (the existing C body is a strict subset; the only `id`/`self`/`@`/`IMP`
+            // tokens in it live in strings/comments). ARC keeps the overlay memory-safe.
+            "-x", "objective-c",
+            "-fobjc-arc",
+            "-O2",
+            "-mmacosx-version-min=12.0",
+            "-framework", "Foundation",
+            "-framework", "AppKit",
+            "-framework", "QuartzCore"
+        ]
+        if haveRlottie {
+            arguments.append("-DPATCHGRAM_HAVE_RLOTTIE=1")
+        }
+        arguments += ["-o", dylibURL.path, sourceURL.path]
+        if haveRlottie, let lib = rlottieLib {
+            // `-x none` resets the input type: the earlier `-x objective-c` is sticky and would
+            // otherwise make clang try to COMPILE the .a archive as ObjC source (it hangs parsing
+            // the binary). With `-x none` the .a is treated by extension → linked, not compiled.
+            // librlottie.a is C++ and the engine gunzips via zlib → also pull in libc++ and libz.
+            arguments += ["-x", "none", lib.path, "-lc++", "-lz"]
+        }
+
         let result = try runLoggedProcess(
             executableURL: URL(fileURLWithPath: "/usr/bin/clang"),
-            arguments: [
-                "-dynamiclib",
-                "-arch", "arm64",
-                "-x", "c",
-                "-O2",
-                "-mmacosx-version-min=12.0",
-                "-o", dylibURL.path,
-                sourceURL.path
-            ],
+            arguments: arguments,
             appURL: appURL,
             label: "Compile Patchgram runtime hook"
         )

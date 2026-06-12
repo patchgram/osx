@@ -14,6 +14,7 @@ public struct PatchgramResourceProvider: Sendable {
     public static let patchesJSONName = "patches.json"
     public static let engineTemplateName = "engine.c.template"
     public static let patchManifestName = "patch-manifest.json"
+    public static let rlottieLibName = "librlottie.a"
 
     private let cacheDirectoryOverride: URL?
 
@@ -50,13 +51,32 @@ public struct PatchgramResourceProvider: Sendable {
         return bundledData(named: name)
     }
 
+    /// Locates `Patchgram_PatchgramCore.bundle` WITHOUT the SwiftPM-generated `Bundle.module`
+    /// accessor. On the Xcode-26 toolchain that accessor only checks `Bundle.main.bundleURL` (the
+    /// .app ROOT) and a HARDCODED build-machine path — so it loads fine on the dev machine (the
+    /// build path exists) but `fatalError`s on every user's machine, even though build-app.sh
+    /// installs the bundle into Contents/Resources. We check the real install locations ourselves.
+    private static let coreBundle: Bundle = {
+        let name = "Patchgram_PatchgramCore.bundle"
+        var candidates: [URL] = []
+        if let res = Bundle.main.resourceURL { candidates.append(res.appendingPathComponent(name)) }  // Contents/Resources (.app)
+        candidates.append(Bundle.main.bundleURL.appendingPathComponent(name))                          // .app root / next to a loose exe
+        if let exeDir = Bundle.main.executableURL?.deletingLastPathComponent() {
+            candidates.append(exeDir.appendingPathComponent(name))                                      // Contents/MacOS
+        }
+        for url in candidates where (try? url.checkResourceIsReachable()) == true {
+            if let bundle = Bundle(url: url) { return bundle }
+        }
+        return Bundle.module   // last resort (swift test / running straight from .build)
+    }()
+
     /// The bundled default bytes shipped inside the app. Traps only if the resource is missing from
     /// the bundle entirely, which is a build/packaging error (the file is a committed resource).
     public func bundledData(named name: String) -> Data {
         let components = name.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
         let resource = String(components[0])
         let ext = components.count > 1 ? String(components[1]) : ""
-        guard let url = Bundle.module.url(forResource: resource, withExtension: ext),
+        guard let url = Self.coreBundle.url(forResource: resource, withExtension: ext),
               let data = try? Data(contentsOf: url) else {
             fatalError("Missing bundled Patchgram resource: \(name). Check Package.swift resources and build-app.sh bundle copy.")
         }
@@ -65,6 +85,26 @@ public struct PatchgramResourceProvider: Sendable {
 
     public func patchesJSON() -> Data {
         data(named: Self.patchesJSONName)
+    }
+
+    /// On-disk URL of a bundled resource (the file itself, not its bytes) — needed when a tool like
+    /// `clang` must reference the path directly (e.g. linking `librlottie.a`). Returns nil if absent.
+    public func bundledURL(named name: String) -> URL? {
+        let components = name.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let resource = String(components[0])
+        let ext = components.count > 1 ? String(components[1]) : ""
+        return Self.coreBundle.url(forResource: resource, withExtension: ext)
+    }
+
+    /// Path to the rlottie static library used to render `.tgs` animated stickers — cache copy if a
+    /// future update ships one, otherwise the version bundled in the app. Nil if neither exists (an
+    /// older app without rlottie); callers must treat `.tgs` support as unavailable in that case.
+    public func rlottieLibraryURL() -> URL? {
+        if let cacheURL = cacheDirectory?.appendingPathComponent(Self.rlottieLibName),
+           FileManager.default.fileExists(atPath: cacheURL.path) {
+            return cacheURL
+        }
+        return bundledURL(named: Self.rlottieLibName)
     }
 
     public func engineTemplate() -> String {

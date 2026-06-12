@@ -30,7 +30,8 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         "binary.premium.local",
         "binary.visual.sensitive_blur",
         "binary.stories.hide",
-        "binary.ads.disable_sponsored"
+        "binary.ads.disable_sponsored",
+        "binary.overlay.profile_rain"
     ]
 
     var id: String { status.id }
@@ -335,6 +336,7 @@ final class PatchgramViewModel: ObservableObject {
     ]
     private static let runtimeRuleIds: Set<String> = [
         "binary.dylib.inject",
+        "binary.overlay.profile_rain",
         "binary.visual.bot_verification",
         "binary.visual.custom_level_rating",
         "binary.visual.hide_self_phone",

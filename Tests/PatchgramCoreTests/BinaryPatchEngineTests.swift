@@ -1140,7 +1140,7 @@ final class BinaryPatchEngineTests: XCTestCase {
             BinaryPatchRuleDefinitions.builtInRules.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        XCTAssertEqual(BinaryPatchRuleCatalog.rules.count, 24)
+        XCTAssertEqual(BinaryPatchRuleCatalog.rules.count, 25)
         for rule in BinaryPatchRuleCatalog.rules {
             let seed = try XCTUnwrap(builtInById[rule.id], "no built-in seed for \(rule.id)")
             XCTAssertEqual(rule, seed, "patches.json round-trip mismatch for \(rule.id)")
@@ -1150,7 +1150,7 @@ final class BinaryPatchEngineTests: XCTestCase {
     func testPatchBundleVerifierAcceptsSignedBundleAndRejectsTampering() throws {
         let provider = PatchgramResourceProvider()
         let manifestData = provider.bundledData(named: "patch-manifest.json")
-        let signature = try XCTUnwrap(Data(base64Encoded: "MQU4CjtKFMX1E7kunC9Cct6fM4V5LODy/+wpYfley1/6+pApkZvUGTVPYnWTNvIWN0hAnS/R8vntq74wnvsuCA=="))
+        let signature = try XCTUnwrap(Data(base64Encoded: "mS3fr+zWAj5UtzIb6m06LyIYInKL1bWAJ2irCYLiIiqeB7bM0HSEeXrywhs7UthmKXeNiRngp/FzBzvlAX31Bw=="))
         let files: [String: Data] = [
             "patches.json": provider.bundledData(named: "patches.json"),
             "engine.c.template": provider.bundledData(named: "engine.c.template")
@@ -1159,7 +1159,7 @@ final class BinaryPatchEngineTests: XCTestCase {
 
         // Valid signed bundle is accepted (proves openssl-signed → CryptoKit-verified, pinned key).
         let manifest = try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.0.4")
-        XCTAssertEqual(manifest.bundleVersion, 4)
+        XCTAssertEqual(manifest.bundleVersion, 6)
 
         // Tampered file → rejected.
         var tampered = files
@@ -1195,7 +1195,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         let provider = PatchgramResourceProvider(cacheDirectory: dir)
 
         // No cache → full bundled catalog.
-        XCTAssertEqual(PatchCatalogLoader.load(provider: provider).count, 24)
+        XCTAssertEqual(PatchCatalogLoader.load(provider: provider).count, 25)
 
         // A written cache bundle (what a verified update produces) is loaded with full fidelity —
         // this is the hot-reload path: writeCacheFiles + reload → catalog reflects the new patches.
@@ -1290,7 +1290,12 @@ private struct StubProcessRunner: ProcessRunning {
                 at: output.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            let source = arguments.last
+            // The engine emits `... -o <output> <source> [link flags]`, so the compile source is
+            // the argument right after the output path — not necessarily the LAST argument (the
+            // rlottie static lib + -lc++/-lz can follow it). Read the marker-bearing source there.
+            let sourceIndex = arguments.index(after: arguments.index(after: outputFlag))
+            let sourceArg = arguments.indices.contains(sourceIndex) ? arguments[sourceIndex] : arguments.last
+            let source = sourceArg
                 .map { URL(fileURLWithPath: $0) }
                 .flatMap { try? Data(contentsOf: $0) }
                 ?? Data()

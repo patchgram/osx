@@ -27,6 +27,28 @@
           "title" : "Dylib injection"
         },
         {
+          "constructorId" : "overlay",
+          "delivery" : "runtimeMemory",
+          "disabledBehavior" : "Removes the overlay button/panel from Telegram.",
+          "id" : "binary.overlay.profile_rain",
+          "kind" : "runtimeMemory",
+          "methodName" : "AppKit overlay",
+          "replacements" : [
+            {
+              "alternativeGroup" : "overlay.profile_rain.runtime_flag",
+              "expectedOccurrences" : 1,
+              "id" : "overlay.profile_rain.runtime_flag",
+              "mode" : "toggle",
+              "originalHex" : "",
+              "patchedHex" : ""
+            }
+          ],
+          "riskNote" : "Cosmetic local overlay drawn by the injected dylib via AppKit; it does not modify Telegram's own bytes or data.",
+          "summary" : "Shows a native AppKit overlay inside Telegram: a floating info button opens a half-transparent panel with an Animation toggle and a .png picker; with Animation on, the chosen .png rains over the profile popup. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
+          "supportedBuildNote" : "The overlay is a native AppKit window, independent of the Telegram Desktop build version.",
+          "title" : "Profile rain overlay"
+        },
+        {
           "constructorId" : "6628562c",
           "disabledBehavior" : "Restores the original load-and-branch instructions from the executable backup pattern.",
           "id" : "binary.presence.force_offline",

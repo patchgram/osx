@@ -49,6 +49,18 @@ swift build \
   -Xswiftc "$MODULE_CACHE" \
   -c release
 
+# Resolve the real products dir from SwiftPM (the .build layout / triple varies by toolchain) so we
+# never silently miss the resource bundle and ship an app that crashes on launch.
+BIN_PATH="$(swift build \
+  --cache-path "$SWIFTPM_CACHE" \
+  --config-path "$SWIFTPM_CONFIG" \
+  --security-path "$SWIFTPM_SECURITY" \
+  --manifest-cache local \
+  -c release --show-bin-path)"
+EXECUTABLE="$BIN_PATH/patchgram"
+RESOURCE_BUNDLE="$BIN_PATH/Patchgram_Patchgram.bundle"
+CORE_RESOURCE_BUNDLE="$BIN_PATH/Patchgram_PatchgramCore.bundle"
+
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 rm -f "$APP/Contents/Resources/PatchgramLogo.png"
@@ -59,10 +71,14 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
   rm -rf "$APP/Contents/Resources/$(basename "$RESOURCE_BUNDLE")"
   cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
 fi
-if [ -d "$CORE_RESOURCE_BUNDLE" ]; then
-  rm -rf "$APP/Contents/Resources/$(basename "$CORE_RESOURCE_BUNDLE")"
-  cp -R "$CORE_RESOURCE_BUNDLE" "$APP/Contents/Resources/"
+# PatchgramCore's resource bundle is REQUIRED (patches.json / engine.c.template / librlottie.a). A
+# missing copy makes the app fatal-error at first launch, so fail the build loudly instead.
+if [ ! -d "$CORE_RESOURCE_BUNDLE" ]; then
+  echo "error: required resource bundle not found at $CORE_RESOURCE_BUNDLE" >&2
+  exit 1
 fi
+rm -rf "$APP/Contents/Resources/$(basename "$CORE_RESOURCE_BUNDLE")"
+cp -R "$CORE_RESOURCE_BUNDLE" "$APP/Contents/Resources/"
 
 rm -rf "$ICON_WORK"
 mkdir -p "$ICONSET"
@@ -113,7 +129,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key>
   <string>1.0.7</string>
   <key>CFBundleVersion</key>
-  <string>17</string>
+  <string>18</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSHighResolutionCapable</key>

@@ -1095,6 +1095,28 @@ public enum BinaryPatchRuleDefinitions {
             ],
             delivery: .runtimeMemory
         ),
+        // Native AppKit overlay drawn by Patchgram.dylib (runtime flag only — no bytes
+        // patched). Enables the floating info button + half-transparent settings panel
+        // (Animation toggle + .png picker) and the profile-popup "rain" animation.
+        BinaryPatchRule(
+            id: "binary.overlay.profile_rain",
+            title: "Profile rain overlay",
+            methodName: "AppKit overlay",
+            constructorId: "overlay",
+            kind: .runtimeMemory,
+            summary: "Shows a native AppKit overlay inside Telegram: a floating info button opens a half-transparent panel with an Animation toggle and a .png picker; with Animation on, the chosen .png rains over the profile popup. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
+            disabledBehavior: "Removes the overlay button/panel from Telegram.",
+            riskNote: "Cosmetic local overlay drawn by the injected dylib via AppKit; it does not modify Telegram's own bytes or data.",
+            supportedBuildNote: "The overlay is a native AppKit window, independent of the Telegram Desktop build version.",
+            replacements: [
+                BinaryReplacement(
+                    id: "overlay.profile_rain.runtime_flag",
+                    originalHex: "",
+                    patchedHex: ""
+                )
+            ],
+            delivery: .runtimeMemory
+        ),
         BinaryPatchRule(
             id: "binary.presence.force_offline",
             title: "Always offline",

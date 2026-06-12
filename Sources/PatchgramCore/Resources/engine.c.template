@@ -244,6 +244,7 @@ static bool g_message_local_drafts_enabled = false;
 static bool g_message_fact_check_enabled = false;
 static bool g_message_allow_noforwards_copy = false;
 static bool g_message_disable_ttl = false;
+static bool g_overlay_enabled = false;
 static bool g_local_premium_enabled = false;
 static bool g_disable_monetization_enabled = false;
 static bool g_disable_monetization_app_config_enabled = false;
@@ -2408,6 +2409,7 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     g_message_fact_check_enabled = patchgram_json_bool(json, "messageFactCheckEnabled", false);
     g_message_allow_noforwards_copy = patchgram_json_bool(json, "messageNoForwardsCopyEnabled", false);
     g_message_disable_ttl = patchgram_json_bool(json, "messageDisableTtlEnabled", false);
+    g_overlay_enabled = patchgram_json_bool(json, "overlayEnabled", false);
     g_local_premium_enabled = patchgram_json_bool(json, "localPremiumEnabled", false);
     g_disable_monetization_enabled = patchgram_json_bool(json, "disableMonetizationEnabled", false);
     g_disable_monetization_app_config_enabled = patchgram_json_bool(json, "disableMonetizationAppConfigEnabled", g_disable_monetization_enabled);
@@ -6441,6 +6443,1269 @@ static void patchgram_install_bot_verification_hooks(void) {
     );
 }
 
+/* ============================================================================
+ *  Patchgram native overlay (AppKit / Objective-C; the dylib is compiled with
+ *  -x objective-c -framework AppKit). Gated by g_overlay_enabled.
+ *  A floating circular "open" button (the same info.circle glyph as the patcher's
+ *  About button) toggles a half-transparent settings panel that carries a close (X)
+ *  in its top-right corner (closes the panel, the open button stays), an "Animation"
+ *  row with a macOS NSSwitch, and a "Select png" row with an NSOpenPanel picker.
+ *  All three are NSPanel CHILD windows of the Telegram main window, so they track it
+ *  and never steal key focus. The chosen .png + the Animation flag persist to
+ *  ~/Library/Application Support/Patchgram/overlay_state.plist and drive the
+ *  stage-2 profile "rain" animation. Everything is logged via patchgram_log.
+ * ==========================================================================*/
+#import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
+
+static BOOL patchgram_overlay_animation_on = NO;
+static NSString *patchgram_overlay_png_path = nil;
+
+// PatchgramLogo.svg (viewBox 190 190 690 690) — the patcher's brand mark, drawn as 2 white paths.
+static const char *PATCHGRAM_LOGO_PATH_1 =
+    "M624.434 653.83L582.549 772.205C577.496 786.484 564.6 796.502 549.538 797.846C534.478 799.192 520.016 791.617 512.523 778.458L419.67 615.4C416.24 609.377 411.259 604.387 405.248 600.951L242.504 507.918C229.372 500.41 221.811 485.921 223.153 470.831C224.496 455.741 234.494 442.82 248.746 437.758L689.415 281.228C703.467 276.236 719.132 279.785 729.674 290.348C740.217 300.91 743.758 316.605 738.776 330.685L699.26 442.364C698.11 441.117 696.932 439.887 695.723 438.676C668.674 411.576 623.219 407.147 589.851 408.508L589.811 408.51C588.12 408.582 586.648 408.813 585.375 409.183C584.327 409.461 583.313 409.818 582.34 410.248L579.202 410.979L570.211 417.137L565.618 421.739L561.936 426.238L559.227 431.323L557.554 436.838L556.982 442.629L557.554 448.42L559.227 453.935L561.936 459.02L565.618 463.52L614.315 512.31L591.305 535.364L542.609 486.573L538.118 482.884L533.043 480.169L527.539 478.493L521.759 477.921L515.979 478.493L510.474 480.169L505.399 482.884L500.908 486.573L496.315 491.177L490.169 500.184L487.795 510.429C487.745 510.524 487.715 510.652 487.706 510.813L487.704 510.852C486.344 544.284 490.765 589.828 517.813 616.928C546.582 645.753 585.865 657.695 623.339 652.734L624.434 653.83Z";
+static const char *PATCHGRAM_LOGO_PATH_2 =
+    "M836.672 757.626C814.904 779.458 779.611 779.458 757.843 757.626L631.16 630.575C597.069 638.401 559.83 629.007 533.298 602.398C510.318 579.351 508.085 540.2 509.241 511.768V511.763C509.334 509.556 510.25 507.464 511.808 505.902L516.399 501.297C518.048 499.643 520.285 498.714 522.617 498.714C524.949 498.714 527.185 499.643 528.834 501.297L586.215 558.844C589.487 562.126 594.792 562.126 598.064 558.844L638.467 518.324C641.739 515.042 641.739 509.722 638.467 506.44L581.087 448.893C579.438 447.239 578.511 444.996 578.511 442.656C578.511 440.318 579.438 438.075 581.087 436.421L585.678 431.817C587.235 430.254 589.322 429.335 591.523 429.241H591.527C619.877 428.083 658.915 430.322 681.895 453.369C708.427 479.978 717.793 517.326 709.991 551.516L836.675 678.567C858.442 700.398 858.442 735.793 836.675 757.624L836.672 757.626ZM818.764 697.298C807.113 685.613 788.188 685.618 776.531 697.309C764.874 709 764.869 727.979 776.521 739.665C788.173 751.351 807.097 751.346 818.755 739.655C830.412 727.964 830.417 708.984 818.764 697.298Z";
+
+// Minimal absolute SVG path parser (M,L,C,V,H,Z) → appends to a CGMutablePath.
+static void patchgram_svg_append(CGMutablePathRef path, const char *d) {
+    double cx = 0, cy = 0, nums[8]; int n = 0; char cmd = 0;
+    const char *p = d;
+    while (*p) {
+        while (*p == ' ' || *p == ',' || *p == '\n' || *p == '\t') p++;
+        if (!*p) break;
+        char c = *p;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+            cmd = c; p++; n = 0;
+            if (cmd == 'Z' || cmd == 'z') CGPathCloseSubpath(path);
+            continue;
+        }
+        char *end; double v = strtod(p, &end);
+        if (end == p) { p++; continue; }
+        p = end; nums[n++] = v;
+        int need = (cmd == 'C') ? 6 : ((cmd == 'V' || cmd == 'H') ? 1 : 2);
+        if (n < need) continue;
+        switch (cmd) {
+            case 'M': cx = nums[0]; cy = nums[1]; CGPathMoveToPoint(path, NULL, cx, cy); cmd = 'L'; break;
+            case 'L': cx = nums[0]; cy = nums[1]; CGPathAddLineToPoint(path, NULL, cx, cy); break;
+            case 'C': CGPathAddCurveToPoint(path, NULL, nums[0], nums[1], nums[2], nums[3], nums[4], nums[5]); cx = nums[4]; cy = nums[5]; break;
+            case 'V': cy = nums[0]; CGPathAddLineToPoint(path, NULL, cx, cy); break;
+            case 'H': cx = nums[0]; CGPathAddLineToPoint(path, NULL, cx, cy); break;
+            default: break;
+        }
+        n = 0;
+    }
+}
+
+// Build the logo path scaled into a [0,S]x[0,S] box, Y-flipped for CALayer (bottom-left origin).
+static CGPathRef patchgram_overlay_logo_path(CGFloat S) {
+    CGMutablePathRef raw = CGPathCreateMutable();
+    patchgram_svg_append(raw, PATCHGRAM_LOGO_PATH_1);
+    patchgram_svg_append(raw, PATCHGRAM_LOGO_PATH_2);
+    CGFloat s = S / 690.0; // viewBox is 690 wide/tall, min 190
+    CGAffineTransform t = CGAffineTransformMake(s, 0, 0, -s, -190.0 * s, S + 190.0 * s);
+    CGPathRef out = CGPathCreateCopyByTransformingPath(raw, &t);
+    CGPathRelease(raw);
+    return out;
+}
+
+static NSString *patchgram_overlay_state_path(void) {
+    NSString *dir = [NSString stringWithFormat:@"%@/Library/Application Support/Patchgram", NSHomeDirectory()];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    return [dir stringByAppendingPathComponent:@"overlay_state.plist"];
+}
+
+#if PATCHGRAM_HAVE_RLOTTIE
+#include <zlib.h>
+// rlottie C API — librlottie.a is linked by the apply-time compile when the static lib is bundled
+// (BinaryPatchEngine adds -DPATCHGRAM_HAVE_RLOTTIE=1 + the .a + -lc++ -lz). Lets .tgs animated
+// stickers (gzipped Lottie JSON) be rendered to frames for the particle effect.
+typedef struct Lottie_Animation_S Lottie_Animation;
+extern Lottie_Animation *lottie_animation_from_data(const char *data, const char *key, const char *resource_path);
+extern void lottie_animation_destroy(Lottie_Animation *animation);
+extern size_t lottie_animation_get_totalframe(const Lottie_Animation *animation);
+extern double lottie_animation_get_framerate(const Lottie_Animation *animation);
+extern void lottie_animation_render(Lottie_Animation *animation, size_t frame_num, uint32_t *buffer, size_t width, size_t height, size_t bytes_per_line);
+
+// .tgs is gzip-compressed; windowBits 15+32 auto-detects the gzip wrapper.
+static NSData *patchgram_gunzip(NSData *gz) {
+    if (!gz.length) return nil;
+    z_stream s; memset(&s, 0, sizeof(s));
+    if (inflateInit2(&s, 15 + 32) != Z_OK) return nil;
+    s.next_in = (Bytef *)gz.bytes; s.avail_in = (uInt)gz.length;
+    NSMutableData *out = [NSMutableData dataWithLength:gz.length * 6 + 65536];
+    NSUInteger total = 0; int rc;
+    do {
+        if (total >= out.length) [out increaseLengthBy:out.length];
+        s.next_out = (Bytef *)out.mutableBytes + total;
+        s.avail_out = (uInt)(out.length - total);
+        rc = inflate(&s, Z_NO_FLUSH);
+        total = out.length - s.avail_out;
+        if (rc != Z_OK && rc != Z_STREAM_END) { inflateEnd(&s); return nil; }
+    } while (rc != Z_STREAM_END);
+    inflateEnd(&s);
+    out.length = total;
+    return out;
+}
+
+// Render a .tgs to an NSArray of CGImages (bridged). *outFps = effective playback fps after subsampling.
+static NSArray *patchgram_render_tgs(NSString *path, size_t side, double *outFps) {
+    NSData *json = patchgram_gunzip([NSData dataWithContentsOfFile:path]);
+    if (!json.length) { patchgram_log("OVERLAY tgs: gunzip failed %s", path.UTF8String); return nil; }
+    NSMutableData *cstr = [NSMutableData dataWithData:json];
+    [cstr appendBytes:"\0" length:1];   // rlottie wants a NUL-terminated JSON string
+    Lottie_Animation *anim = lottie_animation_from_data((const char *)cstr.bytes, path.UTF8String, "");
+    if (!anim) { patchgram_log("OVERLAY tgs: parse failed %s", path.UTF8String); return nil; }
+    size_t total = lottie_animation_get_totalframe(anim);
+    double fr = lottie_animation_get_framerate(anim);
+    if (fr <= 0) fr = 30.0;
+    if (total == 0) { lottie_animation_destroy(anim); return nil; }
+    size_t maxFrames = 80;
+    size_t step = (total > maxFrames) ? ((total + maxFrames - 1) / maxFrames) : 1;
+    size_t W = side, H = side, stride = W * 4;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    uint32_t *buf = (uint32_t *)malloc(stride * H);
+    NSMutableArray *frames = [NSMutableArray array];
+    if (buf) {
+        for (size_t f = 0; f < total; f += step) {
+            memset(buf, 0, stride * H);
+            lottie_animation_render(anim, f, buf, W, H, stride);
+            CGContextRef ctx = CGBitmapContextCreate(buf, W, H, 8, stride, cs,
+                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+            if (ctx) {
+                CGImageRef img = CGBitmapContextCreateImage(ctx);
+                if (img) { [frames addObject:(__bridge id)img]; CGImageRelease(img); }
+                CGContextRelease(ctx);
+            }
+        }
+        free(buf);
+    }
+    CGColorSpaceRelease(cs);
+    lottie_animation_destroy(anim);
+    if (outFps) *outFps = fr / (double)step;
+    patchgram_log("OVERLAY tgs: %lu frames (of %zu, step %zu) @%.1ffps", (unsigned long)frames.count, total, step, fr);
+    return frames.count ? frames : nil;
+}
+#endif // PATCHGRAM_HAVE_RLOTTIE
+
+@class PatchgramOverlay;
+
+// Draggable circular logo button. Click (no drag) toggles the menu; drag moves the window.
+@interface PatchgramLogoButton : NSView
+@property (nonatomic, weak) PatchgramOverlay *overlay;
+@property (nonatomic, assign) NSPoint dragOriginWin;
+@property (nonatomic, assign) NSPoint dragOriginMouse;
+@property (nonatomic, assign) BOOL didDrag;
+@end
+@implementation PatchgramLogoButton
+- (instancetype)initWithFrame:(NSRect)f {
+    self = [super initWithFrame:f];
+    if (self) {
+        self.wantsLayer = YES;
+        self.layer.backgroundColor = [[NSColor colorWithWhite:0.11 alpha:0.9] CGColor];
+        self.layer.cornerRadius = f.size.width / 2.0;
+        self.layer.borderWidth = 1.0;
+        self.layer.borderColor = [[NSColor colorWithWhite:1.0 alpha:0.18] CGColor];
+        CGFloat inset = f.size.width * 0.27;
+        CGFloat S = f.size.width - inset * 2.0;
+        CAShapeLayer *logo = [CAShapeLayer layer];
+        CGPathRef pth = patchgram_overlay_logo_path(S);
+        logo.path = pth; CGPathRelease(pth);
+        logo.fillColor = [[NSColor whiteColor] CGColor];
+        logo.frame = CGRectMake(inset, inset, S, S);
+        [self.layer addSublayer:logo];
+    }
+    return self;
+}
+- (void)mouseDown:(NSEvent *)e {
+    self.dragOriginWin = self.window.frame.origin;
+    self.dragOriginMouse = [NSEvent mouseLocation];
+    self.didDrag = NO;
+}
+- (void)mouseDragged:(NSEvent *)e {
+    NSPoint m = [NSEvent mouseLocation];
+    CGFloat dx = m.x - self.dragOriginMouse.x, dy = m.y - self.dragOriginMouse.y;
+    if (fabs(dx) > 3.0 || fabs(dy) > 3.0) self.didDrag = YES;
+    [self.window setFrameOrigin:NSMakePoint(self.dragOriginWin.x + dx, self.dragOriginWin.y + dy)];
+}
+- (void)mouseUp:(NSEvent *)e {
+    if (self.didDrag) [(id)self.overlay performSelector:@selector(buttonDidMove)];
+    else [(id)self.overlay performSelector:@selector(openTapped:) withObject:nil];
+}
+// Deliver clicks even though our parent is a non-key, non-activating panel.
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+@end
+
+@class PatchgramOverlay;
+// The dim layer behind the menu box; a click outside the box closes the menu.
+@interface PatchgramDimView : NSView
+@property (nonatomic, weak) PatchgramOverlay *overlay;
+@end
+@implementation PatchgramDimView
+- (void)mouseDown:(NSEvent *)e { [(id)self.overlay performSelector:@selector(closeTapped:) withObject:nil]; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+@end
+
+@class PatchgramOverlay;
+// Draggable + bottom-right-resizable frame that confines the rain. Shown only while the
+// menu is open (configure mode); the rain itself renders clipped to this rect.
+@interface PatchgramRegionView : NSView
+@property (nonatomic, weak) PatchgramOverlay *overlay;
+@property (nonatomic, assign) NSRect startFrame;
+@property (nonatomic, assign) NSPoint startMouse;
+@property (nonatomic, assign) BOOL resizing;
+@end
+@implementation PatchgramRegionView
+- (instancetype)initWithFrame:(NSRect)f {
+    self = [super initWithFrame:f];
+    if (self) {
+        self.wantsLayer = YES;
+        self.layer.backgroundColor = [[NSColor colorWithWhite:1.0 alpha:0.05] CGColor];
+        self.layer.borderColor = [[NSColor colorWithRed:0.30 green:0.68 blue:1.0 alpha:0.95] CGColor];
+        self.layer.borderWidth = 2.0;
+        self.layer.cornerRadius = 6.0;
+        CALayer *grip = [CALayer layer];
+        grip.name = @"grip";
+        grip.backgroundColor = [[NSColor colorWithRed:0.30 green:0.68 blue:1.0 alpha:0.95] CGColor];
+        grip.cornerRadius = 3.0;
+        grip.frame = CGRectMake(f.size.width - 20, 6, 14, 14);
+        [self.layer addSublayer:grip];
+    }
+    return self;
+}
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
+- (void)layout {
+    [super layout];
+    for (CALayer *l in self.layer.sublayers)
+        if ([l.name isEqualToString:@"grip"]) l.frame = CGRectMake(self.bounds.size.width - 20, 6, 14, 14);
+}
+- (void)mouseDown:(NSEvent *)e {
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    self.resizing = (p.x > self.bounds.size.width - 26 && p.y < 26);
+    self.startFrame = self.window.frame;
+    self.startMouse = [NSEvent mouseLocation];
+}
+- (void)mouseDragged:(NSEvent *)e {
+    NSPoint m = [NSEvent mouseLocation];
+    CGFloat dx = m.x - self.startMouse.x, dy = m.y - self.startMouse.y;
+    NSRect fr = self.startFrame;
+    if (self.resizing) {
+        CGFloat w = MAX(90, fr.size.width + dx);
+        CGFloat h = MAX(90, fr.size.height - dy);
+        [self.window setFrame:NSMakeRect(fr.origin.x, fr.origin.y + (fr.size.height - h), w, h) display:YES];
+    } else {
+        [self.window setFrameOrigin:NSMakePoint(fr.origin.x + dx, fr.origin.y + dy)];
+    }
+    [(id)self.overlay performSelector:@selector(regionDidChange)];
+}
+- (void)mouseUp:(NSEvent *)e { [(id)self.overlay performSelector:@selector(regionDidChange)]; }
+@end
+
+@interface PatchgramOverlay : NSObject
+@property (nonatomic, weak) NSWindow *host;
+@property (nonatomic, strong) NSPanel *buttonWindow;
+@property (nonatomic, strong) NSPanel *panelWindow;   // full-host: dim + centered box
+@property (nonatomic, strong) NSWindow *animWindow;   // full-host: click-through rain
+@property (nonatomic, strong) NSPanel *dimWindow;     // full-host: click-through dim
+@property (nonatomic, strong) PatchgramLogoButton *logoButton;
+@property (nonatomic, strong) NSView *box;            // the dark-gray menu box
+@property (nonatomic, strong) NSSwitch *animSwitch;
+@property (nonatomic, strong) NSTextField *pngValueLabel;
+@property (nonatomic, strong) CAEmitterLayer *emitter;       // primary region (right column or manual)
+@property (nonatomic, strong) CAEmitterLayer *cardEmitter;  // 2nd region on the primary host: centred profile card
+@property (nonatomic, strong) NSImage *rainImage;
+@property (nonatomic, assign) CGFloat buttonFx;       // button center as fraction of host (0..1)
+@property (nonatomic, assign) CGFloat buttonFy;
+@property (nonatomic, strong) NSPanel *regionWindow;        // draggable rain-area frame (configure)
+@property (nonatomic, strong) PatchgramRegionView *regionView;
+@property (nonatomic, assign) CGFloat rainFx, rainFy, rainFw, rainFh; // rain rect as fractions of host
+@property (nonatomic, assign) CGFloat rainSizeMul;          // png size multiplier (Size slider, default 1.0)
+@property (nonatomic, strong) NSSlider *sizeSlider;
+@property (nonatomic, assign) CGFloat rainSpeed;           // animation speed multiplier (Speed slider, default 1.0)
+@property (nonatomic, strong) NSSlider *speedSlider;
+@property (nonatomic, assign) CGFloat rainOpacity;        // particle opacity (Opacity slider, default 1.0)
+@property (nonatomic, strong) NSSlider *opacitySlider;
+@property (nonatomic, assign) BOOL menuOpen;                // menu shown — robust vs NSOpenPanel modal disturbing isVisible
+@property (nonatomic, assign) int rainStyle;               // 0 rain, 1 snow, 2 float-up, 3 burst
+@property (nonatomic, strong) NSSegmentedControl *styleSeg;
+@property (nonatomic, strong) NSArray *rainFrames;        // CGImages for an animated (.tgs) particle, else nil
+@property (nonatomic, strong) NSTimer *frameTimer;        // cycles the emitter cell contents through rainFrames
+@property (nonatomic, assign) NSInteger frameIndex;
+@property (nonatomic, assign) double rainFps;
+@property (nonatomic, strong) NSString *lastParticlePath; // cache key: skip re-decoding the same file
+@property (nonatomic, assign) int probeNodes;             // node budget for the profile-detection probe
+@property (nonatomic, assign) BOOL autoRegion;            // auto-follow the profile pane (AX-detected)
+@property (nonatomic, strong) NSSwitch *autoSwitch;
+@property (nonatomic, strong) NSTimer *autoTimer;
+@property (nonatomic, assign) NSPoint autoAvatarPoint;   // profile avatar centre (host-local) — burst origin in auto
+@property (nonatomic, assign) BOOL autoAvatarValid;
+@property (nonatomic, weak) NSWindow *secHost;           // a 2nd Telegram window mirroring the rain
+@property (nonatomic, strong) NSWindow *secAnim;
+@property (nonatomic, strong) CAEmitterLayer *secEmitter;
+@property (nonatomic, strong) NSTimer *secTimer;
+@property (nonatomic, assign) NSInteger secFrameIndex;
+@property (nonatomic, assign) NSPoint secAvatarPoint;
+@property (nonatomic, assign) BOOL secAvatarValid;
+@property (nonatomic, assign) int attempts;
+@end
+
+static PatchgramOverlay *g_patchgram_overlay = nil;
+
+@implementation PatchgramOverlay
+
+- (void)loadState {
+    self.buttonFx = 0.5; self.buttonFy = 0.5;
+    self.rainFx = 0.37; self.rainFy = 0.05; self.rainFw = 0.30; self.rainFh = 0.90;
+    self.rainSizeMul = 1.0;
+    self.rainStyle = 0;
+    self.rainSpeed = 1.0;
+    self.rainOpacity = 1.0;
+    self.autoRegion = NO;
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:patchgram_overlay_state_path()];
+    if (d) {
+        patchgram_overlay_animation_on = [d[@"animation"] boolValue];
+        NSString *p = d[@"png"];
+        patchgram_overlay_png_path = (p.length > 0) ? p : nil;
+        if (d[@"buttonFx"]) self.buttonFx = [d[@"buttonFx"] doubleValue];
+        if (d[@"buttonFy"]) self.buttonFy = [d[@"buttonFy"] doubleValue];
+        if (d[@"rainFx"]) self.rainFx = [d[@"rainFx"] doubleValue];
+        if (d[@"rainFy"]) self.rainFy = [d[@"rainFy"] doubleValue];
+        if (d[@"rainFw"]) self.rainFw = [d[@"rainFw"] doubleValue];
+        if (d[@"rainFh"]) self.rainFh = [d[@"rainFh"] doubleValue];
+        if (d[@"rainSizeMul"]) self.rainSizeMul = [d[@"rainSizeMul"] doubleValue];
+        if (d[@"rainStyle"]) self.rainStyle = (int)[d[@"rainStyle"] integerValue];
+        if (d[@"rainSpeed"]) self.rainSpeed = [d[@"rainSpeed"] doubleValue];
+        if (d[@"rainOpacity"]) self.rainOpacity = [d[@"rainOpacity"] doubleValue];
+        if (d[@"autoRegion"]) self.autoRegion = [d[@"autoRegion"] boolValue];
+    }
+    if (self.rainOpacity < 0.1 || self.rainOpacity > 1.0) self.rainOpacity = 1.0;
+    if (self.rainSizeMul < 0.2 || self.rainSizeMul > 3.0) self.rainSizeMul = 1.0;
+    if (self.rainStyle < 0 || self.rainStyle > 3) self.rainStyle = 0;
+    if (self.rainSpeed < 0.25 || self.rainSpeed > 3.0) self.rainSpeed = 1.0;
+    patchgram_log("OVERLAY state loaded animation=%d png=%s btn=(%.2f,%.2f)",
+        (int)patchgram_overlay_animation_on,
+        patchgram_overlay_png_path ? patchgram_overlay_png_path.UTF8String : "(none)",
+        self.buttonFx, self.buttonFy);
+}
+
+- (void)saveState {
+    NSDictionary *d = @{ @"animation": @(patchgram_overlay_animation_on),
+                         @"png": (patchgram_overlay_png_path ?: @""),
+                         @"buttonFx": @(self.buttonFx), @"buttonFy": @(self.buttonFy),
+                         @"rainFx": @(self.rainFx), @"rainFy": @(self.rainFy),
+                         @"rainFw": @(self.rainFw), @"rainFh": @(self.rainFh),
+                         @"rainSizeMul": @(self.rainSizeMul), @"rainStyle": @(self.rainStyle),
+                         @"rainSpeed": @(self.rainSpeed), @"autoRegion": @(self.autoRegion),
+                         @"rainOpacity": @(self.rainOpacity) };
+    BOOL ok = [d writeToFile:patchgram_overlay_state_path() atomically:YES];
+    patchgram_log("OVERLAY state saved ok=%d", (int)ok);
+}
+
+- (NSWindow *)findHostWindow {
+    NSWindow *main = NSApp.mainWindow ?: NSApp.keyWindow;
+    if (main && main != self.buttonWindow && main != self.panelWindow && main != self.animWindow) return main;
+    NSWindow *largest = nil; CGFloat area = 0;
+    for (NSWindow *w in NSApp.windows) {
+        if (w == self.buttonWindow || w == self.panelWindow || w == self.animWindow || !w.isVisible) continue;
+        CGFloat a = w.frame.size.width * w.frame.size.height;
+        if (a > area) { area = a; largest = w; }
+    }
+    return largest;
+}
+
+- (NSTextField *)labelWithText:(NSString *)t frame:(NSRect)f {
+    NSTextField *l = [[NSTextField alloc] initWithFrame:f];
+    l.stringValue = t; l.editable = NO; l.bordered = NO; l.bezeled = NO;
+    l.drawsBackground = NO; l.textColor = [NSColor whiteColor];
+    l.font = [NSFont systemFontOfSize:14 weight:NSFontWeightMedium];
+    return l;
+}
+
+- (NSPanel *)makeChildPanel:(NSRect)rect ignoresMouse:(BOOL)ignore {
+    NSPanel *p = [[NSPanel alloc] initWithContentRect:rect
+        styleMask:(NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel)
+        backing:NSBackingStoreBuffered defer:NO];
+    p.opaque = NO; p.backgroundColor = [NSColor clearColor]; p.hasShadow = NO;
+    p.hidesOnDeactivate = NO; p.floatingPanel = YES; p.becomesKeyOnlyIfNeeded = YES;
+    p.ignoresMouseEvents = ignore;
+    return p;
+}
+
+- (void)buildAnim {
+    NSRect hf = self.host.frame;
+    self.animWindow = [self makeChildPanel:NSMakeRect(0, 0, hf.size.width, hf.size.height) ignoresMouse:YES];
+    self.animWindow.contentView.wantsLayer = YES;
+    [self.host addChildWindow:self.animWindow ordered:NSWindowAbove];
+    [self.animWindow orderOut:nil];
+}
+
+- (void)buildButton {
+    NSRect r = NSMakeRect(0, 0, 52, 52);
+    self.buttonWindow = [self makeChildPanel:r ignoresMouse:NO];
+    PatchgramLogoButton *b = [[PatchgramLogoButton alloc] initWithFrame:r];
+    b.overlay = self;
+    self.logoButton = b;
+    [self.buttonWindow.contentView addSubview:b];
+    [self.host addChildWindow:self.buttonWindow ordered:NSWindowAbove];
+    [self.buttonWindow orderFront:nil];
+}
+
+- (void)buildDim {
+    NSRect hf = self.host.frame;
+    self.dimWindow = [self makeChildPanel:NSMakeRect(0, 0, hf.size.width, hf.size.height) ignoresMouse:YES];
+    self.dimWindow.contentView.wantsLayer = YES;
+    self.dimWindow.contentView.layer.backgroundColor = [[NSColor colorWithWhite:0.0 alpha:0.5] CGColor];
+    [self.host addChildWindow:self.dimWindow ordered:NSWindowAbove];
+    [self.dimWindow orderOut:nil];
+}
+
+- (void)buildRegion {
+    NSRect hf = self.host.frame;
+    NSRect rf = NSMakeRect(0, 0, self.rainFw * hf.size.width, self.rainFh * hf.size.height);
+    self.regionWindow = [self makeChildPanel:rf ignoresMouse:NO];
+    self.regionWindow.contentView.autoresizesSubviews = YES;
+    PatchgramRegionView *v = [[PatchgramRegionView alloc] initWithFrame:NSMakeRect(0, 0, rf.size.width, rf.size.height)];
+    v.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;   // track the window live during resize/move
+    v.overlay = self;
+    self.regionView = v;
+    [self.regionWindow.contentView addSubview:v];
+    [self.host addChildWindow:self.regionWindow ordered:NSWindowAbove];
+    [self.regionWindow orderOut:nil];
+}
+
+- (void)regionDidChange {
+    NSRect hf = self.host.frame;
+    NSRect rf = self.regionWindow.frame;
+    if (hf.size.width <= 0 || hf.size.height <= 0) return;
+    self.rainFx = (rf.origin.x - hf.origin.x) / hf.size.width;
+    self.rainFy = (rf.origin.y - hf.origin.y) / hf.size.height;
+    self.rainFw = rf.size.width / hf.size.width;
+    self.rainFh = rf.size.height / hf.size.height;
+    [self saveState];
+    [self updateRain];
+}
+
+// Small centered menu window — controls live directly in its content view (this layout
+// receives clicks reliably; a full-host non-activating panel does not).
+- (void)buildPanel {
+    NSRect hf = self.host.frame;
+    NSRect r = NSMakeRect(hf.origin.x + (hf.size.width - 360) / 2.0, hf.origin.y + (hf.size.height - 420) / 2.0, 360, 420);
+    self.panelWindow = [self makeChildPanel:r ignoresMouse:NO];
+    self.panelWindow.movableByWindowBackground = YES;   // drag the menu by its background
+    NSView *content = self.panelWindow.contentView;
+    content.wantsLayer = YES;
+    content.layer.backgroundColor = [[NSColor colorWithWhite:0.16 alpha:0.92] CGColor]; // dark-gray, less transparent
+    content.layer.cornerRadius = 16;
+    content.layer.borderWidth = 1.0;
+    content.layer.borderColor = [[NSColor colorWithWhite:1.0 alpha:0.12] CGColor];
+
+    NSButton *close = [[NSButton alloc] initWithFrame:NSMakeRect(r.size.width - 36, r.size.height - 36, 28, 28)];
+    close.bezelStyle = NSBezelStyleCircular; close.bordered = NO; close.title = @"";
+    if (@available(macOS 11.0, *)) { close.image = [NSImage imageWithSystemSymbolName:@"xmark.circle.fill" accessibilityDescription:@"Close"]; close.contentTintColor = [NSColor whiteColor]; }
+    else close.title = @"x";
+    close.target = self; close.action = @selector(closeTapped:);
+    [content addSubview:close];
+
+    [content addSubview:[self labelWithText:@"Animation" frame:NSMakeRect(24, 358, 160, 22)]];
+    NSSwitch *sw = [[NSSwitch alloc] initWithFrame:NSMakeRect(r.size.width - 24 - 46, 354, 46, 28)];
+    sw.state = patchgram_overlay_animation_on ? NSControlStateValueOn : NSControlStateValueOff;
+    sw.target = self; sw.action = @selector(animToggled:);
+    self.animSwitch = sw;
+    [content addSubview:sw];
+
+    [content addSubview:[self labelWithText:@"Auto (follow profile)" frame:NSMakeRect(24, 314, 230, 22)]];
+    NSSwitch *au = [[NSSwitch alloc] initWithFrame:NSMakeRect(r.size.width - 24 - 46, 310, 46, 28)];
+    au.state = self.autoRegion ? NSControlStateValueOn : NSControlStateValueOff;
+    au.target = self; au.action = @selector(autoToggled:);
+    self.autoSwitch = au;
+    [content addSubview:au];
+
+    [content addSubview:[self labelWithText:@"Style" frame:NSMakeRect(24, 274, 50, 22)]];
+    NSSegmentedControl *seg = [[NSSegmentedControl alloc] initWithFrame:NSMakeRect(76, 270, 260, 26)];
+    seg.segmentCount = 4;
+    [seg setLabel:@"Rain" forSegment:0];
+    [seg setLabel:@"Snow" forSegment:1];
+    [seg setLabel:@"Float" forSegment:2];
+    [seg setLabel:@"Burst" forSegment:3];
+    [seg setSelectedSegment:(self.rainStyle >= 0 && self.rainStyle < 4) ? self.rainStyle : 0];
+    seg.target = self; seg.action = @selector(styleChanged:);
+    self.styleSeg = seg;
+    [content addSubview:seg];
+
+    [content addSubview:[self labelWithText:@"Select file" frame:NSMakeRect(24, 226, 110, 22)]];
+    NSButton *choose = [[NSButton alloc] initWithFrame:NSMakeRect(140, 222, 96, 28)];
+    choose.title = @"Choose…"; choose.bezelStyle = NSBezelStyleRounded;
+    choose.target = self; choose.action = @selector(selectPngTapped:);
+    [content addSubview:choose];
+
+    NSTextField *val = [self labelWithText:(patchgram_overlay_png_path.lastPathComponent ?: @"(none)") frame:NSMakeRect(24, 194, 312, 20)];
+    val.textColor = [NSColor secondaryLabelColor];
+    val.font = [NSFont systemFontOfSize:11];
+    self.pngValueLabel = val;
+    [content addSubview:val];
+
+    [content addSubview:[self labelWithText:@"Size" frame:NSMakeRect(24, 144, 60, 22)]];
+    NSSlider *sl = [[NSSlider alloc] initWithFrame:NSMakeRect(84, 146, 252, 20)];
+    sl.minValue = 0.2; sl.maxValue = 3.0; sl.doubleValue = self.rainSizeMul;
+    sl.continuous = YES; sl.target = self; sl.action = @selector(sizeChanged:);
+    self.sizeSlider = sl;
+    [content addSubview:sl];
+
+    [content addSubview:[self labelWithText:@"Speed" frame:NSMakeRect(24, 100, 60, 22)]];
+    NSSlider *sp = [[NSSlider alloc] initWithFrame:NSMakeRect(84, 102, 252, 20)];
+    sp.minValue = 0.25; sp.maxValue = 3.0; sp.doubleValue = self.rainSpeed;
+    sp.continuous = YES; sp.target = self; sp.action = @selector(speedChanged:);
+    self.speedSlider = sp;
+    [content addSubview:sp];
+
+    [content addSubview:[self labelWithText:@"Opacity" frame:NSMakeRect(24, 56, 60, 22)]];
+    NSSlider *op = [[NSSlider alloc] initWithFrame:NSMakeRect(84, 58, 252, 20)];
+    op.minValue = 0.1; op.maxValue = 1.0; op.doubleValue = self.rainOpacity;
+    op.continuous = YES; op.target = self; op.action = @selector(opacityChanged:);
+    self.opacitySlider = op;
+    [content addSubview:op];
+
+    [self.host addChildWindow:self.panelWindow ordered:NSWindowAbove];
+    [self.panelWindow orderOut:nil];
+}
+
+// Centered region (≈ a profile popup) the rain covers, scaled to the host resolution.
+- (NSRect)rainRegion {
+    NSRect hf = self.host.frame;
+    return NSMakeRect(self.rainFx * hf.size.width, self.rainFy * hf.size.height,
+                      self.rainFw * hf.size.width, self.rainFh * hf.size.height);
+}
+
+- (void)reposition {
+    NSWindow *host = self.host;
+    if (!host) return;
+    NSRect hf = host.frame;
+    NSRect bf = self.buttonWindow.frame;
+    CGFloat bx = hf.origin.x + self.buttonFx * hf.size.width - bf.size.width / 2.0;
+    CGFloat by = hf.origin.y + self.buttonFy * hf.size.height - bf.size.height / 2.0;
+    [self.buttonWindow setFrameOrigin:NSMakePoint(bx, by)];
+    [self.dimWindow setFrame:hf display:YES];
+    NSRect rr = NSMakeRect(hf.origin.x + self.rainFx * hf.size.width, hf.origin.y + self.rainFy * hf.size.height,
+                           self.rainFw * hf.size.width, self.rainFh * hf.size.height);
+    [self.regionWindow setFrame:rr display:YES];
+    self.regionView.frame = NSMakeRect(0, 0, rr.size.width, rr.size.height);
+    [self.animWindow setFrame:hf display:YES];
+    [self updateRain];
+}
+
+- (void)buttonDidMove {
+    NSRect hf = self.host.frame;
+    NSRect bf = self.buttonWindow.frame;
+    if (hf.size.width > 0 && hf.size.height > 0) {
+        self.buttonFx = (bf.origin.x + bf.size.width / 2.0 - hf.origin.x) / hf.size.width;
+        self.buttonFy = (bf.origin.y + bf.size.height / 2.0 - hf.origin.y) / hf.size.height;
+        [self saveState];
+        patchgram_log("OVERLAY button moved -> (%.2f,%.2f)", self.buttonFx, self.buttonFy);
+    }
+}
+
+- (void)attemptSetup {
+    if (self.buttonWindow) return;
+    NSWindow *host = [self findHostWindow];
+    if (!host) {
+        self.attempts++;
+        if (self.attempts > 120) { patchgram_log("OVERLAY giving up: no host window after %d tries", self.attempts); return; }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self attemptSetup]; });
+        return;
+    }
+    self.host = host;
+    patchgram_log("OVERLAY host found frame=%.0fx%.0f after %d tries", host.frame.size.width, host.frame.size.height, self.attempts);
+    @try {
+        [self buildAnim];
+        [self buildDim];
+        [self buildRegion];
+        [self buildPanel];
+        [self buildButton];     // button last → frontmost child
+        [self reposition];
+        if (patchgram_overlay_animation_on) [self startRain];
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+        [nc addObserver:self selector:@selector(reposition) name:NSWindowDidResizeNotification object:host];
+        [nc addObserver:self selector:@selector(reposition) name:NSWindowDidMoveNotification object:host];
+        [self installProbeHotkey];
+        [self startAutoTimer];   // always on: drives auto-follow AND secondary-window mirroring
+        patchgram_log("OVERLAY ready (profile probe: focus Telegram + open a profile + press Ctrl+Alt+D)");
+    } @catch (NSException *e) {
+        patchgram_log("OVERLAY build EXCEPTION: %s", e.reason.UTF8String ?: "(nil)");
+    }
+}
+
+- (void)start { [self loadState]; [self attemptSetup]; }
+
+- (void)openTapped:(id)sender {
+    BOOL show = !self.menuOpen;
+    self.menuOpen = show;
+    if (show) {
+        [self reposition];
+        // Re-add as children (orderOut detaches child windows; addChildWindow re-parents
+        // them above the host and makes them visible, in dim<panel<button order).
+        [self.host addChildWindow:self.dimWindow ordered:NSWindowAbove];
+        if (!self.autoRegion) [self.host addChildWindow:self.regionWindow ordered:NSWindowAbove];
+        [self.host addChildWindow:self.panelWindow ordered:NSWindowAbove];
+        [self.host addChildWindow:self.buttonWindow ordered:NSWindowAbove];
+    } else {
+        [self.panelWindow orderOut:nil];
+        [self.regionWindow orderOut:nil];
+        [self.dimWindow orderOut:nil];
+    }
+    patchgram_log("OVERLAY panel %s dimVis=%d panelVis=%d panelOrigin=(%.0f,%.0f) size=%.0fx%.0f host=(%.0f,%.0f) lvl=%ld",
+        show ? "shown" : "hidden",
+        (int)self.dimWindow.isVisible, (int)self.panelWindow.isVisible,
+        self.panelWindow.frame.origin.x, self.panelWindow.frame.origin.y,
+        self.panelWindow.frame.size.width, self.panelWindow.frame.size.height,
+        self.host.frame.origin.x, self.host.frame.origin.y, (long)self.panelWindow.level);
+}
+
+- (void)closeTapped:(id)sender {
+    self.menuOpen = NO;
+    [self.panelWindow orderOut:nil];
+    [self.regionWindow orderOut:nil];
+    [self.dimWindow orderOut:nil];
+    patchgram_log("OVERLAY close -> panel hidden (open button stays)");
+}
+
+- (void)animToggled:(id)sender {
+    patchgram_overlay_animation_on = (self.animSwitch.state == NSControlStateValueOn);
+    [self saveState];
+    if (patchgram_overlay_animation_on) {
+        if (self.autoRegion) [self autoTick:nil];   // let detection place + start it
+        else [self startRain];
+    } else {
+        [self stopRain];
+        [self teardownSecondary];
+    }
+    patchgram_log("OVERLAY animation toggled -> %d", (int)patchgram_overlay_animation_on);
+}
+
+// Builds a configured emitter for a region (shared by the primary and every secondary window).
+- (CAEmitterLayer *)makeEmitterForRegion:(NSRect)region cg:(CGImageRef)cg scale:(CGFloat)scale avatar:(CGPoint)avatar valid:(BOOL)avValid {
+    CAEmitterLayer *em = [CAEmitterLayer layer];
+    em.frame = region;
+    em.masksToBounds = YES;
+    em.speed = self.rainSpeed;       // scales particle motion + birth rate (Speed slider)
+    em.opacity = self.rainOpacity;   // particle transparency (Opacity slider)
+    CGFloat W = region.size.width, H = region.size.height;
+    CAEmitterCell *cell = [CAEmitterCell emitterCell];
+    cell.name = @"rain";   // named → live size updates via setValue:forKeyPath:@"emitterCells.rain.scale"
+    cell.contents = (__bridge id)cg;
+    CGFloat csize = scale * self.rainSizeMul;
+    cell.scale = csize; cell.scaleRange = csize * 0.4;
+    cell.alphaRange = 0.3;
+    switch (self.rainStyle) {
+        // NOTE: emission velocity here points HORIZONTALLY in this layer (emissionLongitude is
+        // effectively rotated), so vertical motion is driven by yAcceleration — a Cartesian axis,
+        // immune to that rotation. Layer is y-UP (proven by the logo's -s y-flip), so yAccel<0 = DOWN.
+        case 1: // Snow — drifts straight down: gentle gravity + isotropic jitter
+            em.emitterShape = kCAEmitterLayerLine;
+            em.emitterPosition = CGPointMake(W / 2.0, H);   // top
+            em.emitterSize = CGSizeMake(W, 1);
+            cell.birthRate = 6.0; cell.lifetime = 14.0;
+            cell.velocity = 16.0; cell.velocityRange = 8.0;
+            cell.emissionRange = 2.0 * M_PI;     // jitter in all dirs; gravity sets the net fall
+            cell.yAcceleration = -45.0;          // DOWN
+            cell.spin = 0.3; cell.spinRange = 0.9;
+            break;
+        case 2: // Float up — rises by upward gravity
+            em.emitterShape = kCAEmitterLayerLine;
+            em.emitterPosition = CGPointMake(W / 2.0, 0);   // bottom
+            em.emitterSize = CGSizeMake(W, 1);
+            cell.birthRate = 6.0; cell.lifetime = 11.0;
+            cell.velocity = 0.0; cell.velocityRange = 6.0;
+            cell.emissionRange = 2.0 * M_PI;
+            cell.yAcceleration = 90.0;           // UP
+            cell.spin = 0.4; cell.spinRange = 1.0;
+            break;
+        case 3: // Burst — radial fountain (rotation-agnostic) from the avatar (auto) or region centre
+            em.emitterShape = kCAEmitterLayerPoint;
+            em.emitterPosition = [self burstPositionInRegion:region avatar:avatar valid:avValid];
+            em.emitterSize = CGSizeMake(0, 0);
+            cell.birthRate = 18.0; cell.lifetime = 5.0;
+            cell.velocity = 120.0; cell.velocityRange = 70.0;
+            cell.emissionRange = 2.0 * M_PI;
+            cell.yAcceleration = -34.0;
+            cell.spin = 1.0; cell.spinRange = 2.0;
+            cell.alphaSpeed = -0.2;
+            break;
+        default: // 0: Rain — straight vertical fall, driven purely by downward gravity (no horizontal)
+            em.emitterShape = kCAEmitterLayerLine;
+            em.emitterPosition = CGPointMake(W / 2.0, H);   // top
+            em.emitterSize = CGSizeMake(W, 1);
+            cell.birthRate = 9.0; cell.lifetime = 7.0;
+            cell.velocity = 0.0; cell.velocityRange = 0.0;
+            cell.emissionRange = 0.0;
+            cell.yAcceleration = -380.0;         // strong DOWN → fast straight rain
+            cell.spin = 0.0; cell.spinRange = 0.0;
+            break;
+    }
+    em.emitterCells = @[cell];
+    return em;
+}
+
+- (CAEmitterLayer *)buildEmitterInClip:(CALayer *)clip region:(NSRect)region cg:(CGImageRef)cg scale:(CGFloat)scale avatar:(CGPoint)avatar valid:(BOOL)avValid {
+    CAEmitterLayer *em = [self makeEmitterForRegion:region cg:cg scale:scale avatar:avatar valid:avValid];
+    [clip addSublayer:em];
+    return em;
+}
+
+// Re-assert the menu/button z-order on the primary host (after a rain window is re-added on top).
+- (void)restackChrome {
+    if (self.menuOpen) {
+        [self.host addChildWindow:self.dimWindow ordered:NSWindowAbove];
+        if (!self.autoRegion) [self.host addChildWindow:self.regionWindow ordered:NSWindowAbove];
+        [self.host addChildWindow:self.panelWindow ordered:NSWindowAbove];
+    }
+    [self.host addChildWindow:self.buttonWindow ordered:NSWindowAbove];
+}
+
+- (void)dropPrimaryEmitters {
+    [self.emitter removeFromSuperlayer]; self.emitter = nil;
+    [self.cardEmitter removeFromSuperlayer]; self.cardEmitter = nil;
+}
+
+- (void)startRain {
+    if (!patchgram_overlay_png_path.length) { patchgram_log("OVERLAY rain: no file selected"); return; }
+    [self stopRain];
+    CGImageRef cg = [self loadParticleFirstFrame];
+    if (!cg) { patchgram_log("OVERLAY rain: failed to load %s", patchgram_overlay_png_path.UTF8String); return; }
+    NSRect region = [self rainRegion];
+    CGFloat scale = MAX(0.15, self.host.frame.size.width / 1600.0);
+    CALayer *clip = self.animWindow.contentView.layer;
+    clip.masksToBounds = NO;
+    CAEmitterLayer *em = [self makeEmitterForRegion:region cg:cg scale:scale avatar:self.autoAvatarPoint valid:self.autoAvatarValid];
+    [clip addSublayer:em];
+    self.emitter = em;
+    // Show the rain window above the host (orderFront alone won't re-show a detached child);
+    // keep the menu (if open) and the button above the rain.
+    [self.host addChildWindow:self.animWindow ordered:NSWindowAbove];
+    [self restackChrome];
+    if (self.rainFrames.count > 1) [self startFrameTimer];
+    patchgram_log("OVERLAY rain started region=%.0fx%.0f scale=%.2f frames=%lu animVis=%d", region.size.width, region.size.height, scale, (unsigned long)self.rainFrames.count, (int)self.animWindow.isVisible);
+}
+
+// Loads the chosen file's first particle image. .tgs (if rlottie is linked) renders to frames in
+// self.rainFrames (animated); png/anything-else is a single static NSImage. Returns NULL on failure.
+- (CGImageRef)loadParticleFirstFrame {
+    NSString *p = patchgram_overlay_png_path;
+    if (!p.length) return NULL;
+    // Reuse already-decoded frames/image when the file is unchanged — auto mode restarts the rain
+    // on every profile open/close, and re-decoding a .tgs each time would hitch the main thread.
+    if ([p isEqualToString:self.lastParticlePath]) {
+        if (self.rainFrames.count) return (__bridge CGImageRef)self.rainFrames.firstObject;
+        if (self.rainImage) return [self.rainImage CGImageForProposedRect:NULL context:nil hints:nil];
+    }
+    self.rainFrames = nil;
+    self.rainImage = nil;
+    self.lastParticlePath = p;
+#if PATCHGRAM_HAVE_RLOTTIE
+    if ([p.pathExtension.lowercaseString isEqualToString:@"tgs"]) {
+        double fps = 30.0;
+        self.rainFrames = patchgram_render_tgs(p, 200, &fps);
+        self.rainFps = fps;
+        return self.rainFrames.count ? (__bridge CGImageRef)self.rainFrames.firstObject : NULL;
+    }
+#endif
+    self.rainImage = [[NSImage alloc] initWithContentsOfFile:p];
+    return [self.rainImage CGImageForProposedRect:NULL context:nil hints:nil];
+}
+
+- (void)startFrameTimer {
+    [self stopFrameTimer];
+    self.frameIndex = 0;
+    double fps = self.rainFps > 0 ? self.rainFps : 30.0;
+    NSTimeInterval interval = 1.0 / (MIN(fps, 40.0) * MAX(0.1, self.rainSpeed));  // Speed slider scales .tgs playback
+    self.frameTimer = [NSTimer scheduledTimerWithTimeInterval:interval target:self
+                                                     selector:@selector(frameTick:) userInfo:nil repeats:YES];
+}
+
+- (void)stopFrameTimer {
+    [self.frameTimer invalidate];
+    self.frameTimer = nil;
+}
+
+- (void)frameTick:(NSTimer *)t {
+    NSArray *frames = self.rainFrames;
+    if (frames.count < 2) return;
+    self.frameIndex = (self.frameIndex + 1) % (NSInteger)frames.count;
+    id img = frames[self.frameIndex];
+    if (self.emitter) [self.emitter setValue:img forKeyPath:@"emitterCells.rain.contents"];
+    if (self.cardEmitter) [self.cardEmitter setValue:img forKeyPath:@"emitterCells.rain.contents"];
+}
+
+- (void)stopRain {
+    [self stopFrameTimer];
+    [self.emitter removeFromSuperlayer]; self.emitter = nil;
+    [self.cardEmitter removeFromSuperlayer]; self.cardEmitter = nil;
+    [self.animWindow orderOut:nil];
+}
+
+- (void)updateRain {
+    if (!self.emitter) return;
+    [self updateEmitter:self.emitter region:[self rainRegion] avatar:self.autoAvatarPoint valid:self.autoAvatarValid];
+}
+
+- (void)updateEmitter:(CAEmitterLayer *)em region:(NSRect)region avatar:(CGPoint)avatar valid:(BOOL)avValid {
+    CGFloat W = region.size.width, H = region.size.height;
+    em.frame = region;
+    switch (self.rainStyle) {
+        case 2: em.emitterPosition = CGPointMake(W / 2.0, 0); em.emitterSize = CGSizeMake(W, 1); break;   // float — bottom
+        case 3: em.emitterPosition = [self burstPositionInRegion:region avatar:avatar valid:avValid]; em.emitterSize = CGSizeMake(0, 0); break;
+        default: em.emitterPosition = CGPointMake(W / 2.0, H); em.emitterSize = CGSizeMake(W, 1); break;  // rain/snow — top
+    }
+}
+
+- (void)selectPngTapped:(id)sender {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES; panel.canChooseDirectories = NO; panel.allowsMultipleSelection = NO;
+#if PATCHGRAM_HAVE_RLOTTIE
+    panel.allowedFileTypes = @[@"png", @"tgs"];   // .tgs = animated Lottie sticker
+#else
+    panel.allowedFileTypes = @[@"png"];
+#endif
+    NSModalResponse resp = [panel runModal];
+    if (resp == NSModalResponseOK && panel.URLs.firstObject) {
+        patchgram_overlay_png_path = panel.URLs.firstObject.path;
+        self.pngValueLabel.stringValue = (patchgram_overlay_png_path.lastPathComponent ?: @"");
+        [self saveState];
+        // Defer to the next runloop pass so the rain re-stacks AFTER the modal panel
+        // fully tears down — otherwise AppKit's post-modal reorder can leave it over the menu.
+        if (self.autoRegion) [self dropPrimaryEmitters];   // auto: next tick rebuilds with the new file
+        else if (patchgram_overlay_animation_on) dispatch_async(dispatch_get_main_queue(), ^{ [self startRain]; });
+        [self stopSecondaryEmitter];   // secondary rebuilds with the new file on the next tick
+        patchgram_log("OVERLAY png selected: %s", patchgram_overlay_png_path.UTF8String);
+    } else {
+        patchgram_log("OVERLAY png selection cancelled resp=%ld", (long)resp);
+    }
+}
+
+- (void)styleChanged:(id)sender {
+    self.rainStyle = (int)self.styleSeg.selectedSegment;
+    [self saveState];
+    if (self.autoRegion) [self dropPrimaryEmitters];           // auto: next tick rebuilds both regions
+    else if (patchgram_overlay_animation_on) [self startRain]; // manual: single emitter
+    [self stopSecondaryEmitter];   // secondary rebuilds with the new style on the next tick
+    patchgram_log("OVERLAY style -> %d", self.rainStyle);
+}
+
+- (void)speedChanged:(id)sender {
+    self.rainSpeed = self.speedSlider.doubleValue;
+    [self saveState];
+    if (self.emitter) self.emitter.speed = self.rainSpeed;        // live: particle motion
+    if (self.cardEmitter) self.cardEmitter.speed = self.rainSpeed;
+    if (self.rainFrames.count > 1) [self startFrameTimer];        // live: .tgs frame cadence
+    [self stopSecondaryEmitter];   // secondary rebuilds at the new speed on the next tick
+    patchgram_log("OVERLAY speed -> %.2f", self.rainSpeed);
+}
+
+- (void)opacityChanged:(id)sender {
+    self.rainOpacity = self.opacitySlider.doubleValue;
+    [self saveState];
+    if (self.emitter) self.emitter.opacity = self.rainOpacity;   // live
+    if (self.cardEmitter) self.cardEmitter.opacity = self.rainOpacity;
+    if (self.secEmitter) self.secEmitter.opacity = self.rainOpacity;
+    patchgram_log("OVERLAY opacity -> %.2f", self.rainOpacity);
+}
+
+- (void)sizeChanged:(id)sender {
+    self.rainSizeMul = self.sizeSlider.doubleValue;
+    [self saveState];
+    CGFloat csize = MAX(0.15, self.host.frame.size.width / 1600.0) * self.rainSizeMul;
+    if (self.emitter) { [self.emitter setValue:@(csize) forKeyPath:@"emitterCells.rain.scale"]; [self.emitter setValue:@(csize * 0.4) forKeyPath:@"emitterCells.rain.scaleRange"]; }
+    if (self.cardEmitter) { [self.cardEmitter setValue:@(csize) forKeyPath:@"emitterCells.rain.scale"]; [self.cardEmitter setValue:@(csize * 0.4) forKeyPath:@"emitterCells.rain.scaleRange"]; }
+    [self stopSecondaryEmitter];   // secondary rebuilds at the new size on the next tick
+    patchgram_log("OVERLAY size -> %.2f", self.rainSizeMul);
+}
+
+// ---- Profile-detection probe (Stage 1: data gathering) -------------------------------------
+// Telegram is Qt drawing into one NSView, so a profile popup may not exist as a distinct AppKit
+// object. This dumps the window/view/layer hierarchy (with frames) so we can SEE whether an open
+// profile surfaces anything we could auto-position the rain over. Trigger: focus Telegram, open a
+// profile, press Ctrl+Alt+D. Look for a window/view/layer whose frame matches the profile area.
+- (BOOL)isOwnWindow:(NSWindow *)w {
+    return w == self.buttonWindow || w == self.panelWindow || w == self.animWindow
+        || w == self.dimWindow || w == self.regionWindow;
+}
+
+- (void)dumpLayer:(CALayer *)l depth:(int)d {
+    if (!l || d > 10 || self.probeNodes > 600) return;
+    self.probeNodes++;
+    CGRect f = l.frame;
+    patchgram_log("PROBE %*slayer %s frame=(%.0f,%.0f %.0fx%.0f) contents=%d opaque=%d subs=%lu",
+        d * 2, "", l.className.UTF8String, f.origin.x, f.origin.y, f.size.width, f.size.height,
+        (int)(l.contents != nil), (int)l.opaque, (unsigned long)l.sublayers.count);
+    for (CALayer *s in l.sublayers) [self dumpLayer:s depth:d + 1];
+}
+
+- (void)dumpView:(NSView *)v depth:(int)d {
+    if (!v || d > 8 || self.probeNodes > 600) return;
+    self.probeNodes++;
+    NSRect f = v.frame;
+    patchgram_log("PROBE %*sview %s frame=(%.0f,%.0f %.0fx%.0f) hidden=%d layer=%s subs=%lu",
+        d * 2, "", v.className.UTF8String, f.origin.x, f.origin.y, f.size.width, f.size.height,
+        (int)v.isHidden, v.layer ? v.layer.className.UTF8String : "(nil)",
+        (unsigned long)v.subviews.count);
+    for (NSView *s in v.subviews) [self dumpView:s depth:d + 1];
+}
+
+// Walk the NSAccessibility tree (Qt bridges QAccessible → NSAccessibility). If populated, an open
+// profile is a subtree here with a real (screen-coords) frame — the one structured handle left now
+// that everything renders into a single Metal layer.
+- (void)dumpAX:(id)el depth:(int)d {
+    if (!el || d > 12 || self.probeNodes > 1200) return;
+    self.probeNodes++;
+    NSString *role = ([el respondsToSelector:@selector(accessibilityRole)] ? [el accessibilityRole] : nil) ?: @"";
+    NSString *label = ([el respondsToSelector:@selector(accessibilityLabel)] ? [el accessibilityLabel] : nil) ?: @"";
+    NSRect fr = [el respondsToSelector:@selector(accessibilityFrame)] ? [el accessibilityFrame] : NSZeroRect;
+    NSArray *kids = [el respondsToSelector:@selector(accessibilityChildren)] ? [el accessibilityChildren] : nil;
+    patchgram_log("PROBE %*sax %s role=%s frame=(%.0f,%.0f %.0fx%.0f) kids=%lu label=\"%.40s\"",
+        d * 2, "", NSStringFromClass([el class]).UTF8String, role.UTF8String,
+        fr.origin.x, fr.origin.y, fr.size.width, fr.size.height,
+        (unsigned long)kids.count, label.UTF8String);
+    // Show ALL root children (the profile column is one of them), but cap deeper nodes so a huge
+    // list (e.g. the 689-cell chat list) can't exhaust the budget before later siblings are seen.
+    NSUInteger cap = (d == 0) ? kids.count : MIN(kids.count, (NSUInteger)8);
+    for (NSUInteger k = 0; k < cap; k++) [self dumpAX:kids[k] depth:d + 1];
+    if (kids.count > cap)
+        patchgram_log("PROBE %*s  …(+%lu more)", d * 2, "", (unsigned long)(kids.count - cap));
+}
+
+// Detect the profile "third column" from the AX tree. The conversation message list is the
+// right-most AXList still left of centre (the leftmost AXList is the chat/dialog list); its right
+// edge is the profile boundary. When the info pane is open, ≥3 root children sit to its right.
+// Returns the pane rect in HOST-LOCAL coords (origin bottom-left), the same space as -rainRegion.
+// Largest near-square AXButton whose centre-x is in [minX,maxX] and in the upper part of the window
+// → the profile avatar (host-local centre). Used as the burst emission origin in auto mode.
+- (void)findAvatarIn:(NSArray *)kids minCX:(CGFloat)minX maxCX:(CGFloat)maxX win:(NSRect)win out:(CGPoint *)avatarOut valid:(BOOL *)validOut {
+    if (!avatarOut) return;
+    CGFloat bestArea = 0, midY = win.origin.y + win.size.height * 0.30;
+    for (id k in kids) {
+        NSString *role = [k respondsToSelector:@selector(accessibilityRole)] ? [k accessibilityRole] : nil;
+        if (![role isEqualToString:@"AXButton"]) continue;
+        NSRect f = [k accessibilityFrame];
+        CGFloat cx = f.origin.x + f.size.width / 2.0;
+        if (f.size.width <= 0 || cx < minX || cx > maxX) continue;
+        CGFloat ar = f.size.height / f.size.width, area = f.size.width * f.size.height;
+        if (ar > 0.8 && ar < 1.25 && f.size.width >= 40 && f.size.width <= 160
+            && (f.origin.y + f.size.height / 2.0) > midY && area > bestArea) {
+            bestArea = area;
+            *avatarOut = CGPointMake(cx - win.origin.x, f.origin.y + f.size.height / 2.0 - win.origin.y);
+            if (validOut) *validOut = YES;
+        }
+    }
+}
+
+// (A) Right third-column profile (chat/channel info): a narrow cluster at the window's right edge.
+- (BOOL)detectRightColumnForHost:(NSWindow *)host out:(NSRect *)out avatar:(CGPoint *)avatarOut avatarValid:(BOOL *)avatarValidOut {
+    if (avatarValidOut) *avatarValidOut = NO;
+    NSView *cv = host.contentView;
+    if (![cv respondsToSelector:@selector(accessibilityChildren)]) return NO;
+    NSArray *kids = [cv accessibilityChildren];
+    if (!kids.count) return NO;
+    NSRect win = host.frame;
+    CGFloat wx0 = win.origin.x;
+    CGFloat winRight = wx0 + win.size.width;
+    CGFloat center = wx0 + win.size.width / 2.0;
+    BOOL haveConv = NO; CGFloat convRight = 0;
+    for (id k in kids) {
+        NSString *role = [k respondsToSelector:@selector(accessibilityRole)] ? [k accessibilityRole] : nil;
+        if (![role isEqualToString:@"AXList"]) continue;
+        NSRect f = [k accessibilityFrame];
+        CGFloat right = f.origin.x + f.size.width;
+        if (f.origin.x < center && (!haveConv || right > convRight)) { convRight = right; haveConv = YES; }
+    }
+    if (!haveConv) return NO;
+    int rightCount = 0;
+    for (id k in kids) {
+        NSRect f = [k respondsToSelector:@selector(accessibilityFrame)] ? [k accessibilityFrame] : NSZeroRect;
+        if (f.size.width > 0 && f.origin.x >= convRight - 6 && f.origin.x < winRight) rightCount++;
+    }
+    // A real info column is NARROW (~0.28 of the window); a wide gap means we mistook another list
+    // (e.g. a centred card's own list) for the conversation → not a right column.
+    if (rightCount >= 3 && (winRight - convRight) >= 150 && (winRight - convRight) <= win.size.width * 0.45) {
+        CGFloat lx = convRight - wx0; if (lx < 0) lx = 0;
+        *out = NSMakeRect(lx, 0, win.size.width - lx, win.size.height);
+        [self findAvatarIn:kids minCX:convRight - 6 maxCX:winRight win:win out:avatarOut valid:avatarValidOut];
+        return YES;
+    }
+    return NO;
+}
+
+// (B) Centred profile card (member/user card): anchored on a LARGE near-square avatar near the
+// window centre, then the cluster of rows in a band around it. Independent of the right column.
+- (BOOL)detectCardForHost:(NSWindow *)host out:(NSRect *)out avatar:(CGPoint *)avatarOut avatarValid:(BOOL *)avatarValidOut {
+    if (avatarValidOut) *avatarValidOut = NO;
+    NSView *cv = host.contentView;
+    if (![cv respondsToSelector:@selector(accessibilityChildren)]) return NO;
+    NSArray *kids = [cv accessibilityChildren];
+    if (!kids.count) return NO;
+    NSRect win = host.frame;
+    CGFloat wx0 = win.origin.x, wy0 = win.origin.y;
+    CGFloat winRight = wx0 + win.size.width, winTop = wy0 + win.size.height;
+    CGFloat winCx = wx0 + win.size.width / 2.0;
+    CGFloat bestArea = 0, acx = 0, acy = 0; BOOL haveAv = NO;
+    for (id k in kids) {
+        NSString *role = [k respondsToSelector:@selector(accessibilityRole)] ? [k accessibilityRole] : nil;
+        if (![role isEqualToString:@"AXButton"]) continue;
+        NSRect f = [k accessibilityFrame];
+        if (f.size.width <= 0) continue;
+        CGFloat cx = f.origin.x + f.size.width / 2.0, ar = f.size.height / f.size.width;
+        if (ar > 0.8 && ar < 1.25 && f.size.width >= 56 && f.size.width <= 170
+            && fabs(cx - winCx) < win.size.width * 0.22 && f.size.width * f.size.height > bestArea) {
+            bestArea = f.size.width * f.size.height; acx = cx; acy = f.origin.y + f.size.height / 2.0; haveAv = YES;
+        }
+    }
+    if (!haveAv) return NO;
+    CGFloat band = win.size.width * 0.20;
+    int cnt = 0; CGFloat minX = 1e18, minY = 1e18, maxX = -1e18, maxY = -1e18;
+    for (id k in kids) {
+        NSString *role = [k respondsToSelector:@selector(accessibilityRole)] ? [k accessibilityRole] : nil;
+        if ([role isEqualToString:@"AXList"]) continue;
+        NSRect f = [k accessibilityFrame];
+        if (f.size.width <= 0 || fabs(f.origin.x + f.size.width / 2.0 - acx) > band) continue;
+        cnt++;
+        if (f.origin.x < minX) minX = f.origin.x;
+        if (f.origin.y < minY) minY = f.origin.y;
+        if (f.origin.x + f.size.width > maxX) maxX = f.origin.x + f.size.width;
+        if (f.origin.y + f.size.height > maxY) maxY = f.origin.y + f.size.height;
+    }
+    if (cnt < 8) return NO;
+    if (minY < wy0) minY = wy0;   if (maxY > winTop) maxY = winTop;
+    CGFloat half = MIN(acx - minX, maxX - acx);
+    if (half < 100) half = MAX(acx - minX, maxX - acx);
+    CGFloat L = acx - half, R = acx + half, ph = maxY - minY;
+    if (L < wx0) L = wx0;   if (R > winRight) R = winRight;
+    CGFloat pw = R - L;
+    if (pw >= 220 && ph >= 200) {
+        *out = NSMakeRect(L - wx0, minY - wy0, pw, ph);
+        if (avatarOut) { *avatarOut = CGPointMake(acx - wx0, acy - wy0); if (avatarValidOut) *avatarValidOut = YES; }
+        return YES;
+    }
+    return NO;
+}
+
+// Single-region wrapper (right column preferred, else the centred card) — used by the probe and the
+// secondary window. The PRIMARY window paints both at once (see autoTick).
+- (BOOL)detectProfilePaneRect:(NSRect *)out avatar:(CGPoint *)avatarOut avatarValid:(BOOL *)avatarValidOut forHost:(NSWindow *)host {
+    if ([self detectRightColumnForHost:host out:out avatar:avatarOut avatarValid:avatarValidOut]) return YES;
+    return [self detectCardForHost:host out:out avatar:avatarOut avatarValid:avatarValidOut];
+}
+
+// burst emission point (emitter-local): the profile avatar in auto mode, else the region centre.
+- (CGPoint)burstPositionInRegion:(NSRect)region avatar:(CGPoint)avatar valid:(BOOL)valid {
+    if (self.autoRegion && valid) {
+        return CGPointMake(avatar.x - region.origin.x, avatar.y - region.origin.y);
+    }
+    return CGPointMake(region.size.width / 2.0, region.size.height / 2.0);
+}
+
+- (void)startAutoTimer {
+    [self stopAutoTimer];
+    // Fast enough to react to in-window layout changes (e.g. collapsing the chat-list/side column,
+    // which shifts the profile boundary without a window resize notification).
+    self.autoTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self
+                                                    selector:@selector(autoTick:) userInfo:nil repeats:YES];
+}
+- (void)stopAutoTimer { [self.autoTimer invalidate]; self.autoTimer = nil; }
+
+// Auto mode: snap the rain region to the detected profile pane; rain shows only while one is open.
+- (void)autoTick:(NSTimer *)t {
+    // Primary host (auto mode): paint BOTH a right info-column AND a centred profile card if present.
+    if (self.autoRegion && patchgram_overlay_animation_on && patchgram_overlay_png_path.length) {
+        CGImageRef cg = [self loadParticleFirstFrame];
+        if (cg) {
+            CALayer *clip = self.animWindow.contentView.layer; clip.masksToBounds = NO;
+            CGFloat scale = MAX(0.15, self.host.frame.size.width / 1600.0);
+            BOOL changed = NO;
+            NSRect r; CGPoint av = CGPointZero; BOOL avv = NO;
+            if ([self detectRightColumnForHost:self.host out:&r avatar:&av avatarValid:&avv]) {
+                if (!self.emitter) { self.emitter = [self buildEmitterInClip:clip region:r cg:cg scale:scale avatar:av valid:avv]; changed = YES; }
+                else [self updateEmitter:self.emitter region:r avatar:av valid:avv];
+            } else if (self.emitter) { [self.emitter removeFromSuperlayer]; self.emitter = nil; changed = YES; }
+            NSRect cr; CGPoint cav = CGPointZero; BOOL cavv = NO;
+            if ([self detectCardForHost:self.host out:&cr avatar:&cav avatarValid:&cavv]) {
+                if (!self.cardEmitter) { self.cardEmitter = [self buildEmitterInClip:clip region:cr cg:cg scale:scale avatar:cav valid:cavv]; changed = YES; }
+                else [self updateEmitter:self.cardEmitter region:cr avatar:cav valid:cavv];
+            } else if (self.cardEmitter) { [self.cardEmitter removeFromSuperlayer]; self.cardEmitter = nil; changed = YES; }
+            if (self.emitter || self.cardEmitter) {
+                // Only re-add (which re-orders child windows) when an emitter appeared/vanished —
+                // doing it every tick would flicker the menu/button z-order.
+                if (changed || !self.animWindow.isVisible) {
+                    [self.host addChildWindow:self.animWindow ordered:NSWindowAbove];
+                    [self restackChrome];
+                }
+                if (self.rainFrames.count > 1 && !self.frameTimer) [self startFrameTimer];
+            } else {
+                [self.animWindow orderOut:nil]; [self stopFrameTimer];
+            }
+        }
+    }
+    // Secondary Telegram windows (media viewer / popped-out chat): mirror the rain there too.
+    [self syncSecondary];
+}
+
+// Largest visible Telegram (Qt) window that isn't the primary host or one of our own panels.
+- (NSWindow *)secondTelegramWindowExcluding:(NSWindow *)primary {
+    NSWindow *best = nil; CGFloat area = 0;
+    for (NSWindow *w in NSApp.windows) {
+        if (w == primary || !w.isVisible) continue;
+        if (w == self.buttonWindow || w == self.panelWindow || w == self.dimWindow
+            || w == self.regionWindow || w == self.animWindow || w == self.secAnim) continue;
+        if (![w.className hasPrefix:@"QNSWindow"]) continue;   // Telegram's Qt windows
+        if (w.frame.size.width < 320 || w.frame.size.height < 260) continue;
+        CGFloat a = w.frame.size.width * w.frame.size.height;
+        if (a > area) { area = a; best = w; }
+    }
+    return best;
+}
+
+- (void)stopSecondaryEmitter {
+    [self.secEmitter removeFromSuperlayer]; self.secEmitter = nil;
+    [self.secTimer invalidate]; self.secTimer = nil;
+}
+
+- (void)teardownSecondary {
+    [self stopSecondaryEmitter];
+    [self.secAnim orderOut:nil]; self.secAnim = nil; self.secHost = nil;
+}
+
+- (void)secFrameTick:(NSTimer *)t {
+    NSArray *frames = self.rainFrames;
+    if (!self.secEmitter || frames.count < 2) return;
+    self.secFrameIndex = (self.secFrameIndex + 1) % (NSInteger)frames.count;
+    [self.secEmitter setValue:frames[self.secFrameIndex] forKeyPath:@"emitterCells.rain.contents"];
+}
+
+// Build/update/teardown the rain on a 2nd Telegram window, mirroring the primary's config.
+- (void)syncSecondary {
+    NSWindow *w2 = [self secondTelegramWindowExcluding:self.host];
+    if (!w2 || !patchgram_overlay_animation_on || !patchgram_overlay_png_path.length) { [self teardownSecondary]; return; }
+    if (self.secHost != w2) { [self teardownSecondary]; self.secHost = w2; }
+    NSRect hf = w2.frame;
+    if (!self.secAnim) {
+        self.secAnim = [self makeChildPanel:NSMakeRect(0, 0, hf.size.width, hf.size.height) ignoresMouse:YES];
+        self.secAnim.contentView.wantsLayer = YES;
+        self.secAnim.contentView.layer.masksToBounds = NO;
+        [w2 addChildWindow:self.secAnim ordered:NSWindowAbove];
+    }
+    [self.secAnim setFrame:hf display:YES];
+    NSRect region; BOOL show = YES;
+    if (self.autoRegion) {
+        NSRect pane; CGPoint av = CGPointZero; BOOL avv = NO;
+        if ([self detectProfilePaneRect:&pane avatar:&av avatarValid:&avv forHost:w2]) {
+            region = pane; self.secAvatarPoint = av; self.secAvatarValid = avv;
+        } else { show = NO; }
+    } else {
+        region = NSMakeRect(self.rainFx * hf.size.width, self.rainFy * hf.size.height,
+                            self.rainFw * hf.size.width, self.rainFh * hf.size.height);
+        self.secAvatarValid = NO;
+    }
+    if (!show) { [self stopSecondaryEmitter]; return; }
+    if (!self.secEmitter) {
+        CGImageRef cg = self.rainFrames.count ? (__bridge CGImageRef)self.rainFrames.firstObject
+                       : (self.rainImage ? [self.rainImage CGImageForProposedRect:NULL context:nil hints:nil] : NULL);
+        if (!cg) return;
+        CGFloat scale = MAX(0.15, hf.size.width / 1600.0);
+        CAEmitterLayer *em = [self makeEmitterForRegion:region cg:cg scale:scale avatar:self.secAvatarPoint valid:self.secAvatarValid];
+        [self.secAnim.contentView.layer addSublayer:em];
+        self.secEmitter = em;
+        [w2 addChildWindow:self.secAnim ordered:NSWindowAbove];
+        if (self.rainFrames.count > 1) {
+            double fps = self.rainFps > 0 ? self.rainFps : 30.0;
+            self.secFrameIndex = 0;
+            self.secTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / (MIN(fps, 40.0) * MAX(0.1, self.rainSpeed))
+                                                             target:self selector:@selector(secFrameTick:) userInfo:nil repeats:YES];
+        }
+        patchgram_log("OVERLAY secondary rain on %s region=%.0fx%.0f", w2.className.UTF8String, region.size.width, region.size.height);
+    } else {
+        [self updateEmitter:self.secEmitter region:region avatar:self.secAvatarPoint valid:self.secAvatarValid];
+    }
+}
+
+- (void)autoToggled:(id)sender {
+    self.autoRegion = (self.autoSwitch.state == NSControlStateValueOn);
+    [self saveState];
+    if (self.autoRegion) {
+        [self.regionWindow orderOut:nil];   // hide the manual region frame
+    } else {
+        if (self.menuOpen) [self.host addChildWindow:self.regionWindow ordered:NSWindowAbove];
+    }
+    [self dropPrimaryEmitters];    // region model changed → rebuild from scratch
+    [self stopSecondaryEmitter];
+    if (self.autoRegion) [self autoTick:nil];                  // auto: builds right column + card
+    else if (patchgram_overlay_animation_on) [self startRain]; // manual: single emitter
+    patchgram_log("OVERLAY auto-region -> %d", (int)self.autoRegion);
+}
+
+- (void)probeHierarchy:(NSString *)reason {
+    self.probeNodes = 0;
+    patchgram_log("PROBE ===== %s =====", reason.UTF8String);
+    NSArray<NSWindow *> *wins = [NSApp windows];
+    patchgram_log("PROBE windows=%lu", (unsigned long)wins.count);
+    int i = 0;
+    for (NSWindow *w in wins) {
+        NSRect f = w.frame;
+        patchgram_log("PROBE win[%d]%s %s frame=(%.0f,%.0f %.0fx%.0f) lvl=%ld vis=%d key=%d parent=%s children=%lu title=\"%s\"",
+            i++, [self isOwnWindow:w] ? " [patchgram]" : "", w.className.UTF8String,
+            f.origin.x, f.origin.y, f.size.width, f.size.height, (long)w.level,
+            (int)w.isVisible, (int)w.isKeyWindow,
+            w.parentWindow ? w.parentWindow.className.UTF8String : "(none)",
+            (unsigned long)w.childWindows.count, (w.title ?: @"").UTF8String);
+    }
+    if (self.host.contentView) {
+        patchgram_log("PROBE --- host view tree (frames in superview coords) ---");
+        [self dumpView:self.host.contentView depth:0];
+        patchgram_log("PROBE --- host layer tree ---");
+        [self dumpLayer:self.host.contentView.layer depth:0];
+        patchgram_log("PROBE --- host AX tree (frames in SCREEN coords; empty = Qt a11y inactive) ---");
+        self.probeNodes = 0;
+        @try { [self dumpAX:self.host.contentView depth:0]; }
+        @catch (NSException *e) { patchgram_log("PROBE ax EXCEPTION: %s", e.reason.UTF8String ?: "(nil)"); }
+        patchgram_log("PROBE ax nodes=%d", self.probeNodes);
+    }
+    CGFloat w = self.host.frame.size.width, h = self.host.frame.size.height;
+    if (w > 0 && h > 0) {
+        NSRect r; CGPoint av = CGPointZero; BOOL avv = NO;
+        if ([self detectRightColumnForHost:self.host out:&r avatar:&av avatarValid:&avv])
+            patchgram_log("PROBE DETECT right-column host-local=(%.0f,%.0f %.0fx%.0f) fx=%.3f fw=%.3f",
+                r.origin.x, r.origin.y, r.size.width, r.size.height, r.origin.x / w, r.size.width / w);
+        else patchgram_log("PROBE DETECT right-column: none");
+        NSRect cr; CGPoint cav = CGPointZero; BOOL cavv = NO;
+        if ([self detectCardForHost:self.host out:&cr avatar:&cav avatarValid:&cavv])
+            patchgram_log("PROBE DETECT card host-local=(%.0f,%.0f %.0fx%.0f) fx=%.3f fw=%.3f avatar=%s(%.0f,%.0f)",
+                cr.origin.x, cr.origin.y, cr.size.width, cr.size.height, cr.origin.x / w, cr.size.width / w,
+                cavv ? "yes" : "no", cav.x, cav.y);
+        else patchgram_log("PROBE DETECT card: none");
+    }
+    patchgram_log("PROBE ===== end =====");
+}
+
+- (void)installProbeHotkey {
+    __weak PatchgramOverlay *weakSelf = self;
+    [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *e) {
+        // Ctrl+Alt+D dumps the hierarchy (keyCode 2 == 'd' on US layout).
+        if ((e.modifierFlags & NSEventModifierFlagControl) &&
+            (e.modifierFlags & NSEventModifierFlagOption) && e.keyCode == 2) {
+            [weakSelf probeHierarchy:@"hotkey ctrl-alt-d"];
+            return nil;
+        }
+        return e;
+    }];
+}
+
+@end
+
+static void patchgram_overlay_start(void) {
+    if (!g_overlay_enabled) { patchgram_log("OVERLAY disabled (overlayEnabled=0)"); return; }
+    patchgram_log("OVERLAY enabled -> scheduling setup on main queue");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_patchgram_overlay) g_patchgram_overlay = [[PatchgramOverlay alloc] init];
+        [g_patchgram_overlay start];
+    });
+}
+
 __attribute__((constructor))
 static void patchgram_bot_verification_init(void) {
     const char *config_path = getenv("PATCHGRAM_RUNTIME_CONFIG");
@@ -6478,4 +7743,5 @@ static void patchgram_bot_verification_init(void) {
     patchgram_install_bot_verification_hooks();
     patchgram_apply_memory_patches("initial");
     patchgram_start_runtime_reload_thread();
+    patchgram_overlay_start();
 }
