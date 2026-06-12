@@ -512,6 +512,55 @@ final class PatchgramViewModel: ObservableObject {
         }
     }
 
+    /// The 4 patcher sections shown on the main menu. The MEMBERSHIP is data-driven: each rule's
+    /// `category` (from patches.json) decides where it lands, so new fetched patches self-place.
+    struct PatchSection: Identifiable {
+        let category: BinaryPatchCategory
+        let title: String
+        let description: String
+        let icon: String   // resource section-<icon>.svg
+        var id: BinaryPatchCategory { category }
+    }
+
+    static let sections: [PatchSection] = [
+        PatchSection(category: .accounts, title: "Accounts", description: "Offline status, account limit, identity & profile", icon: "accounts"),
+        PatchSection(category: .messages, title: "Messages", description: "Read receipts, links, spoilers, bot data", icon: "messages"),
+        PatchSection(category: .optimizations, title: "Optimizations", description: "Strip Premium, ads and stories", icon: "optimizations"),
+        PatchSection(category: .misc, title: "Misc", description: "Dylib injection and the rain overlay", icon: "misc")
+    ]
+
+    func categoryOf(_ row: BinaryRuleRowState) -> BinaryPatchCategory {
+        row.status.rule.category ?? .misc
+    }
+
+    func rowCount(in category: BinaryPatchCategory) -> Int {
+        binaryRows.lazy.filter { self.categoryOf($0) == category }.count
+    }
+
+    /// Rows of one section with the current type/sort/search filters applied (the same filters as before).
+    func filteredRows(in category: BinaryPatchCategory) -> [BinaryRuleRowState] {
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtered = binaryRows.filter { row in
+            guard self.categoryOf(row) == category else { return false }
+            let matchesDelivery: Bool
+            switch deliveryFilter {
+            case .all: matchesDelivery = true
+            case .dylib: matchesDelivery = row.usesDylibPatch
+            case .binary: matchesDelivery = !row.usesDylibPatch
+            }
+            guard matchesDelivery else { return false }
+            guard !needle.isEmpty else { return true }
+            return row.status.rule.title.lowercased().contains(needle)
+                || row.status.rule.methodName.lowercased().contains(needle)
+                || row.status.rule.constructorId.lowercased().contains(needle)
+        }
+        switch sortOrder {
+        case .original: return filtered
+        case .az: return filtered.sorted { $0.status.rule.title.localizedStandardCompare($1.status.rule.title) == .orderedAscending }
+        case .za: return filtered.sorted { $0.status.rule.title.localizedStandardCompare($1.status.rule.title) == .orderedDescending }
+        }
+    }
+
     var hasPendingChanges: Bool {
         binaryRows.contains { $0.needsApply }
     }
@@ -1792,7 +1841,8 @@ final class PatchgramViewModel: ObservableObject {
             disabledBehavior: "Disables the selected local account customization subpatches.",
             riskNote: "These are local client-side display patches. Server-side Telegram account data is unchanged.",
             supportedBuildNote: "Telegram Desktop 6.8.x arm64.",
-            replacements: []
+            replacements: [],
+            category: .accounts
         )
     }
 

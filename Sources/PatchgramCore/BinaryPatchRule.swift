@@ -1001,6 +1001,16 @@ public enum BinaryPatchDelivery: String, Codable, Hashable, Sendable {
     case disk
 }
 
+/// Which patcher-UI section a rule belongs to. Externalized in `patches.json` so a fetched update
+/// can place brand-new patches into the right section without an app change. A `nil`/unknown value
+/// is treated as `.misc` by the UI, so the membership is data-driven, never hardcoded in the UI.
+public enum BinaryPatchCategory: String, Codable, Hashable, Sendable, CaseIterable {
+    case accounts
+    case messages
+    case optimizations
+    case misc
+}
+
 public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
     public let id: String
     public let title: String
@@ -1014,6 +1024,7 @@ public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
     public let parameter: BinaryPatchParameter?
     public let replacements: [BinaryReplacement]
     public let delivery: BinaryPatchDelivery?
+    public let category: BinaryPatchCategory?
 
     public init(
         id: String,
@@ -1027,7 +1038,8 @@ public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
         supportedBuildNote: String,
         parameter: BinaryPatchParameter? = nil,
         replacements: [BinaryReplacement],
-        delivery: BinaryPatchDelivery? = nil
+        delivery: BinaryPatchDelivery? = nil,
+        category: BinaryPatchCategory? = nil
     ) {
         self.id = id
         self.title = title
@@ -1041,6 +1053,18 @@ public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
         self.parameter = parameter
         self.replacements = replacements
         self.delivery = delivery
+        self.category = category
+    }
+
+    /// Copy with a different category (used to stamp the built-in seed rules from a single mapping
+    /// so they stay byte-identical to the categorized `patches.json`).
+    public func withCategory(_ category: BinaryPatchCategory?) -> BinaryPatchRule {
+        BinaryPatchRule(
+            id: id, title: title, methodName: methodName, constructorId: constructorId, kind: kind,
+            summary: summary, disabledBehavior: disabledBehavior, riskNote: riskNote,
+            supportedBuildNote: supportedBuildNote, parameter: parameter, replacements: replacements,
+            delivery: delivery, category: category
+        )
     }
 
     /// Stable hash of what this rule would write (bytes/masks/structure), independent of user
@@ -1069,7 +1093,7 @@ public struct BinaryPatchRule: Identifiable, Hashable, Sendable {
 public enum BinaryPatchRuleDefinitions {
     public static let unsupportedBuild = "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match."
 
-    public static let builtInRules: [BinaryPatchRule] = [
+    private static let rawBuiltInRules: [BinaryPatchRule] = [
         // The base hook every runtime patch loads through. Enabling it installs the
         // DYLD_INSERT_LIBRARIES launcher wrapper that loads Patchgram.dylib into Telegram,
         // with no behavior change of its own (no byte patch — the empty-hex flag is a no-op,
@@ -1104,7 +1128,7 @@ public enum BinaryPatchRuleDefinitions {
             methodName: "AppKit overlay",
             constructorId: "overlay",
             kind: .runtimeMemory,
-            summary: "Shows a native AppKit overlay inside Telegram: a floating info button opens a half-transparent panel with an Animation toggle and a .png picker; with Animation on, the chosen .png rains over the profile popup. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
+            summary: "Shows a native AppKit overlay inside Telegram: a floating button opens a panel where you pick a .png OR an animated .tgs sticker plus an animation style; with it on, the chosen image rains over an open profile and auto-follows it. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
             disabledBehavior: "Removes the overlay button/panel from Telegram.",
             riskNote: "Cosmetic local overlay drawn by the injected dylib via AppKit; it does not modify Telegram's own bytes or data.",
             supportedBuildNote: "The overlay is a native AppKit window, independent of the Telegram Desktop build version.",
@@ -2401,6 +2425,33 @@ public enum BinaryPatchRuleDefinitions {
             ]
         )
     ]
+
+    /// The bundled catalog, with each rule stamped with its UI section from `category(forRuleId:)`.
+    public static let builtInRules: [BinaryPatchRule] = rawBuiltInRules.map { $0.withCategory(category(forRuleId: $0.id)) }
+
+    /// Section membership for the BUILT-IN rules. `patches.json` carries the same per-rule `category`
+    /// so a fetched update can categorize NEW patches with no app change; this only keeps the bundled
+    /// seed in sync with the (categorized) bundled patches.json. Unlisted ids fall back to `.misc`.
+    static func category(forRuleId id: String) -> BinaryPatchCategory {
+        switch id {
+        case "binary.presence.force_offline", "binary.accounts.limit_999", "binary.visual.hide_self_phone",
+             "binary.account.custom_settings", "binary.activity.block_typing", "binary.privacy.no_phone_on_add",
+             "binary.premium.local", "binary.display.custom_ton", "binary.display.custom_stars",
+             "binary.visual.peer_badge", "binary.visual.bot_verification", "binary.visual.custom_level_rating",
+             "binary.visual.self_identity_override", "binary.visual.local_personal_channel",
+             "binary.visual.fragment_phone", "binary.visual.custom_list_usernames":
+            return .accounts
+        case "binary.messages.settings", "binary.inline.callback_hover", "binary.visual.sensitive_blur",
+             "binary.links.open_without_warning", "binary.visual.disable_spoilers",
+             "binary.read_receipts.block_history_read", "binary.messages.scheduled_send":
+            return .messages
+        case "binary.config.disable_monetization", "binary.visual.no_premium_anim",
+             "binary.stories.hide", "binary.ads.disable_sponsored":
+            return .optimizations
+        default:
+            return .misc
+        }
+    }
 
     public static func rules(withIds ids: [String]) -> [BinaryPatchRule] {
         // Resolve against the loaded catalog (patches.json) so modules reflect fetched updates.

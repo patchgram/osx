@@ -5,6 +5,7 @@
       "order" : 10,
       "rules" : [
         {
+          "category" : "misc",
           "constructorId" : "dylib-inject",
           "delivery" : "runtimeMemory",
           "disabledBehavior" : "Removes the dylib launcher wrapper once no runtime patch still needs it, restoring the original Telegram executable launch.",
@@ -27,6 +28,7 @@
           "title" : "Dylib injection"
         },
         {
+          "category" : "misc",
           "constructorId" : "overlay",
           "delivery" : "runtimeMemory",
           "disabledBehavior" : "Removes the overlay button/panel from Telegram.",
@@ -44,11 +46,12 @@
             }
           ],
           "riskNote" : "Cosmetic local overlay drawn by the injected dylib via AppKit; it does not modify Telegram's own bytes or data.",
-          "summary" : "Shows a native AppKit overlay inside Telegram: a floating info button opens a half-transparent panel with an Animation toggle and a .png picker; with Animation on, the chosen .png rains over the profile popup. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
+          "summary" : "Shows a native AppKit overlay inside Telegram: a floating button opens a panel where you pick a .png OR an animated .tgs sticker plus an animation style; with it on, the chosen image rains over an open profile and auto-follows it. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
           "supportedBuildNote" : "The overlay is a native AppKit window, independent of the Telegram Desktop build version.",
           "title" : "Profile rain overlay"
         },
         {
+          "category" : "accounts",
           "constructorId" : "6628562c",
           "disabledBehavior" : "Restores the original load-and-branch instructions from the executable backup pattern.",
           "id" : "binary.presence.force_offline",
@@ -78,6 +81,7 @@
           "title" : "Always offline"
         },
         {
+          "category" : "messages",
           "constructorId" : "58943ee2 / e306d3a / cc104937 / 54ae308e / b9cdc5ee",
           "disabledBehavior" : "Restores Telegram's original message activity, read-history, draft-sync, scheduled-send, and Fact Check behavior.",
           "id" : "binary.messages.settings",
@@ -187,6 +191,7 @@
           "title" : "Message settings"
         },
         {
+          "category" : "messages",
           "constructorId" : "local-hidden-url-confirmation",
           "disabledBehavior" : "Restores Telegram's original hidden-url confirmation branch.",
           "id" : "binary.links.open_without_warning",
@@ -216,6 +221,7 @@
           "title" : "Open links without warning"
         },
         {
+          "category" : "accounts",
           "constructorId" : "d9ba2e54",
           "disabledBehavior" : "Keeps Telegram's original add-contact flags, including the add_phone_privacy_exception bit when Telegram sets it.",
           "id" : "binary.privacy.no_phone_on_add",
@@ -238,6 +244,7 @@
           "title" : "Don't share phone when adding contacts"
         },
         {
+          "category" : "accounts",
           "constructorId" : "local-account-limit",
           "disabledBehavior" : "Restores the original 6-account add/menu/storage checks.",
           "id" : "binary.accounts.limit_999",
@@ -305,6 +312,7 @@
       "order" : 20,
       "rules" : [
         {
+          "category" : "messages",
           "constructorId" : "local-callback-tooltip",
           "disabledBehavior" : "Restores Telegram's original URL/Auth-only inline button hover behavior.",
           "id" : "binary.inline.callback_hover",
@@ -340,6 +348,7 @@
       "order" : 30,
       "rules" : [
         {
+          "category" : "optimizations",
           "constructorId" : "61e3f854",
           "disabledBehavior" : "Stops the runtime memory overrides and keeps the original on-disk Telegram executable bytes restored.",
           "id" : "binary.config.disable_monetization",
@@ -939,6 +948,7 @@
           "title" : "Disable Premium, Stars, TON & Gifts"
         },
         {
+          "category" : "accounts",
           "constructorId" : "local-premium",
           "disabledBehavior" : "Restores Telegram's original local Premium availability stream.",
           "id" : "binary.premium.local",
@@ -976,18 +986,15 @@
           "title" : "Local Telegram Premium"
         },
         {
+          "category" : "accounts",
           "constructorId" : "payments.getstarstransactions#69da4557 / payments.starsstatus.balance",
           "disabledBehavior" : "Restores Telegram's original MTPstarsTonAmount to CreditsAmount conversion.",
           "id" : "binary.display.custom_ton",
           "kind" : "overrideResponseValue",
           "methodName" : "CreditsAmountFromTL(MTPstarsTonAmount)",
           "parameter" : {
-            "choiceGroups" : [
-
-            ],
-            "choices" : [
-
-            ],
+            "choiceGroups" : [],
+            "choices" : [],
             "defaultValue" : 999,
             "maximumValue" : 9000000000,
             "minimumValue" : 0,
@@ -1012,18 +1019,15 @@
           "title" : "Custom TON value"
         },
         {
+          "category" : "accounts",
           "constructorId" : "payments.getstarstransactions#69da4557 / payments.starsstatus.balance",
           "disabledBehavior" : "Restores Telegram's original MTPstarsAmount to CreditsAmount conversion.",
           "id" : "binary.display.custom_stars",
           "kind" : "overrideResponseValue",
           "methodName" : "CreditsAmountFromTL(MTPstarsAmount)",
           "parameter" : {
-            "choiceGroups" : [
-
-            ],
-            "choices" : [
-
-            ],
+            "choiceGroups" : [],
+            "choices" : [],
             "defaultValue" : 999,
             "maximumValue" : 4294967295,
             "minimumValue" : 0,
@@ -1054,6 +1058,7 @@
       "order" : 35,
       "rules" : [
         {
+          "category" : "messages",
           "constructorId" : "sensitive-content",
           "disabledBehavior" : "Keeps Telegram's original sensitive media blur behavior.",
           "id" : "binary.visual.sensitive_blur",
@@ -1081,6 +1086,7 @@
       "order" : 40,
       "rules" : [
         {
+          "category" : "accounts",
           "constructorId" : "local-peer-badge",
           "disabledBehavior" : "Restores Telegram's original user/channel verification-status flags.",
           "id" : "binary.visual.peer_badge",
@@ -1123,9 +1129,7 @@
                 "title" : "Badge"
               }
             ],
-            "choices" : [
-
-            ],
+            "choices" : [],
             "defaultValue" : 1,
             "maximumValue" : 23,
             "minimumValue" : 1,
@@ -1276,104 +1280,98 @@
           "title" : "Visual peer badge"
         },
         {
+          "category" : "accounts",
           "constructorId" : "botverification#f93cd45c",
           "disabledBehavior" : "Removes the Patchgram runtime hook and restores Telegram's original executable entry point.",
           "id" : "binary.visual.bot_verification",
           "kind" : "botVerification",
           "methodName" : "UserData::setBotVerifyDetails / ChannelData::setBotVerifyDetails",
-          "replacements" : [
-
-          ],
+          "replacements" : [],
           "riskNote" : "This is a local client-side runtime patch. It does not change Telegram server-side verification state.",
           "summary" : "Installs a local runtime hook for Telegram's bot verification details. Choose who receives the local bot verification and which preset to use.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Bot verification"
         },
         {
+          "category" : "accounts",
           "constructorId" : "starsrating#1f74f5c6 / userfull.stars_rating",
           "disabledBehavior" : "Removes the Patchgram runtime hook and restores Telegram's original executable entry point when no other runtime patches are enabled.",
           "id" : "binary.visual.custom_level_rating",
           "kind" : "customLevelRating",
           "methodName" : "UserData::setStarsRating",
-          "replacements" : [
-
-          ],
+          "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not change Telegram server-side Stars rating data.",
           "summary" : "Installs a local runtime hook for Telegram's user Stars rating. Choose who receives the local rating and set level, rating, current_level_rating, and next_level_rating.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Custom level rating"
         },
         {
+          "category" : "accounts",
           "constructorId" : "profile phone row",
           "disabledBehavior" : "Keeps Telegram's original profile phone value handling.",
           "id" : "binary.visual.hide_self_phone",
           "kind" : "hideSelfPhone",
           "methodName" : "Info::Profile::PhoneOrHiddenValue",
-          "replacements" : [
-
-          ],
+          "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not change your Telegram account phone number or privacy settings.",
           "summary" : "Installs a local runtime hook that returns an empty profile phone value for your own user, causing Telegram Desktop to omit the mobile phone row in the self-profile.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Hide self phone"
         },
         {
+          "category" : "accounts",
           "constructorId" : "local self identity",
           "disabledBehavior" : "Keeps Telegram's original self phone and user id display values.",
           "id" : "binary.visual.self_identity_override",
           "kind" : "selfIdentityOverride",
           "methodName" : "UserData::phone / local display user id",
-          "replacements" : [
-
-          ],
+          "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not change your Telegram account phone, real PeerId, authorization, or server state.",
           "summary" : "Installs a local runtime hook that overrides the phone string stored on your own UserData and provides a local display-only user id for Patchgram visual details.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Self identity override"
         },
         {
+          "category" : "accounts",
           "constructorId" : "local-personal-channel",
           "disabledBehavior" : "Keeps Telegram's original personal channel value.",
           "id" : "binary.visual.local_personal_channel",
           "kind" : "localPersonalChannel",
           "methodName" : "UserData::personalChannelId",
-          "replacements" : [
-
-          ],
+          "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not attach a channel to your Telegram account or change server-side profile data.",
           "summary" : "Installs a local runtime hook that writes a display-only personal channel id into your own UserData so Telegram Desktop shows it as attached in the self-profile.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Local attached channel"
         },
         {
+          "category" : "accounts",
           "constructorId" : "fragment.getcollectibleinfo#be1e85ba / fragment.collectibleinfo#6ebdff91",
           "disabledBehavior" : "Keeps Telegram's original Fragment phone collectible detection and response data.",
           "id" : "binary.visual.fragment_phone",
           "kind" : "fragmentPhone",
           "methodName" : "Info::Profile::IsCollectiblePhone / fragment.getCollectibleInfo",
-          "replacements" : [
-
-          ],
+          "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not mint or transfer a Fragment collectible phone number.",
           "summary" : "Installs a local runtime hook that makes selected phone rows look collectible and stores local fragment.collectibleInfo values for the phone collectible dialog.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Fragment phone"
         },
         {
+          "category" : "accounts",
           "constructorId" : "inputcollectibleusername#e39460a9 / fragment.collectibleinfo#6ebdff91",
           "disabledBehavior" : "Keeps Telegram's original self-profile usernames and Fragment username collectible response data.",
           "id" : "binary.visual.custom_list_usernames",
           "kind" : "customListUsernames",
           "methodName" : "Data::UsernamesInfo / fragment.getCollectibleInfo",
-          "replacements" : [
-
-          ],
+          "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not reserve, mint, buy, or assign Telegram usernames on the server.",
           "summary" : "Installs a local runtime hook that replaces the usernames list shown for your self-profile and returns local Fragment collectible info for configured collectible usernames.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Custom list usernames"
         },
         {
+          "category" : "optimizations",
           "constructorId" : "local-premium-effects",
           "disabledBehavior" : "Keeps Telegram's original premium sticker effect start behavior.",
           "id" : "binary.visual.no_premium_anim",
@@ -1395,6 +1393,7 @@
           "title" : "Disable premium effects"
         },
         {
+          "category" : "messages",
           "constructorId" : "media spoiler flags",
           "disabledBehavior" : "Keeps Telegram's original media spoiler behavior.",
           "id" : "binary.visual.disable_spoilers",
@@ -1515,6 +1514,7 @@
       "order" : 50,
       "rules" : [
         {
+          "category" : "optimizations",
           "constructorId" : "stories",
           "disabledBehavior" : "Restores Telegram's original stories state handling and request constructor ids.",
           "id" : "binary.stories.hide",
@@ -1686,6 +1686,7 @@
       "order" : 60,
       "rules" : [
         {
+          "category" : "optimizations",
           "constructorId" : "3d6ce850",
           "disabledBehavior" : "Restores Telegram Ads and proxy sponsor promotion behavior.",
           "id" : "binary.ads.disable_sponsored",

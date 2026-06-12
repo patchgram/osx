@@ -1,0 +1,15 @@
+<?xml version="1.0" ?>
+<svg xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" version="1.1" inkscape:export-xdpi="96" inkscape:export-ydpi="96" style="fill: none; stroke: none">
+   <defs/>
+   <sodipodi:namedview inkscape:pagecheckerboard="true" borderlayer="true" bordercolor="#666666" pagecolor="#ffffff"/>
+   <g inkscape:groupmode="layer" id="g_1" transform="matrix(5.12, 0.0, 0.0, 5.12, 0.0, 0.0)" inkscape:label="PreCompLayer">
+      <g inkscape:groupmode="layer" id="g_2" transform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)" inkscape:label="ShapeLayer" style="">
+         <g id="g_3" transform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)" style="stroke:rgb(255, 255, 255);stroke-opacity:1.0;stroke-width:5.0;stroke-miterlimit:0.0;stroke-linecap:round;stroke-linejoin:round">
+            <path d="M 68.804,75.781 C 68.804,75.781 31.196,75.781 31.196,75.781 C 28.86451897599183,75.781 26.946,73.86248102400818 26.946,71.531 C 26.946,70.376 27.108,69.24900000000001 27.416,68.16000000000001 C 29.572,60.56 38.864,54.844 50,54.844 C 61.136,54.844 70.43,60.56 72.583,68.16 C 72.893,69.249 73.054,70.37599999999999 73.054,71.53099999999999 C 73.054,73.86248102400816 71.13548102400817,75.78099999999999 68.804,75.78099999999999 C 68.804,75.78099999999999 68.804,75.781 68.804,75.781 Z" style=""/>
+         </g>
+         <g id="g_4" transform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)" style="stroke:rgb(255, 255, 255);stroke-opacity:1.0;stroke-width:5.0;stroke-miterlimit:0.0;stroke-linecap:round;stroke-linejoin:round">
+            <ellipse rx="10.188" ry="10.188" cx="50" cy="34.406" id="ellipse_5" style=""/>
+         </g>
+      </g>
+   </g>
+</svg>

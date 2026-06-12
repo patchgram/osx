@@ -362,16 +362,85 @@ private struct StatBlock: View {
 
 private struct RuleList: View {
     @ObservedObject var viewModel: PatchgramViewModel
-    @State private var isShowingFilters = false
+    @State private var openCategory: BinaryPatchCategory?
+
+    var body: some View {
+        ZStack {
+            if let category = openCategory,
+               let section = PatchgramViewModel.sections.first(where: { $0.category == category }) {
+                SectionDetail(viewModel: viewModel, section: section) {
+                    withAnimation(.easeInOut(duration: 0.18)) { openCategory = nil }
+                }
+                .transition(.opacity)
+            } else {
+                SectionMenu(viewModel: viewModel) { category in
+                    viewModel.searchText = ""
+                    withAnimation(.easeInOut(duration: 0.18)) { openCategory = category }
+                }
+                .transition(.opacity)
+            }
+        }
+    }
+}
+
+// Main menu: the 4 patch sections.
+private struct SectionMenu: View {
+    @ObservedObject var viewModel: PatchgramViewModel
+    let onOpen: (BinaryPatchCategory) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Label("Rules", systemImage: "slider.horizontal.3")
+                Label("Patches", systemImage: "square.grid.2x2")
                     .font(.headline)
+                Spacer()
+                Button {
+                    Task { await viewModel.updatePatches() }
+                } label: {
+                    Label("Update patches", systemImage: "arrow.down.circle")
+                }
+                .disabled(viewModel.isUpdatingPatches || viewModel.isWorking)
+                .help("Fetch the latest signed patch bundle (engine + patches) from GitHub")
+            }
+            .padding(18)
+
+            ScrollView {
+                VStack(spacing: 12) {
+                    ForEach(PatchgramViewModel.sections) { section in
+                        SectionCard(section: section, count: viewModel.rowCount(in: section.category)) {
+                            onOpen(section.category)
+                        }
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
+            }
+        }
+    }
+}
+
+// One section's patches, with the same filters as before + back (button / Esc / two-finger swipe).
+private struct SectionDetail: View {
+    @ObservedObject var viewModel: PatchgramViewModel
+    let section: PatchgramViewModel.PatchSection
+    let onBack: () -> Void
+    @State private var isShowingFilters = false
+    @State private var swipeMonitor: Any?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button(action: onBack) {
+                    Label("Sections", systemImage: "chevron.left")
+                }
+                .keyboardShortcut(.cancelAction)
+                .help("Back to sections (Esc)")
+                Divider().frame(height: 18)
+                SectionIcon(name: section.icon, inset: 3).frame(width: 22, height: 22)
+                Text(section.title).font(.headline)
                 TextField("Search method or constructor", text: $viewModel.searchText)
                     .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 360)
+                    .frame(maxWidth: 280)
                 Button {
                     isShowingFilters.toggle()
                 } label: {
@@ -380,9 +449,7 @@ private struct RuleList: View {
                 .popover(isPresented: $isShowingFilters, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 14) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Type")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text("Type").font(.caption).foregroundStyle(.secondary)
                             Picker("Type", selection: $viewModel.deliveryFilter) {
                                 ForEach(PatchDeliveryFilter.allCases) { filter in
                                     Text(filter.label).tag(filter)
@@ -391,9 +458,7 @@ private struct RuleList: View {
                             .pickerStyle(.segmented)
                         }
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Sort")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text("Sort").font(.caption).foregroundStyle(.secondary)
                             Picker("Sort", selection: $viewModel.sortOrder) {
                                 ForEach(PatchSortOrder.allCases) { order in
                                     Text(order.label).tag(order)
@@ -405,39 +470,114 @@ private struct RuleList: View {
                     .padding(14)
                     .frame(width: 260)
                 }
-                Button {
-                    Task { await viewModel.updatePatches() }
-                } label: {
-                    Label("Update patches", systemImage: "arrow.down.circle")
-                }
-                .disabled(viewModel.isUpdatingPatches || viewModel.isWorking)
-                .help("Fetch the latest signed patch bundle (engine + patches) from GitHub")
                 Spacer()
             }
             .padding(18)
 
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(viewModel.filteredBinaryRows) { row in
-                        BinaryRuleCard(row: row, isWorking: viewModel.isWorking) { enabled in
-                            viewModel.setDesired(enabled, for: row)
-                        } onSubpatchToggle: { ruleId, subpatchId, enabled in
-                            viewModel.setSubpatch(ruleId: ruleId, subpatchId: subpatchId, enabled: enabled)
-                        } onSubpatchChange: { ruleId, subpatchId in
-                            viewModel.changeSubpatch(ruleId: ruleId, subpatchId: subpatchId)
-                        } onUpdate: {
-                            viewModel.updateAppliedPatch(for: row)
-                        } onSettings: { ruleId, subpatchId in
-                            viewModel.showSubpatchSettings(ruleId: ruleId, subpatchId: subpatchId)
-                        } onRuleSettings: {
-                            viewModel.showBotVerificationSettings()
+            let rows = viewModel.filteredRows(in: section.category)
+            if rows.isEmpty {
+                Spacer()
+                Text(viewModel.searchText.isEmpty ? "No patches in this section." : "No patches match your search.")
+                    .foregroundStyle(.secondary)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(rows) { row in
+                            BinaryRuleCard(row: row, isWorking: viewModel.isWorking) { enabled in
+                                viewModel.setDesired(enabled, for: row)
+                            } onSubpatchToggle: { ruleId, subpatchId, enabled in
+                                viewModel.setSubpatch(ruleId: ruleId, subpatchId: subpatchId, enabled: enabled)
+                            } onSubpatchChange: { ruleId, subpatchId in
+                                viewModel.changeSubpatch(ruleId: ruleId, subpatchId: subpatchId)
+                            } onUpdate: {
+                                viewModel.updateAppliedPatch(for: row)
+                            } onSettings: { ruleId, subpatchId in
+                                viewModel.showSubpatchSettings(ruleId: ruleId, subpatchId: subpatchId)
+                            } onRuleSettings: {
+                                viewModel.showBotVerificationSettings()
+                            }
                         }
                     }
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 18)
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 18)
             }
         }
+        // Two-finger trackpad swipe-right → back. Vertical scrolls are ignored (deltaX must dominate).
+        .onAppear {
+            swipeMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                if event.scrollingDeltaX > 45, abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 2.5 {
+                    onBack()
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let swipeMonitor { NSEvent.removeMonitor(swipeMonitor) }
+            swipeMonitor = nil
+        }
+    }
+}
+
+private struct SectionCard: View {
+    let section: PatchgramViewModel.PatchSection
+    let count: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                SectionIcon(name: section.icon, inset: 10).frame(width: 46, height: 46)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(section.title).font(.system(size: 17, weight: .semibold))
+                    Text(section.description).font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(count)").font(.system(.body, design: .rounded)).foregroundStyle(.secondary)
+                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// Renders a section's white-line SVG, tinted white inside a gradient tile.
+private struct SectionIcon: View {
+    let name: String
+    var inset: CGFloat = 10
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(LinearGradient(
+                    colors: [Color(red: 0.22, green: 0.66, blue: 0.98), Color(red: 0.08, green: 0.39, blue: 0.83)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing))
+            if let image = Self.image(named: name) {
+                Image(nsImage: image)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(inset)
+                    .foregroundStyle(.white)
+            } else {
+                Image(systemName: "square.grid.2x2")
+                    .foregroundStyle(.white)
+            }
+        }
+    }
+
+    private static func image(named name: String) -> NSImage? {
+        for url in appResourceURLs(named: "section-\(name)", extension: "svg") {
+            guard let url, let image = NSImage(contentsOf: url) else { continue }
+            image.isTemplate = true
+            return image
+        }
+        return nil
     }
 }
 
