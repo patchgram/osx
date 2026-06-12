@@ -7,6 +7,7 @@ EXECUTABLE="$ROOT/.build/release/patchgram"
 LOGO="$ROOT/Sources/Patchgram/Resources/PatchgramLogo.svg"
 TELEGRAM_LOGO="$ROOT/Sources/Patchgram/Resources/TelegramLogo.svg"
 APP_ICON_SVG_SOURCE="$ROOT/assets/PatchgramAppIcon.svg"
+APP_ICON_PNG_SOURCE="$ROOT/assets/PatchgramAppIcon.png"
 RESOURCE_BUNDLE="$ROOT/.build/release/Patchgram_Patchgram.bundle"
 # PatchgramCore ships patches.json + engine.c.template via Bundle.module; its resource bundle must
 # sit next to the executable in the installed .app or Bundle.module fails to resolve at runtime.
@@ -81,21 +82,27 @@ rm -rf "$APP/Contents/Resources/$(basename "$CORE_RESOURCE_BUNDLE")"
 cp -R "$CORE_RESOURCE_BUNDLE" "$APP/Contents/Resources/"
 
 rm -rf "$ICON_WORK"
-mkdir -p "$ICONSET"
-if [ -f "$APP_ICON_SVG_SOURCE" ]; then
-  cp "$APP_ICON_SVG_SOURCE" "$ICON_SVG"
+mkdir -p "$ICON_WORK" "$ICONSET"
+# Prefer a ready-made 1024 PNG app icon (assets/PatchgramAppIcon.png); else render the SVG fallback.
+if [ -f "$APP_ICON_PNG_SOURCE" ]; then
+  cp "$APP_ICON_PNG_SOURCE" "$ICON_PNG"
 else
-  {
-    printf '%s\n' '<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    printf '%s\n' '<defs><linearGradient id="bg" x1="168" y1="112" x2="856" y2="912" gradientUnits="userSpaceOnUse"><stop stop-color="#37C7FF"/><stop offset="0.55" stop-color="#249BEF"/><stop offset="1" stop-color="#1572D2"/></linearGradient></defs>'
-    printf '%s\n' '<rect x="80" y="80" width="864" height="864" rx="200" fill="url(#bg)"/>'
-    printf '%s\n' '<svg x="132" y="132" width="760" height="760" viewBox="190 190 690 690">'
-    sed -n '/<path /p' "$LOGO"
-    printf '%s\n' '</svg></svg>'
-  } > "$ICON_SVG"
+  if [ -f "$APP_ICON_SVG_SOURCE" ]; then
+    cp "$APP_ICON_SVG_SOURCE" "$ICON_SVG"
+  else
+    {
+      printf '%s\n' '<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">'
+      printf '%s\n' '<defs><linearGradient id="bg" x1="168" y1="112" x2="856" y2="912" gradientUnits="userSpaceOnUse"><stop stop-color="#37C7FF"/><stop offset="0.55" stop-color="#249BEF"/><stop offset="1" stop-color="#1572D2"/></linearGradient></defs>'
+      printf '%s\n' '<rect x="80" y="80" width="864" height="864" rx="200" fill="url(#bg)"/>'
+      printf '%s\n' '<svg x="132" y="132" width="760" height="760" viewBox="190 190 690 690">'
+      sed -n '/<path /p' "$LOGO"
+      printf '%s\n' '</svg></svg>'
+    } > "$ICON_SVG"
+  fi
+  /usr/bin/qlmanage -t -s 1024 -o "$ICON_WORK" "$ICON_SVG" >/dev/null 2>&1 || true
 fi
 
-if /usr/bin/qlmanage -t -s 1024 -o "$ICON_WORK" "$ICON_SVG" >/dev/null 2>&1 && [ -f "$ICON_PNG" ]; then
+if [ -f "$ICON_PNG" ]; then
   /usr/bin/sips -z 16 16 "$ICON_PNG" --out "$ICONSET/icon_16x16.png" >/dev/null
   /usr/bin/sips -z 32 32 "$ICON_PNG" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
   /usr/bin/sips -z 32 32 "$ICON_PNG" --out "$ICONSET/icon_32x32.png" >/dev/null
