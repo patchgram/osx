@@ -18,7 +18,8 @@ let package = Package(
                 .copy("Resources/engine.c.template"),
                 .copy("Resources/patches.json"),
                 .copy("Resources/patch-manifest.json"),
-                .copy("Resources/librlottie.a")
+                .copy("Resources/librlottie.a"),
+                .copy("Resources/tl_schema.c.inc")
             ]
         ),
         .executableTarget(

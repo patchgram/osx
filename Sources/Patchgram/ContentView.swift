@@ -496,6 +496,8 @@ private struct SectionDetail: View {
                                 viewModel.showSubpatchSettings(ruleId: ruleId, subpatchId: subpatchId)
                             } onRuleSettings: {
                                 viewModel.showBotVerificationSettings()
+                            } onOpenLogs: {
+                                viewModel.openMtprotoLogsFolder()
                             }
                         }
                     }
@@ -590,6 +592,7 @@ private struct BinaryRuleCard: View {
     let onUpdate: @MainActor @Sendable () -> Void
     let onSettings: @MainActor @Sendable (String, String) -> Void
     let onRuleSettings: @MainActor @Sendable () -> Void
+    let onOpenLogs: @MainActor @Sendable () -> Void
     @State private var showsSubpatches = false
 
     var body: some View {
@@ -610,6 +613,16 @@ private struct BinaryRuleCard: View {
                 Spacer()
                 HStack(alignment: .center, spacing: 10) {
                     UpdatePatchButton(title: row.updateButtonTitle, isDisabled: isWorking, action: onUpdate)
+                    if row.id == "binary.mtproto.logger" {
+                        Button {
+                            onOpenLogs()
+                        } label: {
+                            Label("Open logs", systemImage: "doc.text.magnifyingglass")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        .help("Open the MTProto logger's log files (logs_mtproto_pg)")
+                    }
                     if row.status.rule.kind == .botVerification {
                         Button {
                             onRuleSettings()

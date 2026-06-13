@@ -1,7 +1,7 @@
-Release 1.0.8
+Release 1.0.9
 
-- **Reworked UI.** The patch list is now organised into four sections — **Accounts**, **Messages**, **Optimizations**, and **Misc** — each with its own icon and a short description. Open a section to see its patches; the back button, the trackpad swipe-back gesture, and the Esc key all return to the section menu, and every section keeps the same Type / Sort / Search filters as before.
-- Patch-to-section membership is **data-driven** (each patch declares its own `category`), so patches pushed via the "Update patches" bundle land in the right section with no app rebuild.
-- Profile rain overlay description now notes it also accepts animated **.tgs** stickers.
+- New patch: **MTProto request/response logger** (Misc, dylib). Logs every MTProto request Telegram sends and every response it receives — each timestamped — to `log_<start>.log` files in `Telegram.app/Contents/Resources/logs_mtproto_pg`. The logger starts inside the injected dylib's constructor, before Telegram sends its first packet, so the trace is complete from launch.
+- The log is **fully decoded inline**: each line is the TL method/type plus its recursively-decoded fields (flags, vectors, nested objects, strings) via a built-in TL decoder (TL layer 227) — readable with no external tools.
+- An **Open logs** button next to the patch reveals the newest log file, and enabling the logger auto-enables **Dylib injection**.
 
-Run "Update patches" to pull the matching patch bundle (categories + .tgs note).
+Run "Update patches" to pull the matching patch bundle (this bundle requires app 1.0.9+).

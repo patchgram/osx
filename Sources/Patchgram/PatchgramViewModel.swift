@@ -31,7 +31,8 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         "binary.visual.sensitive_blur",
         "binary.stories.hide",
         "binary.ads.disable_sponsored",
-        "binary.overlay.profile_rain"
+        "binary.overlay.profile_rain",
+        "binary.mtproto.logger"
     ]
 
     var id: String { status.id }
@@ -359,7 +360,8 @@ final class PatchgramViewModel: ObservableObject {
         "binary.premium.local",
         "binary.visual.sensitive_blur",
         "binary.stories.hide",
-        adsFeatureRuleId
+        adsFeatureRuleId,
+        "binary.mtproto.logger"
     ]
     private static let compositeFeatureRuleIds: Set<String> = [
         customAccountFeatureRuleId,
@@ -676,6 +678,29 @@ final class PatchgramViewModel: ObservableObject {
             NSWorkspace.shared.activateFileViewerSelecting([hookLog])
         } else {
             NSWorkspace.shared.open(logsDirectory)
+        }
+    }
+
+    /// Reveals the MTProto logger's output — `<app>/Contents/Resources/logs_mtproto_pg`, where the
+    /// "MTProto request/response logger" patch writes its `log_<start>.log` files. Selects the most
+    /// recent log when one exists, otherwise opens the folder (creating it if the patch hasn't run).
+    func openMtprotoLogsFolder() {
+        guard let appURL else { return }
+        let dir = appURL.appendingPathComponent("Contents/Resources/logs_mtproto_pg", isDirectory: true)
+        let fm = FileManager.default
+        let logs = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]))?
+            .filter { $0.pathExtension == "log" }
+            .sorted { (lhs, rhs) in
+                let l = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let r = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return l > r
+            } ?? []
+        if let latest = logs.first {
+            NSWorkspace.shared.activateFileViewerSelecting([latest])
+        } else if fm.fileExists(atPath: dir.path) {
+            NSWorkspace.shared.open(dir)
+        } else {
+            NSWorkspace.shared.open(appURL.appendingPathComponent("Contents/Resources", isDirectory: true))
         }
     }
 

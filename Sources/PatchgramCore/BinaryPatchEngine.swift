@@ -222,6 +222,7 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let messageNoForwardsCopyEnabled: Bool
     let messageDisableTtlEnabled: Bool
     let overlayEnabled: Bool
+    let mtprotoLoggerEnabled: Bool
     let localPremiumEnabled: Bool
     let disableMonetizationEnabled: Bool
     let disableMonetizationAppConfigEnabled: Bool
@@ -351,6 +352,7 @@ public final class BinaryPatchEngine {
     private static let disableMonetizationRuleId = "binary.config.disable_monetization"
     private static let localPremiumRuleId = "binary.premium.local"
     private static let overlayRuleId = "binary.overlay.profile_rain"
+    private static let mtprotoLoggerRuleId = "binary.mtproto.logger"
     private static let scheduledSendRuleId = "binary.messages.scheduled_send"
     private static let sensitiveBlurRuleId = "binary.visual.sensitive_blur"
     private static let hideStoriesRuleId = "binary.stories.hide"
@@ -464,6 +466,17 @@ public final class BinaryPatchEngine {
     /// Sentinel in `engine.c.template` where the rule-derived memory-patch table is injected at
     /// apply time (so the engine source stays a static resource while the table follows the rules).
     private static let runtimeHookMemoryPatchTablePlaceholder = "__PATCHGRAM_MEMORY_PATCH_TABLE_PLACEHOLDER__"
+    /// Sentinel in `engine.c.template` where the generated TL-schema tables (for the in-dylib MTProto
+    /// decoder) are injected at apply time from the bundled `tl_schema.c.inc`.
+    private static let runtimeHookTLSchemaPlaceholder = "__PATCHGRAM_TL_SCHEMA_PLACEHOLDER__"
+    /// Compiles when no schema resource is present (older app): an empty table → every TL constructor
+    /// reads back as `unknown#<id>` instead of failing the build.
+    private static let tlSchemaStub = """
+    static const char g_tl_strpool[] = "";
+    static const struct PatchgramTLCtor g_tl_ctors[] = { {0,0,0,0} };
+    static const unsigned g_tl_ctor_count = 0;
+    static const struct PatchgramTLParam g_tl_params[] = { {0,0,0,0,0} };
+    """
     private static let patchLogName = "PatchgramPatch.log"
     private static let hookLogName = "PatchgramHook.log"
 
@@ -2046,6 +2059,7 @@ public final class BinaryPatchEngine {
             messageNoForwardsCopyEnabled: messageNoForwardsCopyOn,
             messageDisableTtlEnabled: messageDisableTtlOn,
             overlayEnabled: enabled.contains(Self.overlayRuleId),
+            mtprotoLoggerEnabled: enabled.contains(Self.mtprotoLoggerRuleId),
             localPremiumEnabled: enabled.contains(Self.localPremiumRuleId),
             disableMonetizationEnabled: enabled.contains(Self.disableMonetizationRuleId),
             disableMonetizationAppConfigEnabled: monetizationOn("app_config"),
@@ -2298,6 +2312,10 @@ public final class BinaryPatchEngine {
             .replacingOccurrences(
                 of: Self.runtimeHookMemoryPatchTablePlaceholder,
                 with: runtimeMemoryPatchDefinitionsSource()
+            )
+            .replacingOccurrences(
+                of: Self.runtimeHookTLSchemaPlaceholder,
+                with: PatchgramResourceProvider.shared.tlSchemaInc() ?? Self.tlSchemaStub
             )
     }
 

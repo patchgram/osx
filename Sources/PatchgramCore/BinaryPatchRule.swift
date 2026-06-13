@@ -1141,6 +1141,29 @@ public enum BinaryPatchRuleDefinitions {
             ],
             delivery: .runtimeMemory
         ),
+        // Diagnostic MTProto logger drawn by Patchgram.dylib (runtime flag only — no bytes
+        // patched). Reuses the dylib's existing send_prepared / try_to_receive hooks to append
+        // every request + response to Resources/logs_mtproto_pg/log_<start>.log, opened in the
+        // dylib constructor before Telegram sends its first packet.
+        BinaryPatchRule(
+            id: "binary.mtproto.logger",
+            title: "MTProto request/response logger",
+            methodName: "MTProto logger",
+            constructorId: "mtproto-logger",
+            kind: .runtimeMemory,
+            summary: "Logs every MTProto request Telegram sends and every response it receives, each with a timestamp, to log_<start>.log files inside Telegram.app/Contents/Resources/logs_mtproto_pg. The logger opens its file in the injected dylib's constructor — before Telegram sends its first packet — so the trace is complete from launch. Each line records the direction, request id, TL constructor, and a hex preview of the body. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
+            disabledBehavior: "Stops writing MTProto logs (existing log files are kept). Takes effect on the next Telegram launch.",
+            riskNote: "Diagnostic only: the dylib observes the request/response buffers it already hooks and appends them to local .log files; it does not modify Telegram's bytes or traffic. The logs can contain sensitive request/response data, so treat the files as private.",
+            supportedBuildNote: "Uses the dylib's existing send/receive hooks; independent of byte-level signatures, so it is resilient across Telegram Desktop builds.",
+            replacements: [
+                BinaryReplacement(
+                    id: "mtproto.logger.runtime_flag",
+                    originalHex: "",
+                    patchedHex: ""
+                )
+            ],
+            delivery: .runtimeMemory
+        ),
         BinaryPatchRule(
             id: "binary.presence.force_offline",
             title: "Always offline",

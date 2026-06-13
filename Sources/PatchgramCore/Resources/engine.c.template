@@ -437,6 +437,17 @@ static PatchgramMessagesSerializeFn g_original_messages_send_media_serialize = N
 static PatchgramSessionTryToReceiveFn g_original_session_private_try_to_receive = NULL;
 static PatchgramSessionSendPreparedFn g_original_session_send_prepared = NULL;
 static PatchgramHistoryItemHasUnrequestedFactcheckFn g_original_history_item_has_unrequested_factcheck = NULL;
+
+/* MTProto request/response logger (Misc patch). When enabled, every outgoing request
+ * (session_send_prepared hook) and incoming response (session try_to_receive hook) is
+ * appended to <Telegram.app>/Contents/Resources/logs_mtproto_pg/log_<start>.log. The file
+ * is opened once in the dylib constructor — before main(), so before Telegram sends its
+ * first packet. The injected hooks themselves are always installed; these flags only gate
+ * whether the logger writes. */
+static bool g_mtproto_logger_enabled = false;
+static bool g_mtproto_logger_started = false;
+static char g_mtproto_log_path[1024] = {0};
+static void patchgram_mtproto_logger_start(void); // defined near the overlay path helpers
 static PatchgramDataFactchecksRequestForFn g_original_data_factchecks_request_for = NULL;
 static PatchgramHistoryItemSetFactcheckFn g_history_item_set_factcheck = NULL;
 static PatchgramHistoryItemCreateViewFn g_original_history_item_create_view = NULL;
@@ -2410,6 +2421,7 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     g_message_allow_noforwards_copy = patchgram_json_bool(json, "messageNoForwardsCopyEnabled", false);
     g_message_disable_ttl = patchgram_json_bool(json, "messageDisableTtlEnabled", false);
     g_overlay_enabled = patchgram_json_bool(json, "overlayEnabled", false);
+    g_mtproto_logger_enabled = patchgram_json_bool(json, "mtprotoLoggerEnabled", false);
     g_local_premium_enabled = patchgram_json_bool(json, "localPremiumEnabled", false);
     g_disable_monetization_enabled = patchgram_json_bool(json, "disableMonetizationEnabled", false);
     g_disable_monetization_app_config_enabled = patchgram_json_bool(json, "disableMonetizationAppConfigEnabled", g_disable_monetization_enabled);
@@ -2572,6 +2584,9 @@ static void *patchgram_runtime_reload_thread(void *context) {
         if (patchgram_refresh_config_mtime(g_config_path, &changed) && changed) {
             patchgram_log("CONFIG changed, live reload");
             patchgram_load_runtime_config(g_config_path, true, "reload");
+            // If the logger was just toggled on, open its file now (starts a fresh
+            // log_<time>.log from this point; the started guard makes it a no-op otherwise).
+            patchgram_mtproto_logger_start();
         }
         patchgram_apply_tracked_user_runtime_values("periodic");
     }
@@ -4981,6 +4996,271 @@ static void patchgram_strip_noforwards_in_response(void *response) {
     }
 }
 
+/* ===== In-dylib TL decoder — turns the raw request/response words into a readable line ===== */
+/* Param type opcodes — MUST match scripts/gen_tl_schema_c.py. */
+enum {
+    PG_TL_INT = 0, PG_TL_LONG = 1, PG_TL_DOUBLE = 2, PG_TL_STRING = 3, PG_TL_BYTES = 4,
+    PG_TL_INT128 = 5, PG_TL_INT256 = 6, PG_TL_FLAGS = 7, PG_TL_TRUE = 8, PG_TL_BOXED = 9,
+    PG_TL_COMPLEX = 10
+};
+struct PatchgramTLCtor { uint32_t id; uint32_t name_off; uint16_t pstart; uint16_t pcount; };
+struct PatchgramTLParam { uint32_t name_off; uint8_t flag_idx; uint8_t flag_bit; uint8_t vec; uint8_t op; };
+
+/* Schema data (string pool + id-sorted ctor table + param table). Generated from the bundled
+ * tl_schema.c.inc and substituted in at apply time, mirroring the memory-patch-table placeholder.
+ * A missing .inc degrades to an empty table (every ctor reads as unknown#id). */
+__PATCHGRAM_TL_SCHEMA_PLACEHOLDER__
+
+#define PATCHGRAM_TL_VECTOR_ID 0x1cb5c415u
+
+struct PatchgramTLReader { const uint8_t *p; size_t len; size_t pos; bool err; };
+struct PatchgramTLOut { char *buf; size_t cap; size_t len; bool full; };
+
+static const struct PatchgramTLCtor *patchgram_tl_find(uint32_t id) {
+    int lo = 0, hi = (int)g_tl_ctor_count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        uint32_t v = g_tl_ctors[mid].id;
+        if (v < id) { lo = mid + 1; }
+        else if (v > id) { hi = mid - 1; }
+        else { return &g_tl_ctors[mid]; }
+    }
+    return NULL;
+}
+static void patchgram_tl_put(struct PatchgramTLOut *o, const char *s) {
+    if (o->full) { return; }
+    while (*s) {
+        if (o->len + 1 >= o->cap) { o->full = true; break; }
+        o->buf[o->len++] = *s++;
+    }
+    o->buf[o->len] = 0;
+}
+static void patchgram_tl_put_raw(struct PatchgramTLOut *o, const uint8_t *b, size_t n) {
+    if (o->full) { return; }
+    for (size_t i = 0; i < n; i++) {
+        if (o->len + 1 >= o->cap) { o->full = true; break; }
+        o->buf[o->len++] = (char)b[i];
+    }
+    o->buf[o->len] = 0;
+}
+static uint32_t patchgram_tl_u32(struct PatchgramTLReader *r) {
+    if (r->pos + 4 > r->len) { r->err = true; return 0; }
+    uint32_t v; memcpy(&v, r->p + r->pos, 4); r->pos += 4; return v;
+}
+static int64_t patchgram_tl_i64(struct PatchgramTLReader *r) {
+    if (r->pos + 8 > r->len) { r->err = true; return 0; }
+    int64_t v; memcpy(&v, r->p + r->pos, 8); r->pos += 8; return v;
+}
+static double patchgram_tl_f64(struct PatchgramTLReader *r) {
+    if (r->pos + 8 > r->len) { r->err = true; return 0; }
+    double v; memcpy(&v, r->p + r->pos, 8); r->pos += 8; return v;
+}
+static void patchgram_tl_put_hex(struct PatchgramTLOut *o, const uint8_t *b, size_t n) {
+    static const char H[] = "0123456789abcdef";
+    patchgram_tl_put(o, "0x");
+    for (size_t i = 0; i < n && !o->full; i++) {
+        char two[2] = { H[b[i] >> 4], H[b[i] & 0xf] };
+        patchgram_tl_put_raw(o, (const uint8_t *)two, 2);
+    }
+}
+// TL string/bytes: 1-or-4-byte length prefix, payload, padded to 4. Text shown quoted (raw UTF-8,
+// capped), binary shown as hex (capped). Advances the reader past the padded field.
+static void patchgram_tl_str(struct PatchgramTLReader *r, struct PatchgramTLOut *o, bool as_text) {
+    if (r->pos >= r->len) { r->err = true; return; }
+    size_t head, n;
+    uint32_t L = r->p[r->pos];
+    if (L < 254) { n = L; head = 1; }
+    else {
+        if (r->pos + 4 > r->len) { r->err = true; return; }
+        n = (size_t)r->p[r->pos + 1] | ((size_t)r->p[r->pos + 2] << 8) | ((size_t)r->p[r->pos + 3] << 16);
+        head = 4;
+    }
+    size_t start = r->pos + head;
+    if (start + n > r->len) { r->err = true; n = (start < r->len) ? r->len - start : 0; }
+    if (as_text) {
+        size_t shown = n > 96 ? 96 : n;
+        patchgram_tl_put(o, "\"");
+        patchgram_tl_put_raw(o, r->p + start, shown);
+        if (n > shown) { patchgram_tl_put(o, "\xe2\x80\xa6"); }
+        patchgram_tl_put(o, "\"");
+    } else {
+        size_t shown = n > 32 ? 32 : n;
+        patchgram_tl_put_hex(o, r->p + start, shown);
+        if (n > shown) { patchgram_tl_put(o, "\xe2\x80\xa6"); }
+    }
+    size_t total = head + n;
+    r->pos += total + ((4 - (total & 3)) & 3);
+}
+
+static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
+                                     struct PatchgramTLOut *o, int depth, bool with_id);
+
+static void patchgram_tl_decode_value(uint8_t vec, uint8_t op, struct PatchgramTLReader *r,
+                                      struct PatchgramTLOut *o, int depth) {
+    if (r->err || o->full) { return; }
+    if (depth > 24) { r->err = true; return; }
+    if (vec) {
+        if (vec == 1) {
+            if (patchgram_tl_u32(r) != PATCHGRAM_TL_VECTOR_ID) { patchgram_tl_put(o, "<novec>"); r->err = true; return; }
+        }
+        int32_t n = (int32_t)patchgram_tl_u32(r);
+        if (n < 0 || n > 200000) { patchgram_tl_put(o, "<badvec>"); r->err = true; return; }
+        patchgram_tl_put(o, "[");
+        for (int32_t k = 0; k < n && !r->err && !o->full; k++) {
+            if (k) { patchgram_tl_put(o, ", "); }
+            patchgram_tl_decode_value(0, op, r, o, depth + 1);
+        }
+        patchgram_tl_put(o, "]");
+        return;
+    }
+    char tmp[48];
+    switch (op) {
+        case PG_TL_INT:    snprintf(tmp, sizeof tmp, "%d", (int32_t)patchgram_tl_u32(r)); patchgram_tl_put(o, tmp); break;
+        case PG_TL_FLAGS:  snprintf(tmp, sizeof tmp, "0x%x", patchgram_tl_u32(r)); patchgram_tl_put(o, tmp); break;
+        case PG_TL_LONG:   snprintf(tmp, sizeof tmp, "%lld", (long long)patchgram_tl_i64(r)); patchgram_tl_put(o, tmp); break;
+        case PG_TL_DOUBLE: snprintf(tmp, sizeof tmp, "%g", patchgram_tl_f64(r)); patchgram_tl_put(o, tmp); break;
+        case PG_TL_INT128: if (r->pos + 16 <= r->len) { patchgram_tl_put_hex(o, r->p + r->pos, 16); r->pos += 16; } else { r->err = true; } break;
+        case PG_TL_INT256: if (r->pos + 32 <= r->len) { patchgram_tl_put_hex(o, r->p + r->pos, 32); r->pos += 32; } else { r->err = true; } break;
+        case PG_TL_STRING: patchgram_tl_str(r, o, true); break;
+        case PG_TL_BYTES:  patchgram_tl_str(r, o, false); break;
+        case PG_TL_TRUE:   patchgram_tl_put(o, "true"); break;
+        case PG_TL_BOXED:  patchgram_tl_decode_ctor(patchgram_tl_u32(r), r, o, depth + 1, false); break;
+        default:           patchgram_tl_put(o, "<complex>"); r->err = true; break;
+    }
+}
+
+static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
+                                     struct PatchgramTLOut *o, int depth, bool with_id) {
+    if (r->err || o->full) { return; }
+    if (depth > 24) { r->err = true; return; }
+    char scratch[24];
+    const struct PatchgramTLCtor *c = patchgram_tl_find(id);
+    if (!c) {
+        snprintf(scratch, sizeof scratch, "unknown#%08x", id);
+        patchgram_tl_put(o, scratch);
+        r->err = true;  /* unknown params → stop rather than misparse */
+        return;
+    }
+    patchgram_tl_put(o, g_tl_strpool + c->name_off);
+    if (with_id) { snprintf(scratch, sizeof scratch, "#%08x", id); patchgram_tl_put(o, scratch); }
+    if (c->pcount == 0) { return; }
+    uint32_t flagvals[256];
+    memset(flagvals, 0, sizeof flagvals);
+    patchgram_tl_put(o, " { ");
+    bool first = true;
+    for (uint16_t i = 0; i < c->pcount && !r->err && !o->full; i++) {
+        const struct PatchgramTLParam *p = &g_tl_params[c->pstart + i];
+        if (p->op == PG_TL_FLAGS) {
+            uint32_t v = patchgram_tl_u32(r);
+            if (i < 256) { flagvals[i] = v; }
+            if (!first) { patchgram_tl_put(o, ", "); }
+            first = false;
+            patchgram_tl_put(o, g_tl_strpool + p->name_off);
+            snprintf(scratch, sizeof scratch, "=0x%x", v);
+            patchgram_tl_put(o, scratch);
+            continue;
+        }
+        if (p->flag_idx != 0xFF) {
+            uint32_t fv = flagvals[p->flag_idx];  // flag_idx is uint8 → always in [0,255]
+            if (!((fv >> p->flag_bit) & 1u)) { continue; }
+            if (p->op == PG_TL_TRUE) {
+                if (!first) { patchgram_tl_put(o, ", "); }
+                first = false;
+                patchgram_tl_put(o, g_tl_strpool + p->name_off);
+                patchgram_tl_put(o, "=true");
+                continue;
+            }
+        }
+        if (!first) { patchgram_tl_put(o, ", "); }
+        first = false;
+        patchgram_tl_put(o, g_tl_strpool + p->name_off);
+        patchgram_tl_put(o, "=");
+        patchgram_tl_decode_value(p->vec, p->op, r, o, depth);
+    }
+    patchgram_tl_put(o, " }");
+}
+
+// Decode one MTProto object (the body words) into `out`. Never crashes: on an unknown ctor or a
+// short/odd buffer it stops and keeps whatever decoded so far (+ "…" if the output was truncated).
+static void patchgram_tl_decode(const uint8_t *body, size_t bytelen, char *out, size_t outcap) {
+    if (outcap < 8) { if (outcap) { out[0] = 0; } return; }
+    out[0] = 0;
+    struct PatchgramTLReader r = { body, bytelen, 0, false };
+    struct PatchgramTLOut o = { out, outcap, 0, false };
+    uint32_t top = patchgram_tl_u32(&r);
+    if (r.err) { patchgram_tl_put(&o, "<empty>"); return; }
+    patchgram_tl_decode_ctor(top, &r, &o, 0, true);
+    if (o.full && outcap >= 4) { memcpy(out + outcap - 4, "\xe2\x80\xa6", 3); out[outcap - 1] = 0; }
+}
+
+// Append one decoded MTProto line: timestamp (with date), direction, request id, and the fully
+// decoded TL object (method/type + recursively-decoded body). Self-gated on logger enabled+started.
+static void patchgram_mtproto_log_emit(
+    const char *direction,
+    int32_t request_id,
+    const uint32_t *words,
+    int64_t word_count,
+    size_t body_index
+) {
+    if (!g_mtproto_logger_enabled || !g_mtproto_logger_started || !g_mtproto_log_path[0]) {
+        return;
+    }
+    if (!words || word_count <= 0 || (size_t)word_count <= body_index) {
+        return;
+    }
+    FILE *file = fopen(g_mtproto_log_path, "a");
+    if (!file) {
+        return;
+    }
+    time_t now = time(NULL);
+    struct tm tm_value;
+    localtime_r(&now, &tm_value);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &tm_value);
+    const uint8_t *body = (const uint8_t *)(words + body_index);
+    size_t bytelen = (size_t)(word_count - body_index) * sizeof(uint32_t);
+    if (bytelen > (1u << 20)) { bytelen = 1u << 20; }  // bound CPU on giant responses
+    char decoded[8192];
+    patchgram_tl_decode(body, bytelen, decoded, sizeof(decoded));
+    fprintf(file, "[%s] %s reqId=%d %s\n", timestamp, direction, (int)request_id, decoded);
+    fclose(file);
+}
+
+// Log an outgoing request. `request_ref` is the SerializedRequest handle passed to
+// session_send_prepared; the TL body constructor sits at PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION.
+static void patchgram_mtproto_log_request(void *request_ref) {
+    if (!g_mtproto_logger_enabled || !request_ref) {
+        return;
+    }
+    void *request_data = NULL;
+    memcpy(&request_data, request_ref, sizeof(request_data));
+    if (!request_data) {
+        return;
+    }
+    uint32_t *words = NULL;
+    int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(request_id));
+    patchgram_mtproto_log_emit("-> REQUEST ", request_id, words, word_count, PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION);
+}
+
+// Log an incoming response. `response` is one entry of the received queue; its TL body
+// constructor is the first word.
+static void patchgram_mtproto_log_response(void *response) {
+    if (!g_mtproto_logger_enabled || !response) {
+        return;
+    }
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+    uint32_t *words = NULL;
+    int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    patchgram_mtproto_log_emit("<- RESPONSE", request_id, words, word_count, 0);
+}
+
 static void patchgram_apply_fragment_phone_received_queue(void *session_private) {
     if (!session_private) {
         return;
@@ -5002,6 +5282,7 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
         return;
     }
     for (uint8_t *response = begin; response < end; response += PATCHGRAM_RESPONSE_SIZE) {
+        patchgram_mtproto_log_response(response);
         patchgram_strip_noforwards_in_response(response);
         patchgram_apply_custom_username_list_response(response);
         patchgram_log_custom_username_response_tl(response);
@@ -5022,6 +5303,7 @@ static void patchgram_session_private_try_to_receive(void *session_private) {
 }
 
 static void patchgram_session_send_prepared(void *session, void *request_ref, int64_t ms_can_wait) {
+    patchgram_mtproto_log_request(request_ref);
     patchgram_log_custom_username_request_tl(request_ref, ms_can_wait);
     int32_t custom_username_full_user_request_id = 0;
     if (patchgram_custom_username_full_user_request_should_be_local(
@@ -6515,6 +6797,59 @@ static NSString *patchgram_overlay_state_path(void) {
     return [dir stringByAppendingPathComponent:@"overlay_state.plist"];
 }
 
+// Open the MTProto logger's file for this run. Target dir is the host app's Resources
+// (<Telegram.app>/Contents/Resources/logs_mtproto_pg). Called from the dylib constructor,
+// before main() runs, so the file exists before the first MTP packet. One file per launch,
+// named log_<start time>.log; the started guard keeps it to a single file per run.
+static void patchgram_mtproto_logger_start(void) {
+    if (!g_mtproto_logger_enabled || g_mtproto_logger_started) {
+        return;
+    }
+    @autoreleasepool {
+        NSString *resources = [[NSBundle mainBundle] resourcePath];
+        if (!resources.length) {
+            NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+            if (bundlePath.length) {
+                resources = [bundlePath stringByAppendingPathComponent:@"Contents/Resources"];
+            }
+        }
+        if (!resources.length) {
+            patchgram_log("MTPROTO LOGGER no resources path; logger disabled this run");
+            return;
+        }
+        NSString *dir = [resources stringByAppendingPathComponent:@"logs_mtproto_pg"];
+        NSError *err = nil;
+        if (![[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                       withIntermediateDirectories:YES
+                                                        attributes:nil
+                                                             error:&err]) {
+            patchgram_log("MTPROTO LOGGER mkdir failed dir=%s err=%s",
+                          dir.UTF8String,
+                          err.localizedDescription.UTF8String ?: "?");
+            return;
+        }
+        time_t now = time(NULL);
+        struct tm tm_value;
+        localtime_r(&now, &tm_value);
+        char stamp[32];
+        strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &tm_value);
+        NSString *file = [dir stringByAppendingPathComponent:
+                          [NSString stringWithFormat:@"log_%s.log", stamp]];
+        snprintf(g_mtproto_log_path, sizeof(g_mtproto_log_path), "%s", file.UTF8String);
+        g_mtproto_logger_started = true;
+        FILE *f = fopen(g_mtproto_log_path, "a");
+        if (f) {
+            char ts[32];
+            strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tm_value);
+            fprintf(f, "# Patchgram MTProto logger\n");
+            fprintf(f, "# started %s\n", ts);
+            fprintf(f, "# format: [time] DIRECTION reqId=<id> method/type#id { decoded TL body }\n");
+            fclose(f);
+        }
+        patchgram_log("MTPROTO LOGGER started path=%s", g_mtproto_log_path);
+    }
+}
+
 #if PATCHGRAM_HAVE_RLOTTIE
 #include <zlib.h>
 // rlottie C API — librlottie.a is linked by the apply-time compile when the static lib is bundled
@@ -7744,4 +8079,7 @@ static void patchgram_bot_verification_init(void) {
     patchgram_apply_memory_patches("initial");
     patchgram_start_runtime_reload_thread();
     patchgram_overlay_start();
+    // Open the MTProto logger now (still in the constructor → before main → before the first
+    // packet) so a full request/response trace is captured from the very first send.
+    patchgram_mtproto_logger_start();
 }

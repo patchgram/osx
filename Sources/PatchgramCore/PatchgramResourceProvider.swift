@@ -111,6 +111,17 @@ public struct PatchgramResourceProvider: Sendable {
         String(decoding: data(named: Self.engineTemplateName), as: UTF8.self)
     }
 
+    /// The bundled generated TL-schema C fragment (string pool + ctor/param tables) that fills the
+    /// `__PATCHGRAM_TL_SCHEMA_PLACEHOLDER__` in the engine, giving the dylib its in-line MTProto
+    /// decoder. Nil on an older app that predates the schema resource → caller substitutes a stub.
+    public func tlSchemaInc() -> String? {
+        guard let url = Self.coreBundle.url(forResource: "tl_schema", withExtension: "c.inc"),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     /// Manifest of the currently active bundle (cache override → bundled default).
     public func patchManifest() -> PatchBundleManifest? {
         try? JSONDecoder().decode(PatchBundleManifest.self, from: data(named: Self.patchManifestName))
