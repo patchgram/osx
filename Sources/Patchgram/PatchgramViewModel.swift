@@ -32,7 +32,8 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         "binary.stories.hide",
         "binary.ads.disable_sponsored",
         "binary.overlay.profile_rain",
-        "binary.mtproto.logger"
+        "binary.mtproto.logger",
+        "binary.stickers.recent_limit"
     ]
 
     var id: String { status.id }
@@ -361,7 +362,8 @@ final class PatchgramViewModel: ObservableObject {
         "binary.visual.sensitive_blur",
         "binary.stories.hide",
         adsFeatureRuleId,
-        "binary.mtproto.logger"
+        "binary.mtproto.logger",
+        "binary.stickers.recent_limit"
     ]
     private static let compositeFeatureRuleIds: Set<String> = [
         customAccountFeatureRuleId,

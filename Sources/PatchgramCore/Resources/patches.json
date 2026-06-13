@@ -1101,6 +1101,29 @@
           "summary" : "Installs a runtime memory patch for local sensitive-content blur suppression, forcing media sensitivity checks to return false locally.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Sensitive blur"
+        },
+        {
+          "category" : "messages",
+          "constructorId" : "recent-stickers-limit",
+          "delivery" : "runtimeMemory",
+          "disabledBehavior" : "Restores Telegram's default limit of 20 recent stickers in the panel.",
+          "id" : "binary.stickers.recent_limit",
+          "kind" : "runtimeMemory",
+          "methodName" : "StickersListWidget::collectRecentStickers (kRecentDisplayLimit)",
+          "replacements" : [
+            {
+              "alternativeGroup" : "stickers.recent_display_limit.raise_to_200",
+              "expectedOccurrences" : 1,
+              "id" : "stickers.recent_display_limit.raise_to_200",
+              "mode" : "toggle",
+              "originalHex" : "2a0108cb4afd4593ebf301b26b5595f24a7d0b9b5f5100f1",
+              "patchedHex" : "2a0108cb4afd4593ebf301b26b5595f24a7d0b9b5f2103f1"
+            }
+          ],
+          "riskNote" : "Local display-only change to the in-panel recent-sticker cap; it does not change server data. The number actually shown is still bounded by how many recent stickers exist (server limit ~200).",
+          "summary" : "Raises the recent stickers display limit from Telegram's default 20 to 200, so the \"Recent\" row in the sticker panel shows many more recently-used stickers. Runtime memory patch on the kRecentDisplayLimit comparison in StickersListWidget::collectRecentStickers.",
+          "supportedBuildNote" : "Derived from Telegram Desktop 6.9.3 (arm64). Other builds are patched only when the exact byte pattern matches.",
+          "title" : "More recent stickers"
         }
       ]
     },

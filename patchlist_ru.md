@@ -35,6 +35,7 @@
 | Open links without warning | `dylib` | Открывает скрытые/внешние ссылки без дополнительного предупреждения Telegram. |
 | Disable media spoilers | `dylib` | Показывает фото/видео со спойлером сразу, без локального блюра. |
 | Block read messages | `dylib` | Блокирует запросы прочтения истории, чтобы сообщения не отмечались прочитанными через пропатченный путь. |
+| More recent stickers | `dylib` | Поднимает лимит отображения недавних стикеров с дефолтных 20 до 200 — в ряду «Recent» в панели стикеров показывается намного больше недавно использованных. Runtime-патч памяти по `kRecentDisplayLimit` в `StickersListWidget::collectRecentStickers`. |
 
 ### Optimizations
 

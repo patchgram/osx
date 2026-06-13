@@ -1140,7 +1140,7 @@ final class BinaryPatchEngineTests: XCTestCase {
             BinaryPatchRuleDefinitions.builtInRules.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        XCTAssertEqual(BinaryPatchRuleCatalog.rules.count, 26)
+        XCTAssertEqual(BinaryPatchRuleCatalog.rules.count, 27)
         for rule in BinaryPatchRuleCatalog.rules {
             let seed = try XCTUnwrap(builtInById[rule.id], "no built-in seed for \(rule.id)")
             XCTAssertEqual(rule, seed, "patches.json round-trip mismatch for \(rule.id)")
@@ -1150,7 +1150,7 @@ final class BinaryPatchEngineTests: XCTestCase {
     func testPatchBundleVerifierAcceptsSignedBundleAndRejectsTampering() throws {
         let provider = PatchgramResourceProvider()
         let manifestData = provider.bundledData(named: "patch-manifest.json")
-        let signature = try XCTUnwrap(Data(base64Encoded: "ZMdFJJAHZQLeMmVYMsRV6DZeIPIbJjdEG0TCjMBw/zgwLyPf+yuzQPO3IgJ5oMw8ezyKyqSODm1slL658YJrCA=="))
+        let signature = try XCTUnwrap(Data(base64Encoded: "zsh6U9ZX/S9imTSZG138ZDllSI43wZaYSIDLNH+5AgTBPNu0zYoiq/IapBi2brPMdCzt4qrY5GHxfofg3p4mCA=="))
         let files: [String: Data] = [
             "patches.json": provider.bundledData(named: "patches.json"),
             "engine.c.template": provider.bundledData(named: "engine.c.template")
@@ -1159,7 +1159,7 @@ final class BinaryPatchEngineTests: XCTestCase {
 
         // Valid signed bundle is accepted (proves openssl-signed → CryptoKit-verified, pinned key).
         let manifest = try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.0.9")
-        XCTAssertEqual(manifest.bundleVersion, 9)
+        XCTAssertEqual(manifest.bundleVersion, 10)
 
         // Tampered file → rejected.
         var tampered = files
@@ -1195,7 +1195,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         let provider = PatchgramResourceProvider(cacheDirectory: dir)
 
         // No cache → full bundled catalog.
-        XCTAssertEqual(PatchCatalogLoader.load(provider: provider).count, 26)
+        XCTAssertEqual(PatchCatalogLoader.load(provider: provider).count, 27)
 
         // A written cache bundle (what a verified update produces) is loaded with full fidelity —
         // this is the hot-reload path: writeCacheFiles + reload → catalog reflects the new patches.

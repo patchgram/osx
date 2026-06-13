@@ -1,1 +1,1 @@
-{"bundleVersion":9,"files":{"engine.c.template":"ba6b323f3e213445c7aff529de93c8282666a66d36f78f4bc0e0ebc551ad6490","patches.json":"8cfd7488499ab77f3d6a74f077894e944b8dd71fb0c522464d8727873f1d711d"},"minAppVersion":"1.0.9","notes":"MTProto logger: in-dylib TL decoder (readable live log)"}
+{"bundleVersion":10,"files":{"engine.c.template":"ba6b323f3e213445c7aff529de93c8282666a66d36f78f4bc0e0ebc551ad6490","patches.json":"441ec57d72625e73faf51bea755e149b07df30ce468566fef50646190337c198"},"minAppVersion":"1.0.9","notes":"More recent stickers patch (Messages, dylib)"}

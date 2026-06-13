@@ -2307,6 +2307,29 @@ public enum BinaryPatchRuleDefinitions {
                 )
             ]
         ),
+        // Raises kRecentDisplayLimit (StickersListWidget::collectRecentStickers) from 20 to 200 so
+        // the Recent row shows many more recently-used stickers (the same cap AyuGram lifts). The
+        // signature is the size()>=20 site (sub/asr#5/×(1/3) magic/cmp x10,#0x14); only the cmp
+        // immediate changes (0x14 → 0xc8). Runtime memory patch — no Telegram file bytes on disk.
+        BinaryPatchRule(
+            id: "binary.stickers.recent_limit",
+            title: "More recent stickers",
+            methodName: "StickersListWidget::collectRecentStickers (kRecentDisplayLimit)",
+            constructorId: "recent-stickers-limit",
+            kind: .runtimeMemory,
+            summary: "Raises the recent stickers display limit from Telegram's default 20 to 200, so the \"Recent\" row in the sticker panel shows many more recently-used stickers. Runtime memory patch on the kRecentDisplayLimit comparison in StickersListWidget::collectRecentStickers.",
+            disabledBehavior: "Restores Telegram's default limit of 20 recent stickers in the panel.",
+            riskNote: "Local display-only change to the in-panel recent-sticker cap; it does not change server data. The number actually shown is still bounded by how many recent stickers exist (server limit ~200).",
+            supportedBuildNote: "Derived from Telegram Desktop 6.9.3 (arm64). Other builds are patched only when the exact byte pattern matches.",
+            replacements: [
+                BinaryReplacement(
+                    id: "stickers.recent_display_limit.raise_to_200",
+                    originalHex: "2a0108cb4afd4593ebf301b26b5595f24a7d0b9b5f5100f1",
+                    patchedHex: "2a0108cb4afd4593ebf301b26b5595f24a7d0b9b5f2103f1"
+                )
+            ],
+            delivery: .runtimeMemory
+        ),
         BinaryPatchRule(
             id: "binary.stories.hide",
             title: "Hide stories",
@@ -2466,7 +2489,8 @@ public enum BinaryPatchRuleDefinitions {
             return .accounts
         case "binary.messages.settings", "binary.inline.callback_hover", "binary.visual.sensitive_blur",
              "binary.links.open_without_warning", "binary.visual.disable_spoilers",
-             "binary.read_receipts.block_history_read", "binary.messages.scheduled_send":
+             "binary.read_receipts.block_history_read", "binary.messages.scheduled_send",
+             "binary.stickers.recent_limit":
             return .messages
         case "binary.config.disable_monetization", "binary.visual.no_premium_anim",
              "binary.stories.hide", "binary.ads.disable_sponsored":

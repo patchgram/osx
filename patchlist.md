@@ -35,6 +35,7 @@ Patchgram's main screen groups patches into four sections — **Accounts**, **Me
 | Open links without warning | `dylib` | Opens hidden/external links without Telegram's extra confirmation warning. |
 | Disable media spoilers | `dylib` | Shows spoiler-marked photos/videos normally instead of blurring them locally. |
 | Block read messages | `dylib` | Blocks read-history requests so messages are not marked as read through the patched request path. |
+| More recent stickers | `dylib` | Raises the recent stickers display limit from Telegram's default 20 to 200, so the "Recent" row in the sticker panel shows many more recently-used stickers. Runtime memory patch on `kRecentDisplayLimit` in `StickersListWidget::collectRecentStickers`. |
 
 ### Optimizations
 
