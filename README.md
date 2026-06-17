@@ -1,5 +1,5 @@
 # Patchgram
-Required: ARM MacOS 12.0+ (Apple Silicon devices), [Telegram Desktop 6.9.2](https://telegram.org/dl/desktop/mac)
+Required: ARM MacOS 12.0+ (Apple Silicon devices), [Telegram Desktop 6.9.3](https://telegram.org/dl/desktop/mac)
 
 Patch list: [RU](patchlist_ru.md) / [EN](patchlist.md)
 
