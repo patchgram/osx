@@ -1417,6 +1417,19 @@
           "title" : "Spoof profile gifts"
         },
         {
+          "category" : "gifts",
+          "constructorId" : "payments.getstargifts#c4563590 / payments.stargifts#2ed82995",
+          "disabledBehavior" : "Shows only the gifts Telegram returns.",
+          "id" : "binary.gifts.show_hidden",
+          "kind" : "showHiddenGifts",
+          "methodName" : "payments.getStarGifts / payments.starGifts",
+          "replacements" : [],
+          "riskNote" : "Local client-side display patch on the available-gifts response. The extra gifts are shown locally; buying a gift that the server doesn't actually offer will still fail server-side.",
+          "summary" : "Installs a local runtime hook that appends extra star gifts (price 50 Stars, not limited) to the payments.starGifts response, so they appear in the gift purchase menu. Their stickers use the matching custom emoji (resolved from api.changes.tg).",
+          "supportedBuildNote" : "Hooks the MTProto available-gifts response and appends entries with the in-dylib TL walker, independent of byte-level signatures.",
+          "title" : "Show hidden gifts"
+        },
+        {
           "category" : "accounts",
           "constructorId" : "inputcollectibleusername#e39460a9 / fragment.collectibleinfo#6ebdff91",
           "disabledBehavior" : "Keeps Telegram's original self-profile usernames and Fragment username collectible response data.",

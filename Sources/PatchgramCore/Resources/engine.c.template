@@ -497,6 +497,20 @@ static size_t g_captured_emoji_slim_len = 0;
 static int64_t g_captured_emoji_doc_id = 0;
 static uint32_t g_gift_spoof_logs = 0;
 
+// Show-hidden-gifts patch: inject extra starGift entries (stars=50, not limited) into the
+// payments.starGifts (available-gifts) response. The app resolves each gift id → custom-emoji id via
+// api.changes.tg and passes the pairs; the dylib captures each emoji's slim Document (thumbs emptied)
+// from getCustomEmojiDocuments / messages.stickerSet so the injected gift shows the right sticker.
+#define PATCHGRAM_MAX_HIDDEN_GIFTS 24
+static int g_show_hidden_gifts_enabled = 0;
+static int g_hidden_gift_count = 0;
+static int64_t g_hidden_gift_ids[PATCHGRAM_MAX_HIDDEN_GIFTS] = {0};
+static int64_t g_hidden_emoji_ids[PATCHGRAM_MAX_HIDDEN_GIFTS] = {0};
+static int64_t g_hidden_doc_ids[PATCHGRAM_MAX_HIDDEN_GIFTS] = {0};   // emoji id of a captured slim doc
+static uint16_t g_hidden_doc_len[PATCHGRAM_MAX_HIDDEN_GIFTS] = {0};
+static uint8_t g_hidden_doc_bytes[PATCHGRAM_MAX_HIDDEN_GIFTS][1024];
+static uint32_t g_hidden_gift_logs = 0;
+
 static void patchgram_set_log_path(const char *config_path) {
     if (!config_path || !config_path[0]) {
         snprintf(g_log_path, sizeof(g_log_path), "%s", "/tmp/PatchgramHook.log");
@@ -2456,6 +2470,48 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     snprintf(g_gift_spoof_auction_title, sizeof(g_gift_spoof_auction_title), "%s", gift_spoof_auction_title);
     g_gift_spoof_gift_num = (int32_t)patchgram_json_i64(json, "giftSpoofGiftNum", 0);
     g_gift_spoof_was_refunded = patchgram_json_bool(json, "giftSpoofWasRefunded", false) ? 1 : 0;
+    // Show hidden gifts: enabled flag + the gift→custom-emoji pairs to inject. The pairs are the known
+    // hidden gifts with their api.changes.tg emoji ids (baked in); an optional config
+    // "giftHiddenPayload" ("giftId:emojiId,…") overrides them.
+    g_show_hidden_gifts_enabled = patchgram_json_bool(json, "giftShowHiddenEnabled", false) ? 1 : 0;
+    g_hidden_gift_count = 0;
+    {
+        static char hidden_payload[PATCHGRAM_MAX_HIDDEN_GIFTS * 48];
+        hidden_payload[0] = 0;
+        patchgram_json_string(json, "giftHiddenPayload", hidden_payload, sizeof(hidden_payload));
+        const char *p = hidden_payload;
+        while (*p && g_hidden_gift_count < PATCHGRAM_MAX_HIDDEN_GIFTS) {
+            char *end = NULL;
+            long long gid = strtoll(p, &end, 10);
+            if (end == p || *end != ':') { break; }
+            p = end + 1;
+            long long eid = strtoll(p, &end, 10);
+            if (end == p) { break; }
+            p = end;
+            if (gid != 0 && eid != 0) {
+                g_hidden_gift_ids[g_hidden_gift_count] = (int64_t)gid;
+                g_hidden_emoji_ids[g_hidden_gift_count] = (int64_t)eid;
+                g_hidden_gift_count++;
+            }
+            while (*p == ',' || *p == ' ') { p++; }
+        }
+        if (g_hidden_gift_count == 0) {  // no override → use the baked-in hidden gifts
+            static const int64_t def_gift[] = {
+                6026193266406327981LL, 5969796561943660080LL, 5935895822435615975LL,
+                5893356958802511476LL, 5866352046986232958LL, 5801108895304779062LL,
+                5800655655995968830LL, 5922558454332916696LL, 5956217000635139069LL };
+            static const int64_t def_emoji[] = {
+                5447213743417105726LL, 5393309541620291208LL, 5359736160224586485LL,
+                5317000922096769303LL, 5294268489127731562LL, 5224628072619216265LL,
+                5226661632259691727LL, 5345935030143196497LL, 5379850840691476775LL };
+            const int n = (int)(sizeof(def_gift) / sizeof(def_gift[0]));
+            for (int i = 0; i < n && i < PATCHGRAM_MAX_HIDDEN_GIFTS; i++) {
+                g_hidden_gift_ids[i] = def_gift[i];
+                g_hidden_emoji_ids[i] = def_emoji[i];
+            }
+            g_hidden_gift_count = n;
+        }
+    }
     g_bot_verification_enabled = patchgram_json_bool(json, "botVerificationEnabled", false);
     g_custom_level_rating_enabled = patchgram_json_bool(json, "customLevelRatingEnabled", false);
     g_hide_self_phone_enabled = patchgram_json_bool(json, "hideSelfPhoneEnabled", false);
@@ -5092,6 +5148,8 @@ struct PatchgramTLOut { char *buf; size_t cap; size_t len; bool full; };
 #define PATCHGRAM_TL_PEER_CHAT 0x36c6019au
 #define PATCHGRAM_TL_DOCUMENT 0x8fd4c4d8u
 #define PATCHGRAM_TL_TEXT_WITH_ENTITIES 0x751f3146u
+#define PATCHGRAM_TL_PAYMENTS_STAR_GIFTS 0x2ed82995u       // payments.starGifts (available-gifts response)
+#define PATCHGRAM_TL_PAYMENTS_GET_STAR_GIFTS 0xc4563590u   // payments.getStarGifts (request)
 #define PATCHGRAM_TL_VECTOR_BYTES 4
 #define PATCHGRAM_MAX_GIFT_ENTRIES 64
 
@@ -5150,6 +5208,9 @@ struct PatchgramTLRewrite {
     int find_sticker_attr;  // when != 0, locate a documentAttributeSticker to convert to customEmoji
     size_t sticker_attr_off;// ctor offset of the documentAttributeSticker (0 = not found)
     uint32_t sticker_attr_flags; // its flags word (only convertible when 0 → no mask_coords)
+    int find_first_doc;     // when != 0, capture the FIRST Document of any id (clone template)
+    int find_gifts_end;     // when != 0, capture the offset where payments.starGifts.gifts ends
+    size_t gifts_end_off;   // = start of the `chats` field (used as a well-formed-response guard)
 };
 
 static const struct PatchgramTLCtor *patchgram_tl_find(uint32_t id) {
@@ -5337,6 +5398,11 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
         rw->sticker_attr_off = rw->last_ctor_start;          // where the ctor u32 sits
         memcpy(&rw->sticker_attr_flags, r->p + r->pos, 4);   // its flags field (first param)
     }
+    if (rw && rw->find_first_doc && rw->found_len == 0 && !rw->doc_match_pending
+        && id == PATCHGRAM_TL_DOCUMENT) {
+        rw->found_off = rw->last_ctor_start;  // capture the first Document's byte range (clone template)
+        rw->doc_match_pending = 1;
+    }
     if (c->pcount == 0) { return; }
     if (rw && rw->capture && id == PATCHGRAM_TL_SAVED_STAR_GIFT && rw->gift_count < PATCHGRAM_MAX_GIFT_ENTRIES) {
         rw->cur = &rw->entries[rw->gift_count];
@@ -5371,6 +5437,10 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
             else if (strcmp(pname0, "auction_slug") == 0) { rw->cur->auction_at = r->pos; }
         } else if (rw && rw->capture && rw->cur && id == PATCHGRAM_TL_SAVED_STAR_GIFT) {
             if (strcmp(pname0, "gift_num") == 0) { rw->cur->gift_num_at = r->pos; }
+        }
+        if (rw && rw->find_gifts_end && id == PATCHGRAM_TL_PAYMENTS_STAR_GIFTS
+            && strcmp(pname0, "chats") == 0) {
+            rw->gifts_end_off = r->pos;  // gifts vector ends here; insert injected gifts before chats
         }
         if (p->op == PG_TL_FLAGS) {
             const size_t flags_pos = r->pos;
@@ -5940,6 +6010,129 @@ static void patchgram_capture_emoji_doc_response(void *response) {
     }
 }
 
+// Produce a thumbs-emptied copy of a Document into out[]; returns the new length (0 on failure).
+static size_t patchgram_doc_slim(const uint8_t *doc, size_t len, uint8_t *out, size_t outcap) {
+    if (len == 0 || len > outcap) { return 0; }
+    struct PatchgramGiftEntry de; memset(&de, 0, sizeof de);
+    struct PatchgramTLRewrite drw; memset(&drw, 0, sizeof drw);
+    drw.capture = 1; drw.cur = &de; drw.in_sticker = 1; drw.base = (uint8_t *)doc;
+    struct PatchgramTLReader r = { doc, len, 0, false };
+    char s = 0; struct PatchgramTLOut o = { &s, 1, 0, true };
+    const uint32_t c = patchgram_tl_u32(&r);
+    patchgram_tl_decode_ctor(c, &r, &o, 0, false, &drw);
+    static const uint8_t empty_vec8[8] = { 0x15, 0xc4, 0xb5, 0x1c, 0, 0, 0, 0 };
+    if (de.thumbs_off > 0 && de.thumbs_len > sizeof(empty_vec8) && de.thumbs_off + de.thumbs_len <= len) {
+        const size_t rel = de.thumbs_off;  // offset within `doc` (decode started at 0)
+        const size_t newlen = len - de.thumbs_len + sizeof(empty_vec8);
+        if (newlen > outcap) { return 0; }
+        memcpy(out, doc, rel);
+        memcpy(out + rel, empty_vec8, sizeof(empty_vec8));
+        memcpy(out + rel + sizeof(empty_vec8), doc + rel + de.thumbs_len, len - rel - de.thumbs_len);
+        return newlen;
+    }
+    memcpy(out, doc, len);
+    return len;
+}
+
+// Validate that `buf` decodes as a payments.starGifts and consumes exactly `len` bytes.
+static bool patchgram_star_gifts_valid(const uint8_t *buf, size_t len) {
+    if (len < 4 || (len & 3u)) { return false; }
+    struct PatchgramTLReader r = { buf, len, 0, false };
+    char sink = 0; struct PatchgramTLOut o = { &sink, 1, 0, true };
+    struct PatchgramTLRewrite vrw; memset(&vrw, 0, sizeof vrw); vrw.base = (uint8_t *)buf;
+    uint32_t top = patchgram_tl_u32(&r);
+    if (r.err || top != PATCHGRAM_TL_PAYMENTS_STAR_GIFTS) { return false; }
+    patchgram_tl_decode_ctor(top, &r, &o, 0, false, &vrw);
+    return !r.err && r.pos == len;
+}
+
+// Inject the configured hidden gifts into a payments.starGifts (available-gifts) response. Appends
+// new starGift entries (flags=0, stars=50, convert_stars=43) at the end of the gifts vector and bumps
+// its count — writing ONLY into the buffer's existing spare capacity (QArrayData.alloc), never growing
+// or reallocating the Qt buffer. If it doesn't fit the capacity, it's skipped (no crash). Each new
+// gift's sticker is the captured slim emoji document when available, else a clone of an existing gift's
+// sticker with its id swapped to the emoji id (which makes the client fetch + cache that emoji).
+static void patchgram_inject_hidden_gifts(void *response) {
+    if (!response || !g_show_hidden_gifts_enabled || g_hidden_gift_count <= 0) { return; }
+    uint32_t *words = NULL; int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count < 4) { return; }
+    if (words[0] != PATCHGRAM_TL_PAYMENTS_STAR_GIFTS || words[2] != PATCHGRAM_TL_VECTOR_ID) { return; }
+    const uint8_t *body = (const uint8_t *)words;
+    const size_t old_len = (size_t)word_count * sizeof(uint32_t);
+
+    // One decode pass to find (a) the clone template = first existing gift's sticker document, and
+    // (b) where the gifts vector ends (= the `chats` field) — used only as a correctness guard that
+    // the buffer really is a well-formed payments.starGifts (= hash, gifts, chats, users).
+    struct PatchgramTLRewrite frw; memset(&frw, 0, sizeof frw);
+    frw.base = (uint8_t *)body; frw.find_first_doc = 1; frw.find_gifts_end = 1;
+    struct PatchgramTLReader r = { body, old_len, 0, false };
+    char sk = 0; struct PatchgramTLOut o = { &sk, 1, 0, true };
+    const uint32_t top = patchgram_tl_u32(&r);
+    patchgram_tl_decode_ctor(top, &r, &o, 0, false, &frw);
+    if (frw.found_len == 0 || frw.found_off + frw.found_len > old_len) { return; }
+    if (frw.gifts_end_off < 16 || frw.gifts_end_off > old_len) { return; }
+    // Insert at the FRONT of the gifts vector so the hidden gifts show first: items begin right after
+    // payments.starGifts ctor (w0) + hash (w1) + vector ctor (w2) + count (w3) = byte offset 16.
+    const size_t gifts_start = 16;
+    static uint8_t tmpl[2048];
+    const size_t tmpl_len = patchgram_doc_slim(body + frw.found_off, frw.found_len, tmpl, sizeof tmpl);
+    if (tmpl_len < 16) { return; }
+
+    static uint8_t add[PATCHGRAM_MAX_HIDDEN_GIFTS * 1280];
+    size_t ap = 0; int injected = 0;
+    for (int i = 0; i < g_hidden_gift_count && i < PATCHGRAM_MAX_HIDDEN_GIFTS; i++) {
+        const uint8_t *doc = NULL; size_t doclen = 0;
+        for (int k = 0; k < PATCHGRAM_MAX_HIDDEN_GIFTS; k++) {
+            if (g_hidden_doc_ids[k] == g_hidden_emoji_ids[i] && g_hidden_doc_len[k] > 0) {
+                doc = g_hidden_doc_bytes[k]; doclen = g_hidden_doc_len[k]; break;
+            }
+        }
+        static uint8_t clone[2048];
+        if (!doc) {  // bootstrap: clone template with the emoji id so the client fetches that emoji
+            memcpy(clone, tmpl, tmpl_len);
+            memcpy(clone + 8, &g_hidden_emoji_ids[i], 8);  // document.id at +8
+            doc = clone; doclen = tmpl_len;
+        }
+        const size_t need = 4 + 4 + 8 + doclen + 8 + 8;
+        if (ap + need > sizeof add) { break; }
+        uint32_t sg = PATCHGRAM_TL_STAR_GIFT; memcpy(add + ap, &sg, 4); ap += 4;
+        int32_t fl = 0; memcpy(add + ap, &fl, 4); ap += 4;
+        memcpy(add + ap, &g_hidden_gift_ids[i], 8); ap += 8;
+        memcpy(add + ap, doc, doclen); ap += doclen;
+        int64_t stars = 50; memcpy(add + ap, &stars, 8); ap += 8;
+        int64_t conv = 43; memcpy(add + ap, &conv, 8); ap += 8;
+        injected++;
+    }
+    if (injected == 0 || (ap & 3u)) { return; }
+
+    const int64_t new_word_count = word_count + (int64_t)(ap / 4);
+    void *d = NULL; memcpy(&d, (const uint8_t *)response + PATCHGRAM_QVECTOR_D_OFFSET, sizeof(d));
+    int64_t cap = 0; if (d) { memcpy(&cap, (const uint8_t *)d + 8, sizeof(cap)); }
+    if (!d || new_word_count > cap) {
+        if (g_hidden_gift_logs < 16) { g_hidden_gift_logs++; patchgram_log("HIDDEN GIFTS skip: need %lld words > capacity %lld", (long long)new_word_count, (long long)cap); }
+        return;
+    }
+    // Splice into spare capacity: shift the whole gifts body (existing gifts + chats + users) down by
+    // `ap` from the front of the vector, drop the new gift entries into the gap so they come first,
+    // bump the gifts count + size word, then validate.
+    uint8_t *w = (uint8_t *)words;
+    memmove(w + gifts_start + ap, w + gifts_start, old_len - gifts_start);
+    memcpy(w + gifts_start, add, ap);
+    uint32_t cnt = 0; memcpy(&cnt, w + 12, 4); cnt += (uint32_t)injected; memcpy(w + 12, &cnt, 4);
+    if (!patchgram_star_gifts_valid(body, (size_t)new_word_count * sizeof(uint32_t))) {
+        // revert: shift the body back up + restore the count (the trailing tail is now stale but the
+        // size word is never bumped, so the client still reads the original response).
+        memcpy(&cnt, w + 12, 4); cnt -= (uint32_t)injected; memcpy(w + 12, &cnt, 4);
+        memmove(w + gifts_start, w + gifts_start + ap, old_len - gifts_start);
+        if (g_hidden_gift_logs < 16) { g_hidden_gift_logs++; patchgram_log("HIDDEN GIFTS skip: rebuilt response failed validation"); }
+        return;
+    }
+    memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_word_count, sizeof(new_word_count));
+    if (g_hidden_gift_logs < 16) { g_hidden_gift_logs++; patchgram_log("HIDDEN GIFTS injected=%d new=%lld words (cap=%lld)", injected, (long long)new_word_count, (long long)cap); }
+}
+
 static void patchgram_apply_gift_spoof_response(void *response) {
     if (!response) { return; }
     int32_t request_id = 0;
@@ -6081,6 +6274,9 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
         if (g_gift_spoof_enabled) {
             patchgram_capture_emoji_doc_response(response);
             patchgram_apply_gift_spoof_response(response);
+        }
+        if (g_show_hidden_gifts_enabled) {
+            patchgram_inject_hidden_gifts(response);
         }
         patchgram_strip_noforwards_in_response(response);
         patchgram_apply_custom_username_list_response(response);

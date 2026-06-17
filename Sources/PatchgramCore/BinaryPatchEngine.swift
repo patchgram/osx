@@ -220,6 +220,7 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let giftSpoofAuctionTitle: String
     let giftSpoofGiftNum: Int32
     let giftSpoofWasRefunded: Bool
+    let giftShowHiddenEnabled: Bool
     let customListUsernamesEnabled: Bool
     let customListUsernamesPayload: String
     let visualPeerBadgeEnabled: Bool
@@ -359,6 +360,7 @@ public final class BinaryPatchEngine {
     private static let localPersonalChannelRuleId = "binary.visual.local_personal_channel"
     private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
     private static let starGiftSpoofRuleId = "binary.gifts.spoof_profile"
+    private static let showHiddenGiftsRuleId = "binary.gifts.show_hidden"
     private static let customListUsernamesRuleId = "binary.visual.custom_list_usernames"
     private static let visualPeerBadgeRuleId = "binary.visual.peer_badge"
     private static let noPremiumAnimRuleId = "binary.visual.no_premium_anim"
@@ -422,6 +424,7 @@ public final class BinaryPatchEngine {
         localPersonalChannelRuleId,
         fragmentPhoneRuleId,
         starGiftSpoofRuleId,
+        showHiddenGiftsRuleId,
         customListUsernamesRuleId,
         visualPeerBadgeRuleId,
         scheduledSendRuleId,
@@ -2086,6 +2089,7 @@ public final class BinaryPatchEngine {
             giftSpoofAuctionTitle: starGiftSpoofConfig.auctionTitle.trimmingCharacters(in: .whitespacesAndNewlines),
             giftSpoofGiftNum: starGiftSpoofConfig.giftNumber,
             giftSpoofWasRefunded: starGiftSpoofConfig.wasRefunded,
+            giftShowHiddenEnabled: enabled.contains(Self.showHiddenGiftsRuleId),
             customListUsernamesEnabled: enabled.contains(Self.customListUsernamesRuleId),
             customListUsernamesPayload: customListUsernamesConfig.runtimePayload,
             visualPeerBadgeEnabled: enabled.contains(Self.visualPeerBadgeRuleId),

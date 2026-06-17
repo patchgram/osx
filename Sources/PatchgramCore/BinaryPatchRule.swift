@@ -17,6 +17,7 @@ public enum BinaryPatchRuleKind: String, Codable, Sendable {
     case fragmentPhone
     case customListUsernames
     case starGiftSpoof
+    case showHiddenGifts
     case runtimeMemory
 }
 
@@ -2360,6 +2361,18 @@ public enum BinaryPatchRuleDefinitions {
             replacements: []
         ),
         BinaryPatchRule(
+            id: "binary.gifts.show_hidden",
+            title: "Show hidden gifts",
+            methodName: "payments.getStarGifts / payments.starGifts",
+            constructorId: "payments.getStarGifts#c4563590 / payments.starGifts#2ed82995",
+            kind: .showHiddenGifts,
+            summary: "Installs a local runtime hook that appends extra star gifts (price 50 Stars, not limited) to the payments.starGifts response, so they appear in the gift purchase menu. Their stickers use the matching custom emoji (resolved from api.changes.tg).",
+            disabledBehavior: "Shows only the gifts Telegram returns.",
+            riskNote: "Local client-side display patch on the available-gifts response. The extra gifts are shown locally; buying a gift that the server doesn't actually offer will still fail server-side.",
+            supportedBuildNote: "Hooks the MTProto available-gifts response and appends entries with the in-dylib TL walker, independent of byte-level signatures.",
+            replacements: []
+        ),
+        BinaryPatchRule(
             id: "binary.visual.custom_list_usernames",
             title: "Custom list usernames",
             methodName: "Data::UsernamesInfo / fragment.getCollectibleInfo",
@@ -2708,7 +2721,7 @@ public enum BinaryPatchRuleDefinitions {
         case "binary.config.disable_monetization", "binary.visual.no_premium_anim",
              "binary.stories.hide", "binary.ads.disable_sponsored":
             return .optimizations
-        case "binary.gifts.spoof_profile":
+        case "binary.gifts.spoof_profile", "binary.gifts.show_hidden":
             return .gifts
         default:
             return .misc
