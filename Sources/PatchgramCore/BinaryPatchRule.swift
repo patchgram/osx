@@ -16,6 +16,7 @@ public enum BinaryPatchRuleKind: String, Codable, Sendable {
     case localPersonalChannel
     case fragmentPhone
     case customListUsernames
+    case starGiftSpoof
     case runtimeMemory
 }
 
@@ -417,6 +418,205 @@ public struct FragmentPhonePatchConfig: Codable, Hashable, Sendable {
 
     public var displayValue: String {
         "\(normalized.targetMode.label) - \(normalized.cryptoAmount) \(normalized.cryptoCurrency), \(normalized.amount) \(normalized.currency)"
+    }
+}
+
+/// Spoofs the star gifts shown on a profile by rewriting each savedStarGift in the
+/// payments.savedStarGifts response. Each value is text so "0"/empty means "leave the original";
+/// the dylib only overwrites fields with a non-zero configured value.
+public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
+    public static let defaultConfig = StarGiftSpoofPatchConfig(
+        targetMode: .onlySelf,
+        senderIdText: "0",
+        dateText: "0",
+        giftIdText: "0",
+        stickerEmojiIdText: "0",
+        starsText: "0",
+        caption: "",
+        availableText: "0",
+        totalText: "0",
+        forceLimited: false,
+        forceUpgrade: false,
+        forceAuction: false,
+        upgradePriceText: "0",
+        auctionTitle: "",
+        giftNumberText: "0",
+        wasRefunded: false
+    )
+
+    public let targetMode: BotVerificationTargetMode
+    public let senderIdText: String        // sender id; 0 = leave. Negative -100… = channel, -… = group, else user
+    public let dateText: String            // "0" or "HH:mm:ss dd.MM.yyyy"; 0 = leave unchanged
+    public let giftIdText: String          // gift id; 0 = leave unchanged
+    public let stickerEmojiIdText: String  // custom emoji id for the sticker; 0 = leave unchanged
+    public let starsText: String           // price in Stars; 0 = leave unchanged
+    public let caption: String             // gift message/caption; empty = leave unchanged
+    public let availableText: String       // availability_remains (supply left); 0 = leave unchanged
+    public let totalText: String           // availability_total (total supply); 0 = leave unchanged
+    public let forceLimited: Bool          // force the "limited" badge (adds availability if missing)
+    public let forceUpgrade: Bool          // force "can upgrade" (can_upgrade + upgrade_stars)
+    public let forceAuction: Bool          // force the "auction" badge
+    public let upgradePriceText: String    // upgrade_stars price when forceUpgrade; 0 = default (25)
+    public let auctionTitle: String        // starGift.title (auction gift name); empty = leave
+    public let giftNumberText: String      // savedStarGift.gift_num (auction gift number); 0 = leave
+    public let wasRefunded: Bool           // mark the gift refunded (savedStarGift.refunded)
+
+    public init(
+        targetMode: BotVerificationTargetMode = .onlySelf,
+        senderIdText: String,
+        dateText: String,
+        giftIdText: String,
+        stickerEmojiIdText: String = "0",
+        starsText: String,
+        caption: String = "",
+        availableText: String = "0",
+        totalText: String = "0",
+        forceLimited: Bool = false,
+        forceUpgrade: Bool = false,
+        forceAuction: Bool = false,
+        upgradePriceText: String = "0",
+        auctionTitle: String = "",
+        giftNumberText: String = "0",
+        wasRefunded: Bool = false
+    ) {
+        self.targetMode = targetMode
+        self.senderIdText = senderIdText
+        self.dateText = dateText
+        self.giftIdText = giftIdText
+        self.stickerEmojiIdText = stickerEmojiIdText
+        self.starsText = starsText
+        self.caption = caption
+        self.availableText = availableText
+        self.totalText = totalText
+        self.forceLimited = forceLimited
+        self.forceUpgrade = forceUpgrade
+        self.forceAuction = forceAuction
+        self.upgradePriceText = upgradePriceText
+        self.auctionTitle = auctionTitle
+        self.giftNumberText = giftNumberText
+        self.wasRefunded = wasRefunded
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case targetMode, senderIdText, dateText, giftIdText, stickerEmojiIdText, starsText, caption
+        case availableText, totalText, forceLimited, forceUpgrade, forceAuction, upgradePriceText
+        case auctionTitle, giftNumberText, wasRefunded
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        targetMode = try c.decodeIfPresent(BotVerificationTargetMode.self, forKey: .targetMode) ?? .onlySelf
+        senderIdText = try c.decodeIfPresent(String.self, forKey: .senderIdText) ?? "0"
+        dateText = try c.decodeIfPresent(String.self, forKey: .dateText) ?? "0"
+        giftIdText = try c.decodeIfPresent(String.self, forKey: .giftIdText) ?? "0"
+        stickerEmojiIdText = try c.decodeIfPresent(String.self, forKey: .stickerEmojiIdText) ?? "0"
+        starsText = try c.decodeIfPresent(String.self, forKey: .starsText) ?? "0"
+        caption = try c.decodeIfPresent(String.self, forKey: .caption) ?? ""
+        availableText = try c.decodeIfPresent(String.self, forKey: .availableText) ?? "0"
+        totalText = try c.decodeIfPresent(String.self, forKey: .totalText) ?? "0"
+        forceLimited = try c.decodeIfPresent(Bool.self, forKey: .forceLimited) ?? false
+        forceUpgrade = try c.decodeIfPresent(Bool.self, forKey: .forceUpgrade) ?? false
+        forceAuction = try c.decodeIfPresent(Bool.self, forKey: .forceAuction) ?? false
+        upgradePriceText = try c.decodeIfPresent(String.self, forKey: .upgradePriceText) ?? "0"
+        auctionTitle = try c.decodeIfPresent(String.self, forKey: .auctionTitle) ?? ""
+        giftNumberText = try c.decodeIfPresent(String.self, forKey: .giftNumberText) ?? "0"
+        wasRefunded = try c.decodeIfPresent(Bool.self, forKey: .wasRefunded) ?? false
+    }
+
+    public var normalized: StarGiftSpoofPatchConfig {
+        StarGiftSpoofPatchConfig(
+            targetMode: targetMode,
+            senderIdText: senderIdText.trimmingCharacters(in: .whitespacesAndNewlines),
+            dateText: dateText.trimmingCharacters(in: .whitespacesAndNewlines),
+            giftIdText: giftIdText.trimmingCharacters(in: .whitespacesAndNewlines),
+            stickerEmojiIdText: stickerEmojiIdText.trimmingCharacters(in: .whitespacesAndNewlines),
+            starsText: starsText.trimmingCharacters(in: .whitespacesAndNewlines),
+            caption: caption,
+            availableText: availableText.trimmingCharacters(in: .whitespacesAndNewlines),
+            totalText: totalText.trimmingCharacters(in: .whitespacesAndNewlines),
+            forceLimited: forceLimited,
+            forceUpgrade: forceUpgrade,
+            forceAuction: forceAuction,
+            upgradePriceText: upgradePriceText.trimmingCharacters(in: .whitespacesAndNewlines),
+            auctionTitle: auctionTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+            giftNumberText: giftNumberText.trimmingCharacters(in: .whitespacesAndNewlines),
+            wasRefunded: wasRefunded
+        )
+    }
+
+    private static func longValue(_ text: String) -> Int64 {
+        Int64(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// Bot-API-style sender id (may be negative): positive = user, -100… = channel,
+    /// other negative = basic group. 0 = leave the original sender.
+    private var senderRaw: Int64 { Self.longValue(senderIdText) }
+    public var senderPeerType: Int32 {   // 0 user, 1 channel, 2 chat
+        let v = senderRaw
+        if v >= 0 { return 0 }
+        let s = senderIdText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("-100"), Int64(s.dropFirst(4)) != nil { return 1 }
+        return 2
+    }
+    public var senderId: Int64 {   // internal peer id (channel/chat id without the -100/- prefix)
+        let v = senderRaw
+        if v >= 0 { return v }
+        let s = senderIdText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("-100"), let id = Int64(s.dropFirst(4)) { return id }
+        return -v
+    }
+    public var giftId: Int64 { max(0, Self.longValue(giftIdText)) }
+    public var stickerEmojiId: Int64 { max(0, Self.longValue(stickerEmojiIdText)) }
+    public var stars: Int64 { max(0, Self.longValue(starsText)) }
+    public var available: Int32 { Int32(clamping: max(0, Self.longValue(availableText))) }
+    public var total: Int32 { Int32(clamping: max(0, Self.longValue(totalText))) }
+    public var upgradePrice: Int64 { max(0, Self.longValue(upgradePriceText)) }
+    public var giftNumber: Int32 { Int32(clamping: max(0, Self.longValue(giftNumberText))) }
+
+    /// nil → invalid (the prompt rejects it); 0 → leave the original date.
+    public var dateUnix: Int32? {
+        let text = normalized.dateText
+        if text.isEmpty { return 0 }
+        if let value = Int64(text), value >= 0, value <= Int64(Int32.max) {
+            return Int32(value)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "HH:mm:ss dd.MM.yyyy"
+        guard let date = formatter.date(from: text) else { return nil }
+        let timestamp = Int64(date.timeIntervalSince1970)
+        guard timestamp >= 0, timestamp <= Int64(Int32.max) else { return nil }
+        return Int32(timestamp)
+    }
+
+    public var displayValue: String {
+        var parts: [String] = []
+        if senderId != 0 {
+            let kind = senderPeerType == 1 ? "channel " : senderPeerType == 2 ? "chat " : ""
+            parts.append("from \(kind)\(senderId)")
+        }
+        if (dateUnix ?? 0) != 0 { parts.append("date \(dateUnix ?? 0)") }
+        if giftId != 0 { parts.append("id \(giftId)") }
+        if stickerEmojiId != 0 { parts.append("emoji \(stickerEmojiId)") }
+        if stars != 0 { parts.append("\(stars)⭐") }
+        if available != 0 || total != 0 { parts.append("supply \(available)/\(total)") }
+        var badges: [String] = []
+        if forceLimited { badges.append("limited") }
+        if forceUpgrade { badges.append(upgradePrice > 0 ? "upgrade(\(upgradePrice)⭐)" : "upgrade") }
+        if forceAuction {
+            let titleTrim = auctionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            var a = "auction"
+            if !titleTrim.isEmpty { a += " “\(titleTrim.prefix(12))”" }
+            if giftNumber != 0 { a += " #\(giftNumber)" }
+            badges.append(a)
+        }
+        if wasRefunded { badges.append("refunded") }
+        if !badges.isEmpty { parts.append(badges.joined(separator: "+")) }
+        let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCaption.isEmpty { parts.append("“\(trimmedCaption.prefix(16))”") }
+        let summary = parts.isEmpty ? "no overrides" : parts.joined(separator: ", ")
+        return "\(normalized.targetMode.label) - \(summary)"
     }
 }
 
@@ -1008,6 +1208,7 @@ public enum BinaryPatchCategory: String, Codable, Hashable, Sendable, CaseIterab
     case accounts
     case messages
     case optimizations
+    case gifts
     case misc
 }
 
@@ -2147,6 +2348,18 @@ public enum BinaryPatchRuleDefinitions {
             replacements: []
         ),
         BinaryPatchRule(
+            id: "binary.gifts.spoof_profile",
+            title: "Spoof profile gifts",
+            methodName: "payments.getSavedStarGifts / payments.savedStarGifts",
+            constructorId: "payments.savedStarGifts#95f389b1 / savedStarGift#41df43fc",
+            kind: .starGiftSpoof,
+            summary: "Installs a local runtime hook that rewrites the saved star gifts in the payments.savedStarGifts response before Telegram reads it, so a profile's gifts show the sender, date, gift id and Stars price you configure. Each value is optional (0 = leave the original).",
+            disabledBehavior: "Keeps Telegram's original star gifts and their data.",
+            riskNote: "This is a local client-side display patch on the gift list response. It does not move, mint or change any gift server-side; only what your client displays changes.",
+            supportedBuildNote: "Hooks the MTProto gift-list response and rewrites it with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
+            replacements: []
+        ),
+        BinaryPatchRule(
             id: "binary.visual.custom_list_usernames",
             title: "Custom list usernames",
             methodName: "Data::UsernamesInfo / fragment.getCollectibleInfo",
@@ -2495,6 +2708,8 @@ public enum BinaryPatchRuleDefinitions {
         case "binary.config.disable_monetization", "binary.visual.no_premium_anim",
              "binary.stories.hide", "binary.ads.disable_sponsored":
             return .optimizations
+        case "binary.gifts.spoof_profile":
+            return .gifts
         default:
             return .misc
         }

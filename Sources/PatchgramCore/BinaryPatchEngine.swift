@@ -66,6 +66,7 @@ private struct BinaryPatchManifest: Codable {
     var fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:]
     var customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:]
     var messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
+    var starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil
     var enabledAlternativeGroups: [String: [String]] = [:]
     /// ruleId → definitionDigest at the time it was applied; lets a rescan detect that a fetched
     /// update changed an enabled rule's definition and surface a per-patch "Update".
@@ -82,10 +83,12 @@ private struct BinaryPatchManifest: Codable {
         fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
         customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:],
         messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:],
+        starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil,
         enabledAlternativeGroups: [String: [String]] = [:],
         appliedDefinitionHashes: [String: String] = [:]
     ) {
         self.appliedDefinitionHashes = appliedDefinitionHashes
+        self.starGiftSpoofConfig = starGiftSpoofConfig
         self.updatedAt = updatedAt
         self.enabledRuleIds = enabledRuleIds
         self.parameterValues = parameterValues
@@ -110,6 +113,7 @@ private struct BinaryPatchManifest: Codable {
         case fragmentPhoneConfigs
         case customListUsernamesConfigs
         case messageFactCheckConfigs
+        case starGiftSpoofConfig
         case enabledAlternativeGroups
         case appliedDefinitionHashes
     }
@@ -147,6 +151,10 @@ private struct BinaryPatchManifest: Codable {
             [String: MessageFactCheckPatchConfig].self,
             forKey: .messageFactCheckConfigs
         ) ?? [:]
+        starGiftSpoofConfig = try container.decodeIfPresent(
+            StarGiftSpoofPatchConfig.self,
+            forKey: .starGiftSpoofConfig
+        )
         enabledAlternativeGroups = try container.decodeIfPresent(
             [String: [String]].self,
             forKey: .enabledAlternativeGroups
@@ -194,6 +202,24 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let fragmentPhoneCryptoCurrency: String
     let fragmentPhoneCryptoAmount: Int64
     let fragmentPhoneUrl: String
+    let giftSpoofEnabled: Bool
+    let giftSpoofTargetMode: BotVerificationTargetMode
+    let giftSpoofSenderId: Int64
+    let giftSpoofSenderPeerType: Int32
+    let giftSpoofDate: Int32
+    let giftSpoofGiftId: Int64
+    let giftSpoofStickerId: Int64
+    let giftSpoofStars: Int64
+    let giftSpoofCaption: String
+    let giftSpoofAvailable: Int32
+    let giftSpoofTotal: Int32
+    let giftSpoofLimited: Bool
+    let giftSpoofUpgrade: Bool
+    let giftSpoofAuction: Bool
+    let giftSpoofUpgradePrice: Int64
+    let giftSpoofAuctionTitle: String
+    let giftSpoofGiftNum: Int32
+    let giftSpoofWasRefunded: Bool
     let customListUsernamesEnabled: Bool
     let customListUsernamesPayload: String
     let visualPeerBadgeEnabled: Bool
@@ -250,6 +276,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
     public let selfIdentityConfig: SelfIdentityPatchConfig?
     public let localPersonalChannelConfig: LocalPersonalChannelPatchConfig?
     public let fragmentPhoneConfig: FragmentPhonePatchConfig?
+    public let starGiftSpoofConfig: StarGiftSpoofPatchConfig?
     public let customListUsernamesConfig: CustomListUsernamesPatchConfig?
     public let messageFactCheckConfig: MessageFactCheckPatchConfig?
     public let enabledAlternativeGroups: Set<String>?
@@ -263,6 +290,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         selfIdentityConfig: SelfIdentityPatchConfig? = nil,
         localPersonalChannelConfig: LocalPersonalChannelPatchConfig? = nil,
         fragmentPhoneConfig: FragmentPhonePatchConfig? = nil,
+        starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil,
         customListUsernamesConfig: CustomListUsernamesPatchConfig? = nil,
         messageFactCheckConfig: MessageFactCheckPatchConfig? = nil,
         enabledAlternativeGroups: Set<String>? = nil
@@ -275,6 +303,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         self.selfIdentityConfig = selfIdentityConfig
         self.localPersonalChannelConfig = localPersonalChannelConfig
         self.fragmentPhoneConfig = fragmentPhoneConfig
+        self.starGiftSpoofConfig = starGiftSpoofConfig
         self.customListUsernamesConfig = customListUsernamesConfig
         self.messageFactCheckConfig = messageFactCheckConfig
         self.enabledAlternativeGroups = enabledAlternativeGroups
@@ -329,6 +358,7 @@ public final class BinaryPatchEngine {
     private static let selfIdentityOverrideRuleId = "binary.visual.self_identity_override"
     private static let localPersonalChannelRuleId = "binary.visual.local_personal_channel"
     private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
+    private static let starGiftSpoofRuleId = "binary.gifts.spoof_profile"
     private static let customListUsernamesRuleId = "binary.visual.custom_list_usernames"
     private static let visualPeerBadgeRuleId = "binary.visual.peer_badge"
     private static let noPremiumAnimRuleId = "binary.visual.no_premium_anim"
@@ -391,6 +421,7 @@ public final class BinaryPatchEngine {
         selfIdentityOverrideRuleId,
         localPersonalChannelRuleId,
         fragmentPhoneRuleId,
+        starGiftSpoofRuleId,
         customListUsernamesRuleId,
         visualPeerBadgeRuleId,
         scheduledSendRuleId,
@@ -733,6 +764,7 @@ public final class BinaryPatchEngine {
         selfIdentityConfigs: [String: SelfIdentityPatchConfig] = [:],
         localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:],
         fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
+        starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil,
         customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:],
         messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:],
         signAfterPatch: Bool = true
@@ -752,6 +784,7 @@ public final class BinaryPatchEngine {
                     selfIdentityConfig: selfIdentityConfigs[rule.id],
                     localPersonalChannelConfig: localPersonalChannelConfigs[rule.id],
                     fragmentPhoneConfig: fragmentPhoneConfigs[rule.id],
+                    starGiftSpoofConfig: rule.kind == .starGiftSpoof ? starGiftSpoofConfig : nil,
                     customListUsernamesConfig: customListUsernamesConfigs[rule.id],
                     messageFactCheckConfig: messageFactCheckConfigs[rule.id]
                 )
@@ -889,6 +922,7 @@ public final class BinaryPatchEngine {
         selfIdentityConfig: SelfIdentityPatchConfig? = nil,
         localPersonalChannelConfig: LocalPersonalChannelPatchConfig? = nil,
         fragmentPhoneConfig: FragmentPhonePatchConfig? = nil,
+        starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil,
         customListUsernamesConfig: CustomListUsernamesPatchConfig? = nil,
         messageFactCheckConfig: MessageFactCheckPatchConfig? = nil,
         signAfterPatch: Bool = true
@@ -938,6 +972,7 @@ public final class BinaryPatchEngine {
                 selfIdentityConfig: selfIdentityConfig,
                 localPersonalChannelConfig: localPersonalChannelConfig,
                 fragmentPhoneConfig: fragmentPhoneConfig,
+                starGiftSpoofConfig: starGiftSpoofConfig,
                 customListUsernamesConfig: customListUsernamesConfig,
                 messageFactCheckConfig: messageFactCheckConfig
             )
@@ -962,6 +997,7 @@ public final class BinaryPatchEngine {
                     selfIdentityConfig: selfIdentityConfig,
                     localPersonalChannelConfig: localPersonalChannelConfig,
                     fragmentPhoneConfig: fragmentPhoneConfig,
+                starGiftSpoofConfig: starGiftSpoofConfig,
                     customListUsernamesConfig: customListUsernamesConfig,
                     messageFactCheckConfig: messageFactCheckConfig
                 )
@@ -1958,6 +1994,7 @@ public final class BinaryPatchEngine {
             manifest.fragmentPhoneConfigs[Self.fragmentPhoneRuleId]
                 ?? FragmentPhonePatchConfig.defaultConfig
         ).normalized
+        let starGiftSpoofConfig = (manifest.starGiftSpoofConfig ?? StarGiftSpoofPatchConfig.defaultConfig).normalized
         let customListUsernamesConfig = (
             manifest.customListUsernamesConfigs[Self.customListUsernamesRuleId]
                 ?? CustomListUsernamesPatchConfig.defaultConfig
@@ -2031,6 +2068,24 @@ public final class BinaryPatchEngine {
             fragmentPhoneCryptoCurrency: fragmentPhoneConfig.cryptoCurrency,
             fragmentPhoneCryptoAmount: fragmentPhoneConfig.cryptoAmount,
             fragmentPhoneUrl: fragmentPhoneConfig.url,
+            giftSpoofEnabled: enabled.contains(Self.starGiftSpoofRuleId),
+            giftSpoofTargetMode: starGiftSpoofConfig.targetMode,
+            giftSpoofSenderId: starGiftSpoofConfig.senderId,
+            giftSpoofSenderPeerType: starGiftSpoofConfig.senderPeerType,
+            giftSpoofDate: starGiftSpoofConfig.dateUnix ?? 0,
+            giftSpoofGiftId: starGiftSpoofConfig.giftId,
+            giftSpoofStickerId: starGiftSpoofConfig.stickerEmojiId,
+            giftSpoofStars: starGiftSpoofConfig.stars,
+            giftSpoofCaption: starGiftSpoofConfig.caption.trimmingCharacters(in: .whitespacesAndNewlines),
+            giftSpoofAvailable: starGiftSpoofConfig.available,
+            giftSpoofTotal: starGiftSpoofConfig.total,
+            giftSpoofLimited: starGiftSpoofConfig.forceLimited,
+            giftSpoofUpgrade: starGiftSpoofConfig.forceUpgrade,
+            giftSpoofAuction: starGiftSpoofConfig.forceAuction,
+            giftSpoofUpgradePrice: starGiftSpoofConfig.upgradePrice,
+            giftSpoofAuctionTitle: starGiftSpoofConfig.auctionTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+            giftSpoofGiftNum: starGiftSpoofConfig.giftNumber,
+            giftSpoofWasRefunded: starGiftSpoofConfig.wasRefunded,
             customListUsernamesEnabled: enabled.contains(Self.customListUsernamesRuleId),
             customListUsernamesPayload: customListUsernamesConfig.runtimePayload,
             visualPeerBadgeEnabled: enabled.contains(Self.visualPeerBadgeRuleId),
@@ -2490,6 +2545,7 @@ public final class BinaryPatchEngine {
         var selfIdentityConfigs = manifest.selfIdentityConfigs
         var localPersonalChannelConfigs = manifest.localPersonalChannelConfigs
         var fragmentPhoneConfigs = manifest.fragmentPhoneConfigs
+        var starGiftSpoofConfig = manifest.starGiftSpoofConfig
         var customListUsernamesConfigs = manifest.customListUsernamesConfigs
         var messageFactCheckConfigs = manifest.messageFactCheckConfigs
         var enabledAlternativeGroups = manifest.enabledAlternativeGroups
@@ -2540,6 +2596,13 @@ public final class BinaryPatchEngine {
                             ?? FragmentPhonePatchConfig.defaultConfig
                     ).normalized
                 }
+                if change.rule.kind == .starGiftSpoof {
+                    starGiftSpoofConfig = (
+                        change.starGiftSpoofConfig
+                            ?? starGiftSpoofConfig
+                            ?? StarGiftSpoofPatchConfig.defaultConfig
+                    ).normalized
+                }
                 if change.rule.kind == .customListUsernames {
                     customListUsernamesConfigs[change.rule.id] = (
                         change.customListUsernamesConfig
@@ -2563,6 +2626,7 @@ public final class BinaryPatchEngine {
                 selfIdentityConfigs.removeValue(forKey: change.rule.id)
                 localPersonalChannelConfigs.removeValue(forKey: change.rule.id)
                 fragmentPhoneConfigs.removeValue(forKey: change.rule.id)
+                if change.rule.kind == .starGiftSpoof { starGiftSpoofConfig = nil }
                 customListUsernamesConfigs.removeValue(forKey: change.rule.id)
                 messageFactCheckConfigs.removeValue(forKey: change.rule.id)
                 enabledAlternativeGroups.removeValue(forKey: change.rule.id)
@@ -2577,6 +2641,7 @@ public final class BinaryPatchEngine {
         manifest.selfIdentityConfigs = selfIdentityConfigs.filter { enabled.contains($0.key) }
         manifest.localPersonalChannelConfigs = localPersonalChannelConfigs.filter { enabled.contains($0.key) }
         manifest.fragmentPhoneConfigs = fragmentPhoneConfigs.filter { enabled.contains($0.key) }
+        manifest.starGiftSpoofConfig = enabled.contains(Self.starGiftSpoofRuleId) ? starGiftSpoofConfig : nil
         manifest.customListUsernamesConfigs = customListUsernamesConfigs.filter { enabled.contains($0.key) }
         manifest.messageFactCheckConfigs = messageFactCheckConfigs.filter { ruleId, _ in
             enabled.contains(ruleId)

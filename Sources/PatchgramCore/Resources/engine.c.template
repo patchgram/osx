@@ -465,6 +465,38 @@ static enum PatchgramTargetMode g_level_rating_target_mode = PatchgramTargetAll;
 static enum PatchgramTargetMode g_self_phone_target_mode = PatchgramTargetOnlySelf;
 static enum PatchgramTargetMode g_local_personal_channel_target_mode = PatchgramTargetOnlySelf;
 
+// Star-gift profile spoof: rewrites scalar fields of each savedStarGift in the matched
+// payments.savedStarGifts response (gated by targetMode at request time). 0 = leave field as-is.
+static bool g_gift_spoof_enabled = false;
+static enum PatchgramTargetMode g_gift_spoof_target_mode = PatchgramTargetOnlySelf;
+static int64_t g_gift_spoof_sender_id = 0;
+static int g_gift_spoof_sender_peer_type = 0;  // 0 user, 1 channel, 2 chat
+static int32_t g_gift_spoof_date = 0;
+static int64_t g_gift_spoof_gift_id = 0;
+static int64_t g_gift_spoof_sticker_id = 0;
+static int64_t g_gift_spoof_stars = 0;
+static char g_gift_spoof_caption[512] = {0};  // empty = leave the gift message unchanged
+static int32_t g_gift_spoof_available = 0;     // starGift.availability_remains; 0 = leave
+static int32_t g_gift_spoof_total = 0;         // starGift.availability_total; 0 = leave
+static int g_gift_spoof_force_limited = 0;     // force the "limited" badge (flag.0 + availability)
+static int g_gift_spoof_force_upgrade = 0;     // force "can upgrade" (savedStarGift.can_upgrade + starGift.upgrade_stars)
+static int64_t g_gift_spoof_upgrade_price = 0; // upgrade_stars value when forcing upgrade; 0 = default 25
+static int g_gift_spoof_force_auction = 0;     // force the "auction" badge (flag.11 + auction fields)
+static char g_gift_spoof_auction_title[256] = {0}; // auction gift name → starGift.title (flag.5)
+static int32_t g_gift_spoof_gift_num = 0;      // auction gift number → savedStarGift.gift_num (flag.19); 0 = none
+static int g_gift_spoof_was_refunded = 0;      // mark the gift refunded → savedStarGift.refunded (flag.9)
+// Full custom-emoji Document captured from a getCustomEmojiDocuments response (when the user loads the
+// target emoji). Used to substitute the gift sticker WHOLE so id/access_hash/file_reference/stickerset
+// stay consistent (id-only swaps corrupt the cached emoji → STICKERSET_INVALID). We keep two copies:
+// the FULL doc (with thumbs — faithful, so the detail view renders) and a SLIM doc (thumbs emptied —
+// smaller, used only when the full one would grow the response past its original size).
+static uint8_t g_captured_emoji_full[8192] = {0};
+static size_t g_captured_emoji_full_len = 0;
+static uint8_t g_captured_emoji_slim[8192] = {0};
+static size_t g_captured_emoji_slim_len = 0;
+static int64_t g_captured_emoji_doc_id = 0;
+static uint32_t g_gift_spoof_logs = 0;
+
 static void patchgram_set_log_path(const char *config_path) {
     if (!config_path || !config_path[0]) {
         snprintf(g_log_path, sizeof(g_log_path), "%s", "/tmp/PatchgramHook.log");
@@ -2365,6 +2397,9 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     char fragment_phone_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
     char fragment_phone_crypto_currency[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
     char fragment_phone_url[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
+    char gift_spoof_target_mode[64];
+    char gift_spoof_caption[512];
+    char gift_spoof_auction_title[256];
     char custom_list_usernames_payload[PATCHGRAM_MAX_CUSTOM_USERNAMES * 8192];
     char message_fact_check_text[PATCHGRAM_MAX_FACT_CHECK_TEXT_UTF8];
     char message_fact_check_country[PATCHGRAM_MAX_FRAGMENT_TEXT_UTF8];
@@ -2381,6 +2416,8 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     patchgram_json_string(json, "fragmentPhoneCurrency", fragment_phone_currency, sizeof(fragment_phone_currency));
     patchgram_json_string(json, "fragmentPhoneCryptoCurrency", fragment_phone_crypto_currency, sizeof(fragment_phone_crypto_currency));
     patchgram_json_string(json, "fragmentPhoneUrl", fragment_phone_url, sizeof(fragment_phone_url));
+    patchgram_json_string(json, "giftSpoofTargetMode", gift_spoof_target_mode, sizeof(gift_spoof_target_mode));
+    patchgram_json_string(json, "giftSpoofCaption", gift_spoof_caption, sizeof(gift_spoof_caption));
     patchgram_json_string(json, "customListUsernamesPayload", custom_list_usernames_payload, sizeof(custom_list_usernames_payload));
     patchgram_json_string(json, "messageFactCheckText", message_fact_check_text, sizeof(message_fact_check_text));
     patchgram_json_string(json, "messageFactCheckCountry", message_fact_check_country, sizeof(message_fact_check_country));
@@ -2396,6 +2433,29 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     if (!fragment_phone_target_mode[0]) {
         snprintf(fragment_phone_target_mode, sizeof(fragment_phone_target_mode), "%s", "onlySelf");
     }
+    if (!gift_spoof_target_mode[0]) {
+        snprintf(gift_spoof_target_mode, sizeof(gift_spoof_target_mode), "%s", "onlySelf");
+    }
+    g_gift_spoof_enabled = patchgram_json_bool(json, "giftSpoofEnabled", false);
+    g_gift_spoof_target_mode = patchgram_parse_target_mode(gift_spoof_target_mode);
+    g_gift_spoof_sender_id = patchgram_json_i64(json, "giftSpoofSenderId", 0);
+    g_gift_spoof_sender_peer_type = (int)patchgram_json_i64(json, "giftSpoofSenderPeerType", 0);
+    g_gift_spoof_date = (int32_t)patchgram_json_i64(json, "giftSpoofDate", 0);
+    g_gift_spoof_gift_id = patchgram_json_i64(json, "giftSpoofGiftId", 0);
+    g_gift_spoof_sticker_id = patchgram_json_i64(json, "giftSpoofStickerId", 0);
+    g_gift_spoof_stars = patchgram_json_i64(json, "giftSpoofStars", 0);
+    snprintf(g_gift_spoof_caption, sizeof(g_gift_spoof_caption), "%s", gift_spoof_caption);
+    g_gift_spoof_available = (int32_t)patchgram_json_i64(json, "giftSpoofAvailable", 0);
+    g_gift_spoof_total = (int32_t)patchgram_json_i64(json, "giftSpoofTotal", 0);
+    g_gift_spoof_force_limited = patchgram_json_bool(json, "giftSpoofLimited", false) ? 1 : 0;
+    g_gift_spoof_force_upgrade = patchgram_json_bool(json, "giftSpoofUpgrade", false) ? 1 : 0;
+    g_gift_spoof_force_auction = patchgram_json_bool(json, "giftSpoofAuction", false) ? 1 : 0;
+    g_gift_spoof_upgrade_price = patchgram_json_i64(json, "giftSpoofUpgradePrice", 0);
+    gift_spoof_auction_title[0] = 0;
+    patchgram_json_string(json, "giftSpoofAuctionTitle", gift_spoof_auction_title, sizeof(gift_spoof_auction_title));
+    snprintf(g_gift_spoof_auction_title, sizeof(g_gift_spoof_auction_title), "%s", gift_spoof_auction_title);
+    g_gift_spoof_gift_num = (int32_t)patchgram_json_i64(json, "giftSpoofGiftNum", 0);
+    g_gift_spoof_was_refunded = patchgram_json_bool(json, "giftSpoofWasRefunded", false) ? 1 : 0;
     g_bot_verification_enabled = patchgram_json_bool(json, "botVerificationEnabled", false);
     g_custom_level_rating_enabled = patchgram_json_bool(json, "customLevelRatingEnabled", false);
     g_hide_self_phone_enabled = patchgram_json_bool(json, "hideSelfPhoneEnabled", false);
@@ -5012,9 +5072,85 @@ struct PatchgramTLParam { uint32_t name_off; uint8_t flag_idx; uint8_t flag_bit;
 __PATCHGRAM_TL_SCHEMA_PLACEHOLDER__
 
 #define PATCHGRAM_TL_VECTOR_ID 0x1cb5c415u
+#define PATCHGRAM_TL_MESSAGES_STICKER_SET 0x6e153f16u
+#define PATCHGRAM_TL_DOC_ATTR_STICKER 0x6319d612u       // documentAttributeSticker
+#define PATCHGRAM_TL_DOC_ATTR_CUSTOM_EMOJI 0xfd149899u  // documentAttributeCustomEmoji
 
 struct PatchgramTLReader { const uint8_t *p; size_t len; size_t pos; bool err; };
 struct PatchgramTLOut { char *buf; size_t cap; size_t len; bool full; };
+
+/* Star-gift spoof: ctor ids (api.tl layer @61caec4b) used to target fields inside a
+ * payments.savedStarGifts response, and a rewrite context threaded through the TL walker.
+ * Overwrites are in-place, fixed-size scalars only (date int / id|stars|sender long), so the
+ * walk's offsets never shift and the buffer stays valid; flags/counts are never touched. */
+#define PATCHGRAM_TL_PAYMENTS_SAVED_STAR_GIFTS 0x95f389b1u
+#define PATCHGRAM_TL_SAVED_STAR_GIFT 0x41df43fcu
+#define PATCHGRAM_TL_STAR_GIFT 0x313a9547u
+#define PATCHGRAM_TL_STAR_GIFT_UNIQUE 0x85f0a9cdu
+#define PATCHGRAM_TL_PEER_USER 0x59511722u
+#define PATCHGRAM_TL_PEER_CHANNEL 0xa2a5371eu
+#define PATCHGRAM_TL_PEER_CHAT 0x36c6019au
+#define PATCHGRAM_TL_DOCUMENT 0x8fd4c4d8u
+#define PATCHGRAM_TL_TEXT_WITH_ENTITIES 0x751f3146u
+#define PATCHGRAM_TL_VECTOR_BYTES 4
+#define PATCHGRAM_MAX_GIFT_ENTRIES 64
+
+// Per-savedStarGift byte offsets captured during the walk, used to rebuild the response with a
+// caption (the message TextWithEntities is variable-length, so it needs a splice rebuild — done
+// only when the result fits within the original buffer, which it does because we empty the gift
+// sticker's now-redundant thumbs + file_reference to make room).
+struct PatchgramGiftEntry {
+    size_t flags_off;       // savedStarGift flags field offset
+    uint32_t saved_flags;   // savedStarGift flags value (to set can_upgrade / message-present bits)
+    int has_message;        // original flags.2 was set
+    size_t msg_off;         // message field offset (existing or insert point)
+    size_t msg_len;         // existing message field byte length (0 if absent)
+    size_t sg_flags_off;    // starGift flags field offset
+    uint32_t sg_flags;      // starGift flags value (limited/auction/upgrade bits)
+    size_t avail_at;        // insert point for availability_remains (right after starGift.stars)
+    size_t upgrade_at;      // insert point for starGift.upgrade_stars
+    size_t auction_at;      // insert point for starGift.auction_slug
+    size_t thumbs_off;      // sticker Document.thumbs vector offset (0 if absent) — emptied to free room
+    size_t thumbs_len;      // sticker Document.thumbs vector byte length
+    size_t fr_off;          // sticker Document.file_reference offset (0 if absent)
+    size_t fr_len;          // sticker Document.file_reference byte length
+    size_t title_off;       // starGift.title field offset (existing or insert point)
+    size_t title_len;       // starGift.title byte length (0 if absent)
+    size_t gift_num_at;     // savedStarGift.gift_num insert point (absent → set even so)
+    size_t sticker_doc_off; // starGift.sticker whole Document offset
+    size_t sticker_doc_len; // starGift.sticker whole Document byte length
+};
+struct PatchgramTLRewrite {
+    uint8_t *base;          // writable buffer base (== reader->p, same memory)
+    int64_t sender_id;      // internal peer id; 0 = leave unchanged
+    int sender_peer_type;   // when sender_id set: 0 = peerUser, 1 = peerChannel, 2 = peerChat
+    int32_t date;           // 0 = leave unchanged
+    int64_t gift_id;        // 0 = leave unchanged
+    int64_t sticker_id;     // 0 = leave; else overwrite the gift sticker Document.id (custom emoji id)
+    int64_t stars;          // 0 = leave unchanged
+    int32_t available;      // starGift.availability_remains (exact value when force_limited; 0 allowed)
+    int32_t total;          // starGift.availability_total (exact value when force_limited; 0 allowed)
+    int force_limited;      // when set, supply is authoritative — write available/total verbatim
+    int32_t gift_num;       // savedStarGift.gift_num; 0 = leave (in-place overwrite when present)
+    int was_refunded;       // set savedStarGift.refunded (flag.9) in place during the walk
+    int in_from_id;         // >0 while walking a savedStarGift.from_id Peer
+    int in_sticker;         // >0 while walking a starGift.sticker Document
+    int applied;            // number of fields overwritten
+    int capture;            // 1 = record per-gift offsets for the caption rebuild
+    int gift_count;
+    struct PatchgramGiftEntry *cur;
+    struct PatchgramGiftEntry entries[PATCHGRAM_MAX_GIFT_ENTRIES];
+    // Generic Document finder — locate a Document by id ANYWHERE in a response (used to capture the
+    // target custom-emoji document from getCustomEmojiDocuments / messages.stickerSet / etc.).
+    int64_t find_doc_id;    // when != 0, capture the Document with this id
+    size_t last_ctor_start; // byte offset of the most recent boxed ctor (set in decode_value)
+    size_t found_off;       // start offset of the matched Document
+    size_t found_len;       // byte length of the matched Document (0 = not found yet)
+    int doc_match_pending;  // 1 between matching a Document's id and the end of its ctor
+    int find_sticker_attr;  // when != 0, locate a documentAttributeSticker to convert to customEmoji
+    size_t sticker_attr_off;// ctor offset of the documentAttributeSticker (0 = not found)
+    uint32_t sticker_attr_flags; // its flags word (only convertible when 0 → no mask_coords)
+};
 
 static const struct PatchgramTLCtor *patchgram_tl_find(uint32_t id) {
     int lo = 0, hi = (int)g_tl_ctor_count - 1;
@@ -5093,11 +5229,63 @@ static void patchgram_tl_str(struct PatchgramTLReader *r, struct PatchgramTLOut 
 }
 
 static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
-                                     struct PatchgramTLOut *o, int depth, bool with_id);
+                                     struct PatchgramTLOut *o, int depth, bool with_id,
+                                     struct PatchgramTLRewrite *rw);
+
+// Star-gift spoof: if this (ctor, param) is a target scalar, overwrite the value at the reader's
+// current position (in place, same size) before the walker consumes it. Only INT/LONG leaf fields
+// are touched — never flags or vector counts — so the walk's offsets are unaffected.
+static void patchgram_gift_rewrite_field(struct PatchgramTLRewrite *rw, uint32_t ctor,
+                                         const struct PatchgramTLParam *p,
+                                         struct PatchgramTLReader *r) {
+    if (p->vec) { return; }
+    const char *name = g_tl_strpool + p->name_off;
+    if (ctor == PATCHGRAM_TL_SAVED_STAR_GIFT && p->op == PG_TL_INT
+        && rw->date && strcmp(name, "date") == 0) {
+        if (r->pos + 4 <= r->len) { int32_t v = rw->date; memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if ((ctor == PATCHGRAM_TL_STAR_GIFT || ctor == PATCHGRAM_TL_STAR_GIFT_UNIQUE)
+               && p->op == PG_TL_LONG && rw->gift_id && strcmp(name, "id") == 0) {
+        if (r->pos + 8 <= r->len) { int64_t v = rw->gift_id; memcpy(rw->base + r->pos, &v, 8); rw->applied++; }
+    } else if (ctor == PATCHGRAM_TL_STAR_GIFT && p->op == PG_TL_LONG
+               && rw->stars && strcmp(name, "stars") == 0) {
+        if (r->pos + 8 <= r->len) { int64_t v = rw->stars; memcpy(rw->base + r->pos, &v, 8); rw->applied++; }
+    } else if (ctor == PATCHGRAM_TL_STAR_GIFT && p->op == PG_TL_INT
+               && rw->force_limited && strcmp(name, "availability_remains") == 0) {
+        // Already-limited gift (flag.0 present) — overwrite supply verbatim (0 = sold out is valid);
+        // adding it to a non-limited gift is done by the rebuild instead.
+        if (r->pos + 4 <= r->len) { int32_t v = rw->available; memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if (ctor == PATCHGRAM_TL_STAR_GIFT && p->op == PG_TL_INT
+               && rw->force_limited && strcmp(name, "availability_total") == 0) {
+        if (r->pos + 4 <= r->len) { int32_t v = rw->total; memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if (ctor == PATCHGRAM_TL_SAVED_STAR_GIFT && p->op == PG_TL_INT
+               && rw->gift_num && strcmp(name, "gift_num") == 0) {
+        // Present only when flag.19 is set — overwrite the gift number in place; adding it to a gift
+        // without one is done by the rebuild instead.
+        if (r->pos + 4 <= r->len) { int32_t v = rw->gift_num; memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if (ctor == PATCHGRAM_TL_DOCUMENT && rw->in_sticker && p->op == PG_TL_LONG
+               && rw->sticker_id && strcmp(name, "id") == 0) {
+        // The gift sticker Document's own id — set it to a custom emoji id so the displayed
+        // sticker matches the spoofed gift (Telegram resolves the custom emoji by id).
+        if (r->pos + 8 <= r->len) { int64_t v = rw->sticker_id; memcpy(rw->base + r->pos, &v, 8); rw->applied++; }
+    } else if ((ctor == PATCHGRAM_TL_PEER_USER || ctor == PATCHGRAM_TL_PEER_CHANNEL)
+               && rw->in_from_id && p->op == PG_TL_LONG && rw->sender_id) {
+        // peerUser.user_id / peerChannel.channel_id / peerChat.chat_id — the only long in the
+        // from_id Peer. Also flip the peer ctor (4 bytes before the id) to the requested peer type.
+        if (r->pos + 8 <= r->len && r->pos >= 4) {
+            uint32_t peer_ctor = (rw->sender_peer_type == 1) ? PATCHGRAM_TL_PEER_CHANNEL
+                               : (rw->sender_peer_type == 2) ? PATCHGRAM_TL_PEER_CHAT
+                               : PATCHGRAM_TL_PEER_USER;
+            memcpy(rw->base + r->pos - 4, &peer_ctor, sizeof(peer_ctor));
+            int64_t v = rw->sender_id;
+            memcpy(rw->base + r->pos, &v, 8);
+            rw->applied++;
+        }
+    }
+}
 
 static void patchgram_tl_decode_value(uint8_t vec, uint8_t op, struct PatchgramTLReader *r,
-                                      struct PatchgramTLOut *o, int depth) {
-    if (r->err || o->full) { return; }
+                                      struct PatchgramTLOut *o, int depth, struct PatchgramTLRewrite *rw) {
+    if (r->err || (o->full && !rw)) { return; }
     if (depth > 24) { r->err = true; return; }
     if (vec) {
         if (vec == 1) {
@@ -5106,9 +5294,9 @@ static void patchgram_tl_decode_value(uint8_t vec, uint8_t op, struct PatchgramT
         int32_t n = (int32_t)patchgram_tl_u32(r);
         if (n < 0 || n > 200000) { patchgram_tl_put(o, "<badvec>"); r->err = true; return; }
         patchgram_tl_put(o, "[");
-        for (int32_t k = 0; k < n && !r->err && !o->full; k++) {
+        for (int32_t k = 0; k < n && !r->err && (!o->full || rw); k++) {
             if (k) { patchgram_tl_put(o, ", "); }
-            patchgram_tl_decode_value(0, op, r, o, depth + 1);
+            patchgram_tl_decode_value(0, op, r, o, depth + 1, rw);
         }
         patchgram_tl_put(o, "]");
         return;
@@ -5124,14 +5312,15 @@ static void patchgram_tl_decode_value(uint8_t vec, uint8_t op, struct PatchgramT
         case PG_TL_STRING: patchgram_tl_str(r, o, true); break;
         case PG_TL_BYTES:  patchgram_tl_str(r, o, false); break;
         case PG_TL_TRUE:   patchgram_tl_put(o, "true"); break;
-        case PG_TL_BOXED:  patchgram_tl_decode_ctor(patchgram_tl_u32(r), r, o, depth + 1, false); break;
+        case PG_TL_BOXED:  if (rw) { rw->last_ctor_start = r->pos; } patchgram_tl_decode_ctor(patchgram_tl_u32(r), r, o, depth + 1, false, rw); break;
         default:           patchgram_tl_put(o, "<complex>"); r->err = true; break;
     }
 }
 
 static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
-                                     struct PatchgramTLOut *o, int depth, bool with_id) {
-    if (r->err || o->full) { return; }
+                                     struct PatchgramTLOut *o, int depth, bool with_id,
+                                     struct PatchgramTLRewrite *rw) {
+    if (r->err || (o->full && !rw)) { return; }
     if (depth > 24) { r->err = true; return; }
     char scratch[24];
     const struct PatchgramTLCtor *c = patchgram_tl_find(id);
@@ -5143,15 +5332,60 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
     }
     patchgram_tl_put(o, g_tl_strpool + c->name_off);
     if (with_id) { snprintf(scratch, sizeof scratch, "#%08x", id); patchgram_tl_put(o, scratch); }
+    if (rw && rw->find_sticker_attr && rw->sticker_attr_off == 0
+        && id == PATCHGRAM_TL_DOC_ATTR_STICKER && r->pos + 4 <= r->len) {
+        rw->sticker_attr_off = rw->last_ctor_start;          // where the ctor u32 sits
+        memcpy(&rw->sticker_attr_flags, r->p + r->pos, 4);   // its flags field (first param)
+    }
     if (c->pcount == 0) { return; }
+    if (rw && rw->capture && id == PATCHGRAM_TL_SAVED_STAR_GIFT && rw->gift_count < PATCHGRAM_MAX_GIFT_ENTRIES) {
+        rw->cur = &rw->entries[rw->gift_count];
+        rw->gift_count++;
+        memset(rw->cur, 0, sizeof(*rw->cur));
+    }
     uint32_t flagvals[256];
     memset(flagvals, 0, sizeof flagvals);
     patchgram_tl_put(o, " { ");
     bool first = true;
-    for (uint16_t i = 0; i < c->pcount && !r->err && !o->full; i++) {
+    for (uint16_t i = 0; i < c->pcount && !r->err && (!o->full || rw); i++) {
         const struct PatchgramTLParam *p = &g_tl_params[c->pstart + i];
+        const char *pname0 = g_tl_strpool + p->name_off;
+        // Generic Document finder: when this is a Document's id field and it matches, remember the
+        // document's start (the boxed ctor offset recorded in decode_value) and its end (below).
+        if (rw && rw->find_doc_id && rw->found_len == 0 && id == PATCHGRAM_TL_DOCUMENT
+            && p->op == PG_TL_LONG && strcmp(pname0, "id") == 0 && r->pos + 8 <= r->len) {
+            int64_t did = 0; memcpy(&did, r->p + r->pos, 8);
+            if (did == rw->find_doc_id) { rw->found_off = rw->last_ctor_start; rw->doc_match_pending = 1; }
+        }
+        const bool capture_saved_gift_message = rw && rw->capture && rw->cur
+            && id == PATCHGRAM_TL_SAVED_STAR_GIFT && strcmp(pname0, "message") == 0;
+        const bool capture_star_gift_title = rw && rw->capture && rw->cur
+            && id == PATCHGRAM_TL_STAR_GIFT && strcmp(pname0, "title") == 0;
+        if (capture_saved_gift_message) { rw->cur->msg_off = r->pos; }  // insert point (set even if absent)
+        if (capture_star_gift_title) { rw->cur->title_off = r->pos; }   // insert point (set even if absent)
+        // starGift / savedStarGift insert points — captured at the param boundary even when the
+        // optional field is absent (flag unset), so the rebuild knows exactly where to splice it in.
+        if (rw && rw->capture && rw->cur && id == PATCHGRAM_TL_STAR_GIFT) {
+            if (strcmp(pname0, "availability_remains") == 0) { rw->cur->avail_at = r->pos; }
+            else if (strcmp(pname0, "upgrade_stars") == 0) { rw->cur->upgrade_at = r->pos; }
+            else if (strcmp(pname0, "auction_slug") == 0) { rw->cur->auction_at = r->pos; }
+        } else if (rw && rw->capture && rw->cur && id == PATCHGRAM_TL_SAVED_STAR_GIFT) {
+            if (strcmp(pname0, "gift_num") == 0) { rw->cur->gift_num_at = r->pos; }
+        }
         if (p->op == PG_TL_FLAGS) {
+            const size_t flags_pos = r->pos;
             uint32_t v = patchgram_tl_u32(r);
+            // refunded#flag.9 is a pure boolean — set it in place during the walk (works even with no
+            // rebuild). flag.9 gates no field, so it never desyncs the structure.
+            if (rw && id == PATCHGRAM_TL_SAVED_STAR_GIFT && rw->was_refunded && !((v >> 9) & 1u)) {
+                v |= (1u << 9);
+                if (flags_pos + 4 <= r->len) { memcpy(rw->base + flags_pos, &v, 4); rw->applied++; }
+            }
+            if (rw && rw->capture && rw->cur && id == PATCHGRAM_TL_SAVED_STAR_GIFT) {
+                rw->cur->flags_off = flags_pos; rw->cur->saved_flags = v;
+            } else if (rw && rw->capture && rw->cur && id == PATCHGRAM_TL_STAR_GIFT) {
+                rw->cur->sg_flags_off = flags_pos; rw->cur->sg_flags = v;
+            }
             if (i < 256) { flagvals[i] = v; }
             if (!first) { patchgram_tl_put(o, ", "); }
             first = false;
@@ -5175,7 +5409,45 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
         first = false;
         patchgram_tl_put(o, g_tl_strpool + p->name_off);
         patchgram_tl_put(o, "=");
-        patchgram_tl_decode_value(p->vec, p->op, r, o, depth);
+        bool mark_from_id = false;
+        bool mark_sticker = false;
+        if (rw) {
+            patchgram_gift_rewrite_field(rw, id, p, r);
+            const char *pname = g_tl_strpool + p->name_off;
+            if (id == PATCHGRAM_TL_SAVED_STAR_GIFT && p->op == PG_TL_BOXED && !p->vec
+                && strcmp(pname, "from_id") == 0) {
+                mark_from_id = true;
+                rw->in_from_id++;
+            } else if (id == PATCHGRAM_TL_STAR_GIFT && p->op == PG_TL_BOXED && !p->vec
+                       && strcmp(pname, "sticker") == 0) {
+                mark_sticker = true;
+                rw->in_sticker++;
+            }
+        }
+        const size_t before_pos = r->pos;
+        patchgram_tl_decode_value(p->vec, p->op, r, o, depth, rw);
+        if (mark_from_id) { rw->in_from_id--; }
+        if (mark_sticker) {
+            rw->in_sticker--;
+            if (rw->capture && rw->cur) { rw->cur->sticker_doc_off = before_pos; rw->cur->sticker_doc_len = r->pos - before_pos; }
+        }
+        if (rw && rw->capture && rw->cur) {
+            if (capture_saved_gift_message) {
+                rw->cur->msg_len = r->pos - before_pos;
+                rw->cur->has_message = 1;
+            } else if (capture_star_gift_title) {
+                rw->cur->title_len = r->pos - before_pos;
+            } else if (rw->in_sticker && id == PATCHGRAM_TL_DOCUMENT) {
+                const char *pn = g_tl_strpool + p->name_off;
+                if (strcmp(pn, "thumbs") == 0) { rw->cur->thumbs_off = before_pos; rw->cur->thumbs_len = r->pos - before_pos; }
+                else if (strcmp(pn, "file_reference") == 0) { rw->cur->fr_off = before_pos; rw->cur->fr_len = r->pos - before_pos; }
+            }
+        }
+    }
+    if (rw && rw->doc_match_pending && id == PATCHGRAM_TL_DOCUMENT && !r->err) {
+        rw->found_len = r->pos - rw->found_off;  // full Document byte range now known
+        rw->doc_match_pending = 0;
+        rw->find_doc_id = 0;
     }
     patchgram_tl_put(o, " }");
 }
@@ -5189,8 +5461,531 @@ static void patchgram_tl_decode(const uint8_t *body, size_t bytelen, char *out, 
     struct PatchgramTLOut o = { out, outcap, 0, false };
     uint32_t top = patchgram_tl_u32(&r);
     if (r.err) { patchgram_tl_put(&o, "<empty>"); return; }
-    patchgram_tl_decode_ctor(top, &r, &o, 0, true);
+    patchgram_tl_decode_ctor(top, &r, &o, 0, true, NULL);
     if (o.full && outcap >= 4) { memcpy(out + outcap - 4, "\xe2\x80\xa6", 3); out[outcap - 1] = 0; }
+}
+
+// Walk a payments.savedStarGifts response IN PLACE, overwriting the configured scalar fields of each
+// savedStarGift (sender id / date / gift id / stars). Returns the number of fields overwritten.
+// Output text is suppressed (full sink); the rw context makes the walk ignore the output cap so it
+// traverses the whole response. No-op unless the top constructor is payments.savedStarGifts.
+static int patchgram_tl_rewrite_saved_star_gifts(uint8_t *body, size_t bytelen,
+                                                 struct PatchgramTLRewrite *rw) {
+    if (!body || bytelen < 4) { return 0; }
+    struct PatchgramTLReader r = { body, bytelen, 0, false };
+    char sink = 0;
+    struct PatchgramTLOut o = { &sink, 1, 0, true };  // full=true → patchgram_tl_put no-ops
+    rw->base = body;
+    rw->in_from_id = 0;
+    rw->applied = 0;
+    uint32_t top = patchgram_tl_u32(&r);
+    if (r.err || top != PATCHGRAM_TL_PAYMENTS_SAVED_STAR_GIFTS) { return 0; }
+    patchgram_tl_decode_ctor(top, &r, &o, 0, false, rw);
+    return rw->applied;
+}
+
+#define PATCHGRAM_TL_GET_SAVED_STAR_GIFTS 0xa319e569u
+#define PATCHGRAM_TL_INPUT_PEER_SELF 0x7da07ec9u
+#define PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS 32
+static int32_t g_gift_request_ids[PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS] = {0};
+static int g_gift_request_head = 0;
+static pthread_mutex_t g_gift_request_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void patchgram_track_gift_request(int32_t request_id) {
+    if (request_id == 0) { return; }
+    pthread_mutex_lock(&g_gift_request_mutex);
+    g_gift_request_ids[g_gift_request_head] = request_id;
+    g_gift_request_head = (g_gift_request_head + 1) % PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS;
+    pthread_mutex_unlock(&g_gift_request_mutex);
+}
+
+static bool patchgram_take_gift_request(int32_t request_id) {
+    if (request_id == 0) { return false; }
+    bool found = false;
+    pthread_mutex_lock(&g_gift_request_mutex);
+    for (int i = 0; i < PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS; i++) {
+        if (g_gift_request_ids[i] == request_id) { g_gift_request_ids[i] = 0; found = true; break; }
+    }
+    pthread_mutex_unlock(&g_gift_request_mutex);
+    return found;
+}
+
+// A payments.getSavedStarGifts request that this targetMode wants spoofed → returns its request_id.
+static bool patchgram_gift_request_should_spoof(void *request_ref, int32_t *request_id_out) {
+    if (!request_ref) { return false; }
+    void *request_data = NULL;
+    memcpy(&request_data, request_ref, sizeof(request_data));
+    if (!request_data) { return false; }
+    uint32_t *words = NULL;
+    int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) { return false; }
+    if (words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION] != PATCHGRAM_TL_GET_SAVED_STAR_GIFTS) { return false; }
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(request_id));
+    if (request_id == 0) { return false; }
+    bool has_self = false;
+    const size_t max_scan = (word_count < 256) ? (size_t)word_count : 256;
+    for (size_t i = PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION; i < max_scan; i++) {
+        if (words[i] == PATCHGRAM_TL_INPUT_PEER_SELF) { has_self = true; break; }
+    }
+    if (g_gift_spoof_target_mode == PatchgramTargetOnlySelf && !has_self) { return false; }
+    if (g_gift_spoof_target_mode == PatchgramTargetAllExceptSelf && has_self) { return false; }
+    *request_id_out = request_id;
+    return true;
+}
+
+// One byte-range edit on the response: replace [off, off+oldlen) with `rep` (replen bytes). oldlen==0
+// is a pure insert. `rep` points into the caller's scratch / message buffer (alive across the splice).
+struct PatchgramGiftEdit { size_t off; size_t oldlen; const uint8_t *rep; size_t replen; };
+
+// Safety net: re-decode a rebuilt savedStarGifts buffer with our own TL decoder and confirm it parses
+// cleanly AND consumes exactly `len` bytes. A zeroed rewrite ctx forces the full walk without touching
+// the bytes. If any offset/insert in the rebuild desynced the structure this returns false, so the
+// caller discards the rebuild instead of handing Qt a malformed buffer (which would crash the client).
+static bool patchgram_savedgifts_valid(const uint8_t *buf, size_t len) {
+    if (len < 4 || (len & 3u) != 0) { return false; }
+    struct PatchgramTLReader r = { buf, len, 0, false };
+    char sink = 0;
+    struct PatchgramTLOut o = { &sink, 1, 0, true };
+    struct PatchgramTLRewrite vrw;
+    memset(&vrw, 0, sizeof vrw);
+    vrw.base = (uint8_t *)buf;  // all spoof fields are 0 → rewrite_field never writes
+    uint32_t top = patchgram_tl_u32(&r);
+    if (r.err || top != PATCHGRAM_TL_PAYMENTS_SAVED_STAR_GIFTS) { return false; }
+    patchgram_tl_decode_ctor(top, &r, &o, 0, false, &vrw);
+    return !r.err && r.pos == len;
+}
+
+// Build a brand-new savedStarGifts response with every configured per-gift edit applied
+// (supply / limited / upgrade / auction / caption). Returns a malloc'd buffer (caller frees) +
+// *out_len, or NULL when there is nothing to change. Unlike a fixed-size in-place overwrite this can
+// GROW or SHRINK freely — the caller installs it via a real Qt buffer reallocation, so the sticker is
+// left intact and there is no size limit.
+static uint8_t *patchgram_gift_build(const uint8_t *old, size_t old_len,
+                                     struct PatchgramTLRewrite *rw, bool use_slim, size_t *out_len) {
+    const int gc = rw->gift_count;
+    if (gc <= 0) { return NULL; }
+    const bool want_caption = g_gift_spoof_caption[0] != 0;
+    const bool want_limited = g_gift_spoof_force_limited != 0;  // supply is governed by the limited toggle
+    const bool want_upgrade = g_gift_spoof_force_upgrade != 0;
+    const bool want_auction = g_gift_spoof_force_auction != 0;
+    const bool want_subst = g_gift_spoof_sticker_id != 0 && g_captured_emoji_full_len > 0
+        && g_captured_emoji_doc_id == g_gift_spoof_sticker_id;
+    const uint8_t *subst_doc = use_slim ? g_captured_emoji_slim : g_captured_emoji_full;
+    const size_t subst_len = use_slim ? g_captured_emoji_slim_len : g_captured_emoji_full_len;
+    if (!want_caption && !want_limited && !want_upgrade && !want_auction && !want_subst) { return NULL; }
+
+    const bool want_title = want_auction && g_gift_spoof_auction_title[0] != 0;
+    uint8_t *msg = NULL; size_t msg_len = 0;
+    if (want_caption) {
+        msg = (uint8_t *)calloc(sizeof(uint32_t) + patchgram_tl_string_length(g_gift_spoof_caption) + 2 * sizeof(uint32_t) + 4, 1);
+        if (!msg) { return NULL; }
+        patchgram_tl_write_u32(msg, &msg_len, PATCHGRAM_TL_TEXT_WITH_ENTITIES);
+        patchgram_tl_write_string(msg, &msg_len, g_gift_spoof_caption);
+        patchgram_tl_write_u32(msg, &msg_len, PATCHGRAM_TL_VECTOR_ID);
+        patchgram_tl_write_i32(msg, &msg_len, 0);
+    }
+    // Shared starGift.title bytes (a plain TL string) — reused across every gift.
+    uint8_t *titlebuf = NULL; size_t title_len = 0;
+    if (want_title) {
+        titlebuf = (uint8_t *)calloc(patchgram_tl_string_length(g_gift_spoof_auction_title) + 4, 1);
+        if (!titlebuf) { free(msg); return NULL; }
+        patchgram_tl_write_string(titlebuf, &title_len, g_gift_spoof_auction_title);
+    }
+
+    static const uint8_t empty_vec[8] = { 0x15, 0xc4, 0xb5, 0x1c, 0, 0, 0, 0 }; // vector#1cb5c415 count=0
+    const int MAXE = PATCHGRAM_MAX_GIFT_ENTRIES * 12;
+    struct PatchgramGiftEdit *edits = (struct PatchgramGiftEdit *)calloc((size_t)MAXE, sizeof(*edits));
+    uint8_t *scratch = (uint8_t *)calloc((size_t)gc, 64);  // per-gift inline replacement bytes
+    if (!edits || !scratch) { free(edits); free(scratch); free(msg); return NULL; }
+    int ne = 0;
+    bool ok = true;
+    for (int g = 0; g < gc && ok; g++) {
+        struct PatchgramGiftEntry *e = &rw->entries[g];
+        if (e->sg_flags_off == 0) { continue; }  // no starGift captured (e.g. starGiftUnique) → leave it
+        uint8_t *sc = scratch + (size_t)g * 64;
+        size_t sp = 0;
+        uint32_t sg_new = e->sg_flags;
+        uint32_t saved_new = e->saved_flags;
+
+        // sticker — substitute the WHOLE captured custom-emoji Document (consistent id/access_hash/
+        // file_reference/stickerset) so the cache isn't corrupted. Skips the thumbs-clear for this gift
+        // since the replacement covers the entire document range.
+        const bool subst_sticker = want_subst && e->sticker_doc_off && e->sticker_doc_len;
+        if (subst_sticker) {
+            edits[ne].off = e->sticker_doc_off; edits[ne].oldlen = e->sticker_doc_len;
+            edits[ne].rep = subst_doc; edits[ne].replen = subst_len; ne++;
+        }
+
+        // limited / supply — insert availability when absent (overwrite-when-present is in-place).
+        // Values are verbatim so 0 = sold out is honoured; only total falls back when the user left
+        // it 0 but set a remaining count (an X-of-0 gift would be nonsensical).
+        if (want_limited && !(e->sg_flags & 0x1u) && e->avail_at) {
+            int32_t rem = g_gift_spoof_available;
+            int32_t tot = g_gift_spoof_total ? g_gift_spoof_total
+                          : (g_gift_spoof_available ? g_gift_spoof_available : 0);
+            size_t at = sp;
+            patchgram_tl_write_i32(sc, &sp, rem);
+            patchgram_tl_write_i32(sc, &sp, tot);
+            edits[ne].off = e->avail_at; edits[ne].oldlen = 0; edits[ne].rep = sc + at; edits[ne].replen = sp - at; ne++;
+            sg_new |= 0x1u;
+        }
+        // upgrade — set both savedStarGift.can_upgrade (flag.10) and starGift.upgrade_stars (flag.3)
+        if (want_upgrade) {
+            saved_new |= (1u << 10);
+            if (!(e->sg_flags & 0x8u) && e->upgrade_at) {
+                int64_t up = g_gift_spoof_upgrade_price > 0 ? g_gift_spoof_upgrade_price : 25;
+                size_t at = sp;
+                patchgram_tl_write_i32(sc, &sp, (int32_t)(up & 0xffffffff));
+                patchgram_tl_write_i32(sc, &sp, (int32_t)((up >> 32) & 0xffffffff));
+                edits[ne].off = e->upgrade_at; edits[ne].oldlen = 0; edits[ne].rep = sc + at; edits[ne].replen = sp - at; ne++;
+                sg_new |= 0x8u;
+            }
+        }
+        // NOTE: edits that can land on the SAME offset (several absent optional fields share an insert
+        // point) MUST be added in TL declaration order — the stable sort keeps that order, which is
+        // exactly the serialization order. starGift: title(f5) before auction_slug(f11); savedStarGift:
+        // message(f2) before gift_num(f19); and all starGift fields precede the savedStarGift ones.
+        // auction title — replace/insert starGift.title (flag.5) with the configured name
+        if (want_title && e->title_off) {
+            edits[ne].off = e->title_off; edits[ne].oldlen = e->title_len; edits[ne].rep = titlebuf; edits[ne].replen = title_len; ne++;
+            sg_new |= 0x20u;
+        }
+        // auction — flag.11 + auction_slug + gifts_per_round + auction_start_date
+        if (want_auction && !(e->sg_flags & 0x800u) && e->auction_at) {
+            size_t at = sp;
+            patchgram_tl_write_string(sc, &sp, "auction");
+            patchgram_tl_write_i32(sc, &sp, 1);
+            patchgram_tl_write_i32(sc, &sp, g_gift_spoof_date ? g_gift_spoof_date : 1700000000);
+            edits[ne].off = e->auction_at; edits[ne].oldlen = 0; edits[ne].rep = sc + at; edits[ne].replen = sp - at; ne++;
+            sg_new |= 0x800u;
+        }
+        // caption — replace/insert savedStarGift.message (flag.2)
+        if (want_caption && e->msg_off) {
+            edits[ne].off = e->msg_off; edits[ne].oldlen = e->msg_len; edits[ne].rep = msg; edits[ne].replen = msg_len; ne++;
+            saved_new |= 0x4u;
+        }
+        // auction gift number — insert savedStarGift.gift_num (flag.19) when absent (present → in-place)
+        if (want_auction && g_gift_spoof_gift_num != 0 && !(e->saved_flags & (1u << 19)) && e->gift_num_at) {
+            size_t at = sp; patchgram_tl_write_i32(sc, &sp, g_gift_spoof_gift_num);
+            edits[ne].off = e->gift_num_at; edits[ne].oldlen = 0; edits[ne].rep = sc + at; edits[ne].replen = sp - at; ne++;
+            saved_new |= (1u << 19);
+        }
+        // flag-word overwrites (same size)
+        if (sg_new != e->sg_flags && e->sg_flags_off) {
+            size_t at = sp; patchgram_tl_write_u32(sc, &sp, sg_new);
+            edits[ne].off = e->sg_flags_off; edits[ne].oldlen = 4; edits[ne].rep = sc + at; edits[ne].replen = 4; ne++;
+        }
+        if (saved_new != e->saved_flags && e->flags_off) {
+            size_t at = sp; patchgram_tl_write_u32(sc, &sp, saved_new);
+            edits[ne].off = e->flags_off; edits[ne].oldlen = 4; edits[ne].rep = sc + at; edits[ne].replen = 4; ne++;
+        }
+        // Free room by emptying ONLY the sticker thumbs (the inline preview). We must NOT touch
+        // file_reference — it's required to fetch the sticker/emoji document, and clearing it makes the
+        // client fail with FILE_REFERENCE_EXPIRED so the sticker never loads. Thumbs are just the blur
+        // placeholder, so the document still loads via its id/access_hash/file_reference/dc_id. Skipped
+        // when substituting the whole sticker document (the thumbs offset is inside the replaced range).
+        if (!subst_sticker && e->thumbs_len > sizeof(empty_vec)) {
+            edits[ne].off = e->thumbs_off; edits[ne].oldlen = e->thumbs_len; edits[ne].rep = empty_vec; edits[ne].replen = sizeof(empty_vec); ne++;
+        }
+        if (sp > 64 || ne > MAXE - 12) { ok = false; }
+    }
+    if (!ok || ne == 0) { free(edits); free(scratch); free(msg); return NULL; }
+
+    // Sort edits by offset (insertion sort; small n, already nearly ordered).
+    for (int i = 1; i < ne; i++) {
+        struct PatchgramGiftEdit key = edits[i];
+        int j = i - 1;
+        while (j >= 0 && edits[j].off > key.off) { edits[j + 1] = edits[j]; j--; }
+        edits[j + 1] = key;
+    }
+    long long delta = 0;
+    for (int i = 0; i < ne; i++) { delta += (long long)edits[i].replen - (long long)edits[i].oldlen; }
+    if ((long long)old_len + delta <= 0) { free(edits); free(scratch); free(msg); return NULL; }
+    size_t new_len = (size_t)((long long)old_len + delta);
+    uint8_t *buf = (uint8_t *)malloc(new_len);
+    if (!buf) { free(edits); free(scratch); free(msg); return NULL; }
+    size_t src = 0, dst = 0;
+    for (int i = 0; i < ne && ok; i++) {
+        if (edits[i].off < src || edits[i].off + edits[i].oldlen > old_len) { ok = false; break; }
+        size_t gap = edits[i].off - src;
+        if (dst + gap + edits[i].replen > new_len) { ok = false; break; }
+        memcpy(buf + dst, old + src, gap); dst += gap; src += gap;
+        memcpy(buf + dst, edits[i].rep, edits[i].replen); dst += edits[i].replen;
+        src += edits[i].oldlen;
+    }
+    if (ok && src <= old_len && dst + (old_len - src) <= new_len) {
+        memcpy(buf + dst, old + src, old_len - src); dst += old_len - src;
+    } else {
+        ok = false;
+    }
+    free(edits); free(scratch); free(msg); free(titlebuf);
+    if (!ok || dst != new_len) { free(buf); return NULL; }
+    // Final guard: only accept the rebuild if it re-decodes cleanly + fully. Discard otherwise so a
+    // bad offset can never reach Qt.
+    if (!patchgram_savedgifts_valid(buf, dst)) {
+        if (g_gift_spoof_logs < 42) { g_gift_spoof_logs++; patchgram_log("GIFT REBUILD discarded: failed self-validation (len=%zu gifts=%d)", dst, gc); }
+        free(buf);
+        return NULL;
+    }
+    *out_len = dst;
+    return buf;
+}
+
+// Install a rebuilt response. We ONLY ever overwrite Qt's own buffer in place and shrink its size
+// word — never grow the allocation, never hand Qt a foreign block (a previous version that swapped in
+// a hand-rolled QArrayData corrupted the heap). The builder frees room (empties sticker thumbs/
+// file_reference) so the rebuilt response fits the original; if it still doesn't fit, we skip it (the
+// in-place scalar spoofs from the walk stand) so the client can't crash.
+static bool patchgram_gift_writeback(void *response, uint32_t *words, int64_t old_count,
+                                     const uint8_t *newbuf, size_t new_len) {
+    if (new_len == 0 || (new_len & 3u) != 0) { return false; }
+    int64_t new_count = (int64_t)(new_len / sizeof(uint32_t));
+    if (new_count <= old_count) {
+        memcpy(words, newbuf, new_len);
+        memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_count, sizeof(new_count));
+        return true;
+    }
+    if (g_gift_spoof_logs < 41) {
+        g_gift_spoof_logs++;
+        patchgram_log("GIFT WB skip: rebuilt %lld words > original %lld (not enough room to free) — in-place spoofs only",
+                      (long long)new_count, (long long)old_count);
+    }
+    return false;
+}
+
+static void patchgram_gift_apply_rebuild(void *response, uint32_t *words, int64_t word_count,
+                                         struct PatchgramTLRewrite *rw) {
+    if (rw->gift_count <= 0) { return; }
+    const size_t old_len = (size_t)word_count * sizeof(uint32_t);
+    // First try the FULL captured sticker doc (with thumbs → detail view renders); if that would grow
+    // the response past its original size, fall back to the SLIM (thumbless) doc so it still fits.
+    bool used_slim = false;
+    size_t new_len = 0;
+    uint8_t *buf = patchgram_gift_build((const uint8_t *)words, old_len, rw, false, &new_len);
+    if (buf && new_len > old_len) {
+        free(buf);
+        used_slim = true;
+        new_len = 0;
+        buf = patchgram_gift_build((const uint8_t *)words, old_len, rw, true, &new_len);
+    }
+    if (!buf) { return; }  // nothing to rebuild, or discarded by self-validation
+    const bool wrote = patchgram_gift_writeback(response, words, word_count, buf, new_len);
+    if (g_gift_spoof_logs < 32) {
+        g_gift_spoof_logs++;
+        patchgram_log("GIFT REBUILD gifts=%d old=%zu new=%zu sticker=%s %s", rw->gift_count, old_len, new_len,
+                      used_slim ? "slim" : "full", wrote ? "applied (in-place, validated)" : "skipped");
+    }
+    free(buf);
+}
+
+// Persistence path for the captured emoji document — next to the hook log (inside the app bundle's
+// Resources, which the dylib already writes to). Lets the substitution survive a Telegram restart,
+// since the emoji is then in the client's disk cache and getCustomEmojiDocuments won't re-fire.
+static bool patchgram_emoji_doc_path(char *out, size_t cap) {
+    if (!g_log_path[0]) { return false; }
+    snprintf(out, cap, "%s", g_log_path);
+    char *slash = strrchr(out, '/');
+    if (!slash) { return false; }
+    snprintf(slash + 1, cap - (size_t)(slash + 1 - out), "PatchgramEmojiDoc.bin");
+    return true;
+}
+
+static void patchgram_persist_emoji_doc(void) {
+    char path[4096];
+    if (!patchgram_emoji_doc_path(path, sizeof path)) { return; }
+    FILE *f = fopen(path, "wb");
+    if (!f) { return; }
+    uint64_t flen = g_captured_emoji_full_len, slen = g_captured_emoji_slim_len;
+    fwrite(&g_captured_emoji_doc_id, sizeof(g_captured_emoji_doc_id), 1, f);
+    fwrite(&flen, sizeof(flen), 1, f);
+    fwrite(g_captured_emoji_full, 1, (size_t)flen, f);
+    fwrite(&slen, sizeof(slen), 1, f);
+    fwrite(g_captured_emoji_slim, 1, (size_t)slen, f);
+    fclose(f);
+}
+
+// Load the persisted emoji document when the configured sticker id changed (or on first use). Only
+// keeps it if its id still matches the configured sticker so a stale file is ignored.
+static int64_t g_emoji_doc_loaded_for = -1;
+static void patchgram_ensure_emoji_doc_loaded(void) {
+    if (g_gift_spoof_sticker_id == g_emoji_doc_loaded_for) { return; }
+    g_emoji_doc_loaded_for = g_gift_spoof_sticker_id;
+    if (g_captured_emoji_doc_id == g_gift_spoof_sticker_id && g_captured_emoji_full_len > 0) { return; }
+    g_captured_emoji_full_len = 0; g_captured_emoji_slim_len = 0;
+    if (g_gift_spoof_sticker_id == 0) { return; }
+    char path[4096];
+    if (!patchgram_emoji_doc_path(path, sizeof path)) { return; }
+    FILE *f = fopen(path, "rb");
+    if (!f) { return; }
+    int64_t id = 0; uint64_t flen = 0, slen = 0;
+    const bool ok = fread(&id, sizeof(id), 1, f) == 1
+        && fread(&flen, sizeof(flen), 1, f) == 1 && flen > 0 && flen <= sizeof(g_captured_emoji_full)
+        && fread(g_captured_emoji_full, 1, (size_t)flen, f) == (size_t)flen
+        && fread(&slen, sizeof(slen), 1, f) == 1 && slen > 0 && slen <= sizeof(g_captured_emoji_slim)
+        && fread(g_captured_emoji_slim, 1, (size_t)slen, f) == (size_t)slen;
+    fclose(f);
+    if (ok && id == g_gift_spoof_sticker_id) {
+        g_captured_emoji_doc_id = id;
+        g_captured_emoji_full_len = (size_t)flen;
+        g_captured_emoji_slim_len = (size_t)slen;
+        if (g_gift_spoof_logs < 48) { g_gift_spoof_logs++; patchgram_log("EMOJI DOC loaded from disk id=%lld full=%zu slim=%zu", (long long)id, (size_t)flen, (size_t)slen); }
+    } else {
+        g_captured_emoji_full_len = 0; g_captured_emoji_slim_len = 0;
+    }
+}
+
+// Store a captured custom-emoji Document (bytes at body[off..off+len)) as the FULL copy + a SLIM copy
+// (thumbs emptied). Persists to disk so the substitution survives a Telegram restart.
+static void patchgram_store_emoji_doc(const uint8_t *body, size_t off, size_t len, int64_t doc_id) {
+    static uint8_t tmp[8192];
+    if (len == 0 || len > sizeof(g_captured_emoji_full) || len > sizeof(tmp)) { return; }
+    memcpy(tmp, body + off, len);
+    // Gift stickers are custom emojis; if the chosen document is a plain sticker
+    // (documentAttributeSticker), convert that attribute to documentAttributeCustomEmoji so the gift's
+    // detail view (which renders via the custom-emoji path) shows it. Same byte layout when flags==0
+    // (no mask_coords) — just a 4-byte ctor swap; skipped otherwise so we never desync the document.
+    {
+        struct PatchgramTLRewrite frw;
+        memset(&frw, 0, sizeof frw);
+        frw.base = tmp; frw.find_sticker_attr = 1;
+        struct PatchgramTLReader rr = { tmp, len, 0, false };
+        char sk = 0; struct PatchgramTLOut oo = { &sk, 1, 0, true };
+        const uint32_t tc = patchgram_tl_u32(&rr);
+        patchgram_tl_decode_ctor(tc, &rr, &oo, 0, false, &frw);
+        if (frw.sticker_attr_off > 0 && frw.sticker_attr_flags == 0 && frw.sticker_attr_off + 4 <= len) {
+            uint32_t emoji_ctor = PATCHGRAM_TL_DOC_ATTR_CUSTOM_EMOJI;
+            memcpy(tmp + frw.sticker_attr_off, &emoji_ctor, 4);
+            if (g_gift_spoof_logs < 48) { g_gift_spoof_logs++; patchgram_log("EMOJI DOC converted documentAttributeSticker -> customEmoji"); }
+        }
+    }
+    body = tmp; off = 0;  // operate on the (possibly converted) copy from here on
+    memcpy(g_captured_emoji_full, body + off, len);
+    g_captured_emoji_full_len = len;
+    g_captured_emoji_slim_len = 0;
+    // Find the document's thumbs range (re-decode with a capture ctx + in_sticker=1) and splice it out.
+    struct PatchgramGiftEntry de;
+    memset(&de, 0, sizeof de);
+    struct PatchgramTLRewrite drw;
+    memset(&drw, 0, sizeof drw);
+    drw.capture = 1; drw.cur = &de; drw.in_sticker = 1; drw.base = (uint8_t *)body;
+    struct PatchgramTLReader r2 = { body, off + len, off, false };
+    char s2 = 0; struct PatchgramTLOut o2 = { &s2, 1, 0, true };
+    const uint32_t c2 = patchgram_tl_u32(&r2);
+    patchgram_tl_decode_ctor(c2, &r2, &o2, 0, false, &drw);
+    static const uint8_t empty_vec8[8] = { 0x15, 0xc4, 0xb5, 0x1c, 0, 0, 0, 0 };
+    if (de.thumbs_off >= off && de.thumbs_len > sizeof(empty_vec8)
+        && de.thumbs_off + de.thumbs_len <= off + len) {
+        const size_t rel = de.thumbs_off - off;
+        const size_t newlen = len - de.thumbs_len + sizeof(empty_vec8);
+        if (newlen <= sizeof(g_captured_emoji_slim)) {
+            memcpy(g_captured_emoji_slim, body + off, rel);
+            memcpy(g_captured_emoji_slim + rel, empty_vec8, sizeof(empty_vec8));
+            memcpy(g_captured_emoji_slim + rel + sizeof(empty_vec8),
+                   body + off + rel + de.thumbs_len, len - rel - de.thumbs_len);
+            g_captured_emoji_slim_len = newlen;
+        }
+    }
+    if (g_captured_emoji_slim_len == 0) {  // no thumbs to drop → slim == full
+        memcpy(g_captured_emoji_slim, body + off, len);
+        g_captured_emoji_slim_len = len;
+    }
+    g_captured_emoji_doc_id = doc_id;
+    g_emoji_doc_loaded_for = doc_id;
+    patchgram_persist_emoji_doc();
+    if (g_gift_spoof_logs < 48) {
+        g_gift_spoof_logs++;
+        patchgram_log("EMOJI DOC captured id=%lld full=%zu slim=%zu (persisted)", (long long)doc_id, g_captured_emoji_full_len, g_captured_emoji_slim_len);
+    }
+}
+
+// Capture the configured custom-emoji's FULL Document from ANY response that carries it — the reply to
+// getCustomEmojiDocuments (bare Vector<Document>, fired when the emoji is shown inline) OR a
+// messages.stickerSet (fired when its pack is opened). Uses the generic Document-by-id finder so it
+// works regardless of where the document is nested.
+static void patchgram_capture_emoji_doc_response(void *response) {
+    if (!response || g_gift_spoof_sticker_id == 0) { return; }
+    if (g_captured_emoji_doc_id == g_gift_spoof_sticker_id && g_captured_emoji_full_len > 0) { return; }
+    uint32_t *words = NULL;
+    int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count < 3) { return; }
+    if (words[0] != PATCHGRAM_TL_VECTOR_ID && words[0] != PATCHGRAM_TL_MESSAGES_STICKER_SET) { return; }
+    const uint8_t *body = (const uint8_t *)words;
+    const size_t bytelen = (size_t)word_count * sizeof(uint32_t);
+    struct PatchgramTLReader r = { body, bytelen, 0, false };
+    char sink = 0;
+    struct PatchgramTLOut o = { &sink, 1, 0, true };
+    struct PatchgramTLRewrite vrw;
+    memset(&vrw, 0, sizeof vrw);
+    vrw.base = (uint8_t *)body;
+    vrw.find_doc_id = g_gift_spoof_sticker_id;
+    const uint32_t top = patchgram_tl_u32(&r);
+    if (top == PATCHGRAM_TL_VECTOR_ID) {
+        // Bare Vector<Document> — the vector ctor isn't a schema type, so walk the items directly as
+        // boxed values (each call records last_ctor_start, so the finder can mark the matching doc).
+        const int32_t count = (int32_t)patchgram_tl_u32(&r);
+        if (count < 0 || count > 4096) { return; }
+        for (int32_t i = 0; i < count && !r.err && vrw.found_len == 0; i++) {
+            patchgram_tl_decode_value(0, PG_TL_BOXED, &r, &o, 0, &vrw);
+        }
+    } else {
+        patchgram_tl_decode_ctor(top, &r, &o, 0, false, &vrw);
+    }
+    if (vrw.found_len > 0 && vrw.found_off + vrw.found_len <= bytelen) {
+        patchgram_store_emoji_doc(body, vrw.found_off, vrw.found_len, g_gift_spoof_sticker_id);
+    }
+}
+
+static void patchgram_apply_gift_spoof_response(void *response) {
+    if (!response) { return; }
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+    if (!patchgram_take_gift_request(request_id)) { return; }
+    patchgram_ensure_emoji_doc_loaded();  // restore a previously-captured emoji doc after a restart
+    uint32_t *words = NULL;
+    int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count <= 0) { return; }
+    struct PatchgramTLRewrite rw;
+    memset(&rw, 0, sizeof(rw));
+    rw.sender_id = g_gift_spoof_sender_id;
+    rw.sender_peer_type = g_gift_spoof_sender_peer_type;
+    rw.date = g_gift_spoof_date;
+    rw.gift_id = g_gift_spoof_gift_id;
+    rw.sticker_id = g_gift_spoof_sticker_id;
+    rw.stars = g_gift_spoof_stars;
+    rw.available = g_gift_spoof_available;
+    rw.total = g_gift_spoof_total;
+    rw.force_limited = g_gift_spoof_force_limited;
+    rw.gift_num = g_gift_spoof_gift_num;
+    rw.was_refunded = g_gift_spoof_was_refunded;
+    // Capture per-gift offsets whenever a feature needs the rebuild (caption, or badges that may have
+    // to insert fields). Plain scalar spoofs (sender/date/id/stars/supply-on-already-limited, refunded
+    // flag, gift_num-on-present) work in place without it.
+    rw.capture = (g_gift_spoof_caption[0] || g_gift_spoof_force_limited || g_gift_spoof_force_upgrade
+                  || g_gift_spoof_force_auction
+                  || (g_gift_spoof_sticker_id != 0 && g_captured_emoji_full_len > 0
+                      && g_captured_emoji_doc_id == g_gift_spoof_sticker_id)) ? 1 : 0;
+    const int applied = patchgram_tl_rewrite_saved_star_gifts((uint8_t *)words, (size_t)word_count * sizeof(uint32_t), &rw);
+    if (g_gift_spoof_logs < 32) {
+        g_gift_spoof_logs++;
+        patchgram_log("GIFT SPOOF reqId=%d words=%lld overwrote=%d gifts=%d (sender=%lld date=%d giftId=%lld stars=%lld avail=%d/%d limited=%d upgrade=%d auction=%d num=%d refunded=%d title=%s caption=%s)",
+                      (int)request_id, (long long)word_count, applied, rw.gift_count,
+                      (long long)g_gift_spoof_sender_id, (int)g_gift_spoof_date,
+                      (long long)g_gift_spoof_gift_id, (long long)g_gift_spoof_stars,
+                      (int)g_gift_spoof_available, (int)g_gift_spoof_total,
+                      g_gift_spoof_force_limited, g_gift_spoof_force_upgrade, g_gift_spoof_force_auction,
+                      (int)g_gift_spoof_gift_num, g_gift_spoof_was_refunded,
+                      g_gift_spoof_auction_title, g_gift_spoof_caption);
+    }
+    if (rw.capture && rw.gift_count > 0) {
+        patchgram_gift_apply_rebuild(response, words, word_count, &rw);
+    }
 }
 
 // Append one decoded MTProto line: timestamp (with date), direction, request id, and the fully
@@ -5283,6 +6078,10 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
     }
     for (uint8_t *response = begin; response < end; response += PATCHGRAM_RESPONSE_SIZE) {
         patchgram_mtproto_log_response(response);
+        if (g_gift_spoof_enabled) {
+            patchgram_capture_emoji_doc_response(response);
+            patchgram_apply_gift_spoof_response(response);
+        }
         patchgram_strip_noforwards_in_response(response);
         patchgram_apply_custom_username_list_response(response);
         patchgram_log_custom_username_response_tl(response);
@@ -5304,6 +6103,12 @@ static void patchgram_session_private_try_to_receive(void *session_private) {
 
 static void patchgram_session_send_prepared(void *session, void *request_ref, int64_t ms_can_wait) {
     patchgram_mtproto_log_request(request_ref);
+    if (g_gift_spoof_enabled) {
+        int32_t gift_request_id = 0;
+        if (patchgram_gift_request_should_spoof(request_ref, &gift_request_id)) {
+            patchgram_track_gift_request(gift_request_id);
+        }
+    }
     patchgram_log_custom_username_request_tl(request_ref, ms_can_wait);
     int32_t custom_username_full_user_request_id = 0;
     if (patchgram_custom_username_full_user_request_should_be_local(

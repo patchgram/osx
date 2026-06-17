@@ -1404,6 +1404,19 @@
           "title" : "Fragment phone"
         },
         {
+          "category" : "gifts",
+          "constructorId" : "payments.savedstargifts#95f389b1 / savedstargift#41df43fc",
+          "disabledBehavior" : "Keeps Telegram's original star gifts and their data.",
+          "id" : "binary.gifts.spoof_profile",
+          "kind" : "starGiftSpoof",
+          "methodName" : "payments.getSavedStarGifts / payments.savedStarGifts",
+          "replacements" : [],
+          "riskNote" : "This is a local client-side display patch on the gift list response. It does not move, mint or change any gift server-side; only what your client displays changes.",
+          "summary" : "Installs a local runtime hook that rewrites the saved star gifts in the payments.savedStarGifts response before Telegram reads it, so a profile's gifts show the sender, date, gift id and Stars price you configure. Each value is optional (0 = leave the original).",
+          "supportedBuildNote" : "Hooks the MTProto gift-list response and rewrites it with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
+          "title" : "Spoof profile gifts"
+        },
+        {
           "category" : "accounts",
           "constructorId" : "inputcollectibleusername#e39460a9 / fragment.collectibleinfo#6ebdff91",
           "disabledBehavior" : "Keeps Telegram's original self-profile usernames and Fragment username collectible response data.",

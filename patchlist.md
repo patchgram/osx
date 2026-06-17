@@ -13,7 +13,7 @@ This file describes the patches available in Patchgram in plain language.
 
 ## Patches
 
-Patchgram's main screen groups patches into four sections — **Accounts**, **Messages**, **Optimizations**, and **Misc**. Each patch below is listed under the section it appears in.
+Patchgram's main screen groups patches into five sections — **Accounts**, **Messages**, **Optimizations**, **Gifts**, and **Misc**. Each patch below is listed under the section it appears in.
 
 ### Accounts
 
@@ -45,6 +45,12 @@ Patchgram's main screen groups patches into four sections — **Accounts**, **Me
 | Disable premium effects | `dylib` | Stops Premium sticker/effect animations from starting locally. |
 | Hide stories | `dylib` | Hides story state locally and blocks known story fetch/read/view request paths. |
 | Disable ads | `dylib` | Blocks Telegram Ads and proxy sponsor promotion surfaces. |
+
+### Gifts
+
+| Patch | Type | What it does |
+| --- | --- | --- |
+| Spoof profile gifts | `dylib` | Rewrites the star gifts shown on a profile, locally, by rewriting the `payments.savedStarGifts` response inside the runtime library. It has its own Settings window where you set the spoofed sender (user/channel/chat, Bot-API-style id), date, gift id, Stars price, caption, supply (available/total) and badges (Limited, Can upgrade with a price, Auction with title + gift number, Was refunded). It can also swap the gift's sticker to a custom emoji: enter the custom-emoji id or press **Get id from gift** (looks it up from `api.changes.tg`), then open that emoji's pack once so the full document is captured and substituted (use an animated TGS/WEBM emoji so it renders inside the gift, not only in the list). "Save & Apply" updates a running Telegram live — re-open the profile to refresh. No Telegram bytes are patched. |
 
 ### Misc
 

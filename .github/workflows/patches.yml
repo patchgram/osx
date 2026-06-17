@@ -32,9 +32,10 @@ jobs:
           fi
           VERSION="${GITHUB_REF_NAME#patches-v}"
           # Minimum app version compatible with this patch format. Bump only on a format change.
-          # 1.0.9: engine.c.template gained __PATCHGRAM_TL_SCHEMA_PLACEHOLDER__ (in-dylib MTProto
-          # decoder); only 1.0.9+ knows how to substitute it, so older apps must reject this bundle.
-          MIN_APP="1.0.9"
+          # 1.0.9: engine.c.template gained __PATCHGRAM_TL_SCHEMA_PLACEHOLDER__ (in-dylib MTProto decoder).
+          # 1.1.0: patches.json gained the Gifts category + the starGiftSpoof rule kind; older apps can't
+          # decode the new rule kind, so they must reject this bundle.
+          MIN_APP="1.1.0"
           KEY="$RUNNER_TEMP/patchgram-signing.pem"
           printf '%s' "$PATCHGRAM_SIGNING_KEY" > "$KEY"
           ./scripts/build-patch-bundle.sh "$VERSION" "$MIN_APP" "$KEY" "$RUNNER_TEMP/dist" "Patch bundle $GITHUB_REF_NAME"

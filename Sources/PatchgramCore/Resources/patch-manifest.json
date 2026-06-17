@@ -1,1 +1,1 @@
-{"bundleVersion":10,"files":{"engine.c.template":"ba6b323f3e213445c7aff529de93c8282666a66d36f78f4bc0e0ebc551ad6490","patches.json":"441ec57d72625e73faf51bea755e149b07df30ce468566fef50646190337c198"},"minAppVersion":"1.0.9","notes":"More recent stickers patch (Messages, dylib)"}
+{"bundleVersion":11,"files":{"engine.c.template":"bca8a9616fe153e90cca3425423467e2c8082485dc176aef5d978d259f6f4e41","patches.json":"f73c2f2b9d37123ece5130061819fefff1d74b1b31ac1e47e094fe953bc93619"},"minAppVersion":"1.1.0","notes":"Patch bundle patches-v11"}

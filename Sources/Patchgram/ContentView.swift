@@ -38,6 +38,9 @@ struct ContentView: View {
         .sheet(isPresented: $viewModel.isShowingCustomListUsernamesSettings) {
             CustomListUsernamesSettingsView(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingGiftSpoofSettings) {
+            GiftSpoofSettingsView(viewModel: viewModel)
+        }
         .sheet(item: $viewModel.availableUpdate) { update in
             UpdateAvailableView(
                 update: update,
@@ -495,7 +498,11 @@ private struct SectionDetail: View {
                             } onSettings: { ruleId, subpatchId in
                                 viewModel.showSubpatchSettings(ruleId: ruleId, subpatchId: subpatchId)
                             } onRuleSettings: {
-                                viewModel.showBotVerificationSettings()
+                                if row.status.rule.kind == .starGiftSpoof {
+                                    viewModel.showGiftSpoofSettings()
+                                } else {
+                                    viewModel.showBotVerificationSettings()
+                                }
                             } onOpenLogs: {
                                 viewModel.openMtprotoLogsFolder()
                             }
@@ -623,7 +630,7 @@ private struct BinaryRuleCard: View {
                         .controlSize(.regular)
                         .help("Open the MTProto logger's log files (logs_mtproto_pg)")
                     }
-                    if row.status.rule.kind == .botVerification {
+                    if row.status.rule.kind == .botVerification || row.status.rule.kind == .starGiftSpoof {
                         Button {
                             onRuleSettings()
                         } label: {
@@ -631,7 +638,7 @@ private struct BinaryRuleCard: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.regular)
-                        .help("Manage bot verification presets")
+                        .help(row.status.rule.kind == .starGiftSpoof ? "Configure profile gift spoofing" : "Manage bot verification presets")
                         .disabled(isWorking)
                     }
                     Toggle("", isOn: Binding(
@@ -917,6 +924,222 @@ private struct CollectibleInfoDraft: Hashable {
             return nil
         }
         return config
+    }
+}
+
+private struct GiftSpoofSettingsView: View {
+    @ObservedObject var viewModel: PatchgramViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var targetMode: BotVerificationTargetMode = .onlySelf
+    @State private var senderIdText = "0"
+    @State private var dateText = "0"
+    @State private var giftIdText = "0"
+    @State private var stickerEmojiIdText = "0"
+    @State private var starsText = "0"
+    @State private var caption = ""
+    @State private var availableText = "0"
+    @State private var totalText = "0"
+    @State private var forceLimited = false
+    @State private var forceUpgrade = false
+    @State private var forceAuction = false
+    @State private var upgradePriceText = "0"
+    @State private var auctionTitle = ""
+    @State private var giftNumberText = "0"
+    @State private var wasRefunded = false
+    @State private var isResolvingSticker = false
+    @State private var stickerLookupNote = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Label("Spoof Profile Gifts", systemImage: "gift")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    viewModel.updateStarGiftSpoofConfig(currentConfig, applyNow: false)
+                    dismiss()
+                } label: {
+                    Label("Save", systemImage: "checkmark")
+                }
+                .disabled(viewModel.isWorking)
+                Button {
+                    // Sticker emoji id is required to apply; if missing, keep the window open.
+                    if viewModel.updateStarGiftSpoofConfig(currentConfig, applyNow: true) {
+                        dismiss()
+                    }
+                } label: {
+                    Label("Save & Apply", systemImage: "bolt.fill")
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(viewModel.isWorking)
+                Button { dismiss() } label: {
+                    Label("Cancel", systemImage: "xmark")
+                }
+            }
+            .padding(18)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Rewrite the star gifts shown on a profile. Leave a numeric field at 0 to keep the original value; an empty caption keeps the original message. \"Save & Apply\" updates a running Telegram live — re-open the profile to refresh.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Whose profile")
+                            .font(.subheadline).bold()
+                        Picker("", selection: $targetMode) {
+                            ForEach(BotVerificationTargetMode.allCases, id: \.self) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+
+                    field("Sender id", text: $senderIdText, prompt: "0 = keep · user id · -100… = channel")
+                    field("Date", text: $dateText, prompt: "0 = keep · unix · HH:mm:ss dd.MM.yyyy")
+                    field("Gift id", text: $giftIdText, prompt: "0 = keep original id")
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Sticker emoji id")
+                            .font(.subheadline).bold()
+                        HStack(spacing: 8) {
+                            TextField("required — the gift's custom emoji id", text: $stickerEmojiIdText)
+                                .textFieldStyle(.roundedBorder)
+                            Button {
+                                let giftId = giftIdText
+                                isResolvingSticker = true
+                                stickerLookupNote = ""
+                                Task {
+                                    let resolved = await viewModel.resolveGiftStickerEmojiId(giftIdText: giftId)
+                                    isResolvingSticker = false
+                                    if let resolved {
+                                        stickerEmojiIdText = String(resolved)
+                                    } else {
+                                        stickerLookupNote = "No emoji for that gift id on the API."
+                                    }
+                                }
+                            } label: {
+                                Text("Get id from gift")
+                            }
+                            .disabled(isResolvingSticker)
+                        }
+                        if isResolvingSticker {
+                            Text("Looking up…").font(.caption).foregroundStyle(.secondary)
+                        } else if !stickerLookupNote.isEmpty {
+                            Text(stickerLookupNote).font(.caption).foregroundStyle(.orange)
+                        } else {
+                            Text("Required to apply. Use an animated (TGS/WEBM) custom emoji so it renders inside the gift, not just in the list.")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    field("Stars price", text: $starsText, prompt: "0 = keep original price")
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Badges")
+                            .font(.subheadline).bold()
+                        Toggle("Limited", isOn: $forceLimited)
+                        if forceLimited {
+                            HStack(alignment: .top, spacing: 12) {
+                                field("Supply available", text: $availableText, prompt: "availability_remains (0 = sold out)")
+                                field("Supply total", text: $totalText, prompt: "availability_total")
+                            }
+                            .padding(.leading, 20)
+                        }
+                        Toggle("Can upgrade", isOn: $forceUpgrade)
+                        if forceUpgrade {
+                            field("Upgrade price", text: $upgradePriceText, prompt: "0 = default (25⭐) · upgrade_stars")
+                                .padding(.leading, 20)
+                        }
+                        Toggle("Auction", isOn: $forceAuction)
+                        if forceAuction {
+                            VStack(alignment: .leading, spacing: 4) {
+                                field("Auction title", text: $auctionTitle, prompt: "gift name (starGift.title)")
+                                field("Gift number", text: $giftNumberText, prompt: "0 = none · savedStarGift.gift_num")
+                            }
+                            .padding(.leading, 20)
+                        }
+                        Toggle("Was refunded", isOn: $wasRefunded)
+                        Text("Supply lives under Limited and is written exactly as entered. Badges/caption make room by clearing the sticker preview; if a gift can't fit, that gift is left unchanged (no crash).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .toggleStyle(.checkbox)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Caption")
+                            .font(.subheadline).bold()
+                        TextField("Empty = keep original message", text: $caption)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Adding a caption clears the sticker preview to free room, and only applies when it fits the existing response.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(18)
+            }
+        }
+        .frame(width: 560, height: 600)
+        .onAppear(perform: load)
+    }
+
+    @ViewBuilder
+    private func field(_ title: String, text: Binding<String>, prompt: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.subheadline).bold()
+            TextField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private var currentConfig: StarGiftSpoofPatchConfig {
+        StarGiftSpoofPatchConfig(
+            targetMode: targetMode,
+            senderIdText: senderIdText,
+            dateText: dateText,
+            giftIdText: giftIdText,
+            stickerEmojiIdText: stickerEmojiIdText,
+            starsText: starsText,
+            caption: caption,
+            availableText: availableText,
+            totalText: totalText,
+            forceLimited: forceLimited,
+            forceUpgrade: forceUpgrade,
+            forceAuction: forceAuction,
+            upgradePriceText: upgradePriceText,
+            auctionTitle: auctionTitle,
+            giftNumberText: giftNumberText,
+            wasRefunded: wasRefunded
+        )
+    }
+
+    private func load() {
+        let c = viewModel.starGiftSpoofConfig.normalized
+        targetMode = c.targetMode
+        senderIdText = c.senderIdText
+        dateText = c.dateText
+        giftIdText = c.giftIdText
+        stickerEmojiIdText = c.stickerEmojiIdText
+        starsText = c.starsText
+        caption = c.caption
+        availableText = c.availableText
+        totalText = c.totalText
+        forceLimited = c.forceLimited
+        forceUpgrade = c.forceUpgrade
+        forceAuction = c.forceAuction
+        upgradePriceText = c.upgradePriceText
+        auctionTitle = c.auctionTitle
+        giftNumberText = c.giftNumberText
+        wasRefunded = c.wasRefunded
     }
 }
 
