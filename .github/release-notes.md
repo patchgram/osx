@@ -1,10 +1,7 @@
-Release 1.1.0
+Release 1.1.1
 
-- **New "Gifts" section + "Spoof Profile Gifts" patch** (dylib). Rewrites the star gifts shown on a profile — locally — by rewriting the `payments.savedStarGifts` server response inside the injected dylib. It has its own Settings window:
-  - **Spoof the sender** (user, channel, or chat — Bot-API-style id where `-100…` is a channel), **date**, **gift id**, **Stars price**, and a **gift caption**.
-  - **Supply** (available / total) and **badges**: **Limited**, **Can upgrade** (with an upgrade price), **Auction** (with a title and gift number), and **Was refunded**.
-  - **Custom sticker** for the gift: set a custom-emoji id, or press **Get id from gift** to pull it from `api.changes.tg` by the gift id. Open that emoji's sticker pack once so Patchgram captures its full document, then the gift's sticker is substituted consistently — it shows both in the gifts list and inside the opened gift. Use an animated (TGS/WEBM) custom emoji so it renders in the gift's detail view.
-  - **Live apply** — "Save & Apply" updates a running Telegram with no restart; just re-open the profile to refresh. Whose-profile targeting (only me / everyone / everyone except me).
-- **More recent stickers** patch (Messages, dylib): raises the "Recent" stickers display limit from Telegram's default 20 to 200.
+- **New "Spoof profile unique gifts" patch** (Gifts, dylib). Makes a profile's gift show as an upgraded (unique) gift — locally — by rewriting the `payments.savedStarGifts` response. In its Settings window you pick an upgradable gift (catalog from `api.changes.tg`) or **Empty** for fully-custom ids, then set the title, unique number, model, symbol, backdrop, issued/total counts, value and last-resale, and identity (sender, owner, host, owner address, date). Works on already-unique gifts and converts regular gifts to unique; for a converted gift it also answers the value-details request locally so it shows instead of failing. Live "Save & Apply" with whose-profile targeting.
+- **Account freeze** subpatch (Custom account settings): shows your account as frozen — locally — by injecting freeze dates and an appeal URL into the `help.appConfig` response.
+- Fixed a rare crash when switching channels/chats with gift spoofing active.
 
-Run "Update patches" to pull the matching patch bundle (this bundle requires app 1.1.0+).
+Run "Update patches" to pull the matching patch bundle (this bundle requires app 1.1.1+).

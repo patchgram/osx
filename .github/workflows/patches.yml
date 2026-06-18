@@ -35,7 +35,8 @@ jobs:
           # 1.0.9: engine.c.template gained __PATCHGRAM_TL_SCHEMA_PLACEHOLDER__ (in-dylib MTProto decoder).
           # 1.1.0: patches.json gained the Gifts category + the starGiftSpoof rule kind; older apps can't
           # decode the new rule kind, so they must reject this bundle.
-          MIN_APP="1.1.0"
+          # 1.1.1: patches.json gained the accountFreeze + starGiftUniqueSpoof rule kinds (same reason).
+          MIN_APP="1.1.1"
           KEY="$RUNNER_TEMP/patchgram-signing.pem"
           printf '%s' "$PATCHGRAM_SIGNING_KEY" > "$KEY"
           ./scripts/build-patch-bundle.sh "$VERSION" "$MIN_APP" "$KEY" "$RUNNER_TEMP/dist" "Patch bundle $GITHUB_REF_NAME"
@@ -53,4 +54,4 @@ jobs:
             "$RUNNER_TEMP/dist/patch-manifest.json.sig" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Patch bundle $TAG_NAME" \
-            --notes "Signed patch bundle. Update via the app's \"Update patches\" button."
+            --notes-file .github/patch-notes.md

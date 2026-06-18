@@ -67,6 +67,7 @@ private struct BinaryPatchManifest: Codable {
     var customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:]
     var messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
     var starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil
+    var starGiftUniqueSpoofConfig: StarGiftUniqueSpoofPatchConfig? = nil
     var enabledAlternativeGroups: [String: [String]] = [:]
     /// ruleId → definitionDigest at the time it was applied; lets a rescan detect that a fetched
     /// update changed an enabled rule's definition and surface a per-patch "Update".
@@ -84,11 +85,13 @@ private struct BinaryPatchManifest: Codable {
         customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:],
         messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:],
         starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil,
+        starGiftUniqueSpoofConfig: StarGiftUniqueSpoofPatchConfig? = nil,
         enabledAlternativeGroups: [String: [String]] = [:],
         appliedDefinitionHashes: [String: String] = [:]
     ) {
         self.appliedDefinitionHashes = appliedDefinitionHashes
         self.starGiftSpoofConfig = starGiftSpoofConfig
+        self.starGiftUniqueSpoofConfig = starGiftUniqueSpoofConfig
         self.updatedAt = updatedAt
         self.enabledRuleIds = enabledRuleIds
         self.parameterValues = parameterValues
@@ -114,6 +117,7 @@ private struct BinaryPatchManifest: Codable {
         case customListUsernamesConfigs
         case messageFactCheckConfigs
         case starGiftSpoofConfig
+        case starGiftUniqueSpoofConfig
         case enabledAlternativeGroups
         case appliedDefinitionHashes
     }
@@ -154,6 +158,10 @@ private struct BinaryPatchManifest: Codable {
         starGiftSpoofConfig = try container.decodeIfPresent(
             StarGiftSpoofPatchConfig.self,
             forKey: .starGiftSpoofConfig
+        )
+        starGiftUniqueSpoofConfig = try container.decodeIfPresent(
+            StarGiftUniqueSpoofPatchConfig.self,
+            forKey: .starGiftUniqueSpoofConfig
         )
         enabledAlternativeGroups = try container.decodeIfPresent(
             [String: [String]].self,
@@ -220,6 +228,40 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let giftSpoofAuctionTitle: String
     let giftSpoofGiftNum: Int32
     let giftSpoofWasRefunded: Bool
+    let giftUniqueEnabled: Bool
+    let giftUniqueTargetMode: BotVerificationTargetMode
+    let giftUniqueGiftName: String
+    let giftUniqueTitle: String
+    let giftUniqueNum: Int32
+    let giftUniqueHasBackdrop: Bool
+    let giftUniqueBackdropName: String
+    let giftUniqueBackdropCenter: Int32
+    let giftUniqueBackdropEdge: Int32
+    let giftUniqueBackdropPattern: Int32
+    let giftUniqueBackdropText: Int32
+    let giftUniqueBackdropRarity: Int32
+    let giftUniqueModelName: String
+    let giftUniqueModelEmojiId: Int64
+    let giftUniqueModelRarity: Int32
+    let giftUniqueSymbolName: String
+    let giftUniqueSymbolEmojiId: Int64
+    let giftUniqueSymbolRarity: Int32
+    let giftUniqueTotalUpgraded: Int32
+    let giftUniqueMaxUpgraded: Int32
+    let giftUniqueDate: Int32
+    let giftUniqueSenderId: Int64
+    let giftUniqueSenderPeerType: Int32
+    let giftUniqueOwnerId: Int64
+    let giftUniqueOwnerPeerType: Int32
+    let giftUniqueHostId: Int64
+    let giftUniqueHostPeerType: Int32
+    let giftUniqueOwnerAddress: String
+    let giftUniqueValueAmount: Int64
+    let giftUniqueValueUsdAmount: Int64
+    let giftUniqueValueCurrency: String
+    let giftUniqueLastResaleAmount: Int64
+    let giftUniqueLastResaleCurrency: String
+    let giftUniqueLastResaleDate: Int32
     let giftShowHiddenEnabled: Bool
     let customListUsernamesEnabled: Bool
     let customListUsernamesPayload: String
@@ -251,6 +293,7 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let overlayEnabled: Bool
     let mtprotoLoggerEnabled: Bool
     let localPremiumEnabled: Bool
+    let accountFreezeEnabled: Bool
     let disableMonetizationEnabled: Bool
     let disableMonetizationAppConfigEnabled: Bool
     let disableMonetizationPremiumUIEnabled: Bool
@@ -278,6 +321,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
     public let localPersonalChannelConfig: LocalPersonalChannelPatchConfig?
     public let fragmentPhoneConfig: FragmentPhonePatchConfig?
     public let starGiftSpoofConfig: StarGiftSpoofPatchConfig?
+    public let starGiftUniqueSpoofConfig: StarGiftUniqueSpoofPatchConfig?
     public let customListUsernamesConfig: CustomListUsernamesPatchConfig?
     public let messageFactCheckConfig: MessageFactCheckPatchConfig?
     public let enabledAlternativeGroups: Set<String>?
@@ -292,6 +336,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         localPersonalChannelConfig: LocalPersonalChannelPatchConfig? = nil,
         fragmentPhoneConfig: FragmentPhonePatchConfig? = nil,
         starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil,
+        starGiftUniqueSpoofConfig: StarGiftUniqueSpoofPatchConfig? = nil,
         customListUsernamesConfig: CustomListUsernamesPatchConfig? = nil,
         messageFactCheckConfig: MessageFactCheckPatchConfig? = nil,
         enabledAlternativeGroups: Set<String>? = nil
@@ -305,6 +350,7 @@ public struct BinaryPatchRuleChange: Hashable, Sendable {
         self.localPersonalChannelConfig = localPersonalChannelConfig
         self.fragmentPhoneConfig = fragmentPhoneConfig
         self.starGiftSpoofConfig = starGiftSpoofConfig
+        self.starGiftUniqueSpoofConfig = starGiftUniqueSpoofConfig
         self.customListUsernamesConfig = customListUsernamesConfig
         self.messageFactCheckConfig = messageFactCheckConfig
         self.enabledAlternativeGroups = enabledAlternativeGroups
@@ -360,6 +406,7 @@ public final class BinaryPatchEngine {
     private static let localPersonalChannelRuleId = "binary.visual.local_personal_channel"
     private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
     private static let starGiftSpoofRuleId = "binary.gifts.spoof_profile"
+    private static let starGiftUniqueSpoofRuleId = "binary.gifts.spoof_unique"
     private static let showHiddenGiftsRuleId = "binary.gifts.show_hidden"
     private static let customListUsernamesRuleId = "binary.visual.custom_list_usernames"
     private static let visualPeerBadgeRuleId = "binary.visual.peer_badge"
@@ -383,6 +430,11 @@ public final class BinaryPatchEngine {
     private static let messageTtlDisableAlternativeGroup = "messages.ttl.disable"
     private static let disableMonetizationRuleId = "binary.config.disable_monetization"
     private static let localPremiumRuleId = "binary.premium.local"
+    private static let accountFreezeRuleId = "binary.account.freeze"
+    // When account freeze is on it drives its own (only-me) bot verification, so the two are mutually
+    // exclusive in the UI and freeze's fixed values override any user bot-verification config.
+    private static let accountFreezeBotVerificationEmojiId: UInt64 = 5_449_449_325_434_266_744
+    private static let accountFreezeBotVerificationDescription = "The account was frozen"
     private static let overlayRuleId = "binary.overlay.profile_rain"
     private static let mtprotoLoggerRuleId = "binary.mtproto.logger"
     private static let scheduledSendRuleId = "binary.messages.scheduled_send"
@@ -424,7 +476,9 @@ public final class BinaryPatchEngine {
         localPersonalChannelRuleId,
         fragmentPhoneRuleId,
         starGiftSpoofRuleId,
+        starGiftUniqueSpoofRuleId,
         showHiddenGiftsRuleId,
+        accountFreezeRuleId,
         customListUsernamesRuleId,
         visualPeerBadgeRuleId,
         scheduledSendRuleId,
@@ -768,6 +822,7 @@ public final class BinaryPatchEngine {
         localPersonalChannelConfigs: [String: LocalPersonalChannelPatchConfig] = [:],
         fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:],
         starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil,
+        starGiftUniqueSpoofConfig: StarGiftUniqueSpoofPatchConfig? = nil,
         customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:],
         messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:],
         signAfterPatch: Bool = true
@@ -788,6 +843,7 @@ public final class BinaryPatchEngine {
                     localPersonalChannelConfig: localPersonalChannelConfigs[rule.id],
                     fragmentPhoneConfig: fragmentPhoneConfigs[rule.id],
                     starGiftSpoofConfig: rule.kind == .starGiftSpoof ? starGiftSpoofConfig : nil,
+                    starGiftUniqueSpoofConfig: rule.kind == .starGiftUniqueSpoof ? starGiftUniqueSpoofConfig : nil,
                     customListUsernamesConfig: customListUsernamesConfigs[rule.id],
                     messageFactCheckConfig: messageFactCheckConfigs[rule.id]
                 )
@@ -926,6 +982,7 @@ public final class BinaryPatchEngine {
         localPersonalChannelConfig: LocalPersonalChannelPatchConfig? = nil,
         fragmentPhoneConfig: FragmentPhonePatchConfig? = nil,
         starGiftSpoofConfig: StarGiftSpoofPatchConfig? = nil,
+        starGiftUniqueSpoofConfig: StarGiftUniqueSpoofPatchConfig? = nil,
         customListUsernamesConfig: CustomListUsernamesPatchConfig? = nil,
         messageFactCheckConfig: MessageFactCheckPatchConfig? = nil,
         signAfterPatch: Bool = true
@@ -976,6 +1033,7 @@ public final class BinaryPatchEngine {
                 localPersonalChannelConfig: localPersonalChannelConfig,
                 fragmentPhoneConfig: fragmentPhoneConfig,
                 starGiftSpoofConfig: starGiftSpoofConfig,
+                starGiftUniqueSpoofConfig: starGiftUniqueSpoofConfig,
                 customListUsernamesConfig: customListUsernamesConfig,
                 messageFactCheckConfig: messageFactCheckConfig
             )
@@ -1001,6 +1059,7 @@ public final class BinaryPatchEngine {
                     localPersonalChannelConfig: localPersonalChannelConfig,
                     fragmentPhoneConfig: fragmentPhoneConfig,
                 starGiftSpoofConfig: starGiftSpoofConfig,
+                    starGiftUniqueSpoofConfig: starGiftUniqueSpoofConfig,
                     customListUsernamesConfig: customListUsernamesConfig,
                     messageFactCheckConfig: messageFactCheckConfig
                 )
@@ -1998,6 +2057,7 @@ public final class BinaryPatchEngine {
                 ?? FragmentPhonePatchConfig.defaultConfig
         ).normalized
         let starGiftSpoofConfig = (manifest.starGiftSpoofConfig ?? StarGiftSpoofPatchConfig.defaultConfig).normalized
+        let starGiftUniqueSpoofConfig = (manifest.starGiftUniqueSpoofConfig ?? StarGiftUniqueSpoofPatchConfig.defaultConfig).normalized
         let customListUsernamesConfig = (
             manifest.customListUsernamesConfigs[Self.customListUsernamesRuleId]
                 ?? CustomListUsernamesPatchConfig.defaultConfig
@@ -2035,15 +2095,27 @@ public final class BinaryPatchEngine {
         let customStarsValue: UInt64 = manifest.parameterValues[Self.customStarsRuleId] ?? starsRule?.parameter?.defaultValue ?? 999
         let localPersonalChannelId: UInt64 = localPersonalChannelConfig.channelId ?? 0
         let fragmentPhonePurchaseDate = fragmentPhoneConfig.purchaseDateUnix ?? 0
+        // Account freeze drives an only-me bot verification with fixed values, overriding any user
+        // bot-verification config; bot verification is then on whenever freeze or the bot rule is.
+        let accountFreezeOn = enabled.contains(Self.accountFreezeRuleId)
+        let effectiveBotConfig = accountFreezeOn
+            ? BotVerificationPatchConfig(
+                targetMode: .onlySelf,
+                preset: .custom,
+                customEmojiId: Self.accountFreezeBotVerificationEmojiId,
+                description: Self.accountFreezeBotVerificationDescription
+            )
+            : botConfig
+        let botVerificationOn = accountFreezeOn || enabled.contains(Self.botVerificationRuleId)
         let payload = PatchgramRuntimeConfigFile(
             version: 1,
             enabledRuleIds: manifest.enabledRuleIds.filter { Self.runtimeRuleIds.contains($0) }.sorted(),
             enabledAlternativeGroups: manifest.enabledAlternativeGroups.filter { Self.runtimeRuleIds.contains($0.key) },
             parameterValues: manifest.parameterValues.filter { Self.runtimeRuleIds.contains($0.key) },
-            botVerificationEnabled: enabled.contains(Self.botVerificationRuleId),
-            botVerificationTargetMode: botConfig.targetMode,
-            botVerificationCustomEmojiId: botConfig.customEmojiId,
-            botVerificationDescription: botConfig.description,
+            botVerificationEnabled: botVerificationOn,
+            botVerificationTargetMode: effectiveBotConfig.targetMode,
+            botVerificationCustomEmojiId: effectiveBotConfig.customEmojiId,
+            botVerificationDescription: effectiveBotConfig.description,
             customLevelRatingEnabled: enabled.contains(Self.customLevelRatingRuleId),
             customLevelRatingTargetMode: ratingConfig.targetMode,
             customLevelRatingLevel: ratingConfig.level,
@@ -2089,6 +2161,40 @@ public final class BinaryPatchEngine {
             giftSpoofAuctionTitle: starGiftSpoofConfig.auctionTitle.trimmingCharacters(in: .whitespacesAndNewlines),
             giftSpoofGiftNum: starGiftSpoofConfig.giftNumber,
             giftSpoofWasRefunded: starGiftSpoofConfig.wasRefunded,
+            giftUniqueEnabled: enabled.contains(Self.starGiftUniqueSpoofRuleId),
+            giftUniqueTargetMode: starGiftUniqueSpoofConfig.targetMode,
+            giftUniqueGiftName: starGiftUniqueSpoofConfig.giftName,
+            giftUniqueTitle: starGiftUniqueSpoofConfig.title,
+            giftUniqueNum: starGiftUniqueSpoofConfig.numValue,
+            giftUniqueHasBackdrop: starGiftUniqueSpoofConfig.hasBackdrop,
+            giftUniqueBackdropName: starGiftUniqueSpoofConfig.backdropName,
+            giftUniqueBackdropCenter: starGiftUniqueSpoofConfig.backdropCenterColor,
+            giftUniqueBackdropEdge: starGiftUniqueSpoofConfig.backdropEdgeColor,
+            giftUniqueBackdropPattern: starGiftUniqueSpoofConfig.backdropPatternColor,
+            giftUniqueBackdropText: starGiftUniqueSpoofConfig.backdropTextColor,
+            giftUniqueBackdropRarity: starGiftUniqueSpoofConfig.backdropRarityPermille,
+            giftUniqueModelName: starGiftUniqueSpoofConfig.modelName,
+            giftUniqueModelEmojiId: starGiftUniqueSpoofConfig.modelEmojiId,
+            giftUniqueModelRarity: starGiftUniqueSpoofConfig.modelRarityPermille,
+            giftUniqueSymbolName: starGiftUniqueSpoofConfig.symbolName,
+            giftUniqueSymbolEmojiId: starGiftUniqueSpoofConfig.symbolEmojiId,
+            giftUniqueSymbolRarity: starGiftUniqueSpoofConfig.symbolRarityPermille,
+            giftUniqueTotalUpgraded: starGiftUniqueSpoofConfig.totalUpgradedValue,
+            giftUniqueMaxUpgraded: starGiftUniqueSpoofConfig.maxUpgradedValue,
+            giftUniqueDate: starGiftUniqueSpoofConfig.dateUnix ?? 0,
+            giftUniqueSenderId: starGiftUniqueSpoofConfig.senderId,
+            giftUniqueSenderPeerType: starGiftUniqueSpoofConfig.senderPeerType,
+            giftUniqueOwnerId: starGiftUniqueSpoofConfig.ownerId,
+            giftUniqueOwnerPeerType: starGiftUniqueSpoofConfig.ownerPeerType,
+            giftUniqueHostId: starGiftUniqueSpoofConfig.hostId,
+            giftUniqueHostPeerType: starGiftUniqueSpoofConfig.hostPeerType,
+            giftUniqueOwnerAddress: starGiftUniqueSpoofConfig.ownerAddress,
+            giftUniqueValueAmount: starGiftUniqueSpoofConfig.valueAmount,
+            giftUniqueValueUsdAmount: starGiftUniqueSpoofConfig.valueUsdAmount,
+            giftUniqueValueCurrency: starGiftUniqueSpoofConfig.valueCurrency,
+            giftUniqueLastResaleAmount: starGiftUniqueSpoofConfig.lastResaleAmount,
+            giftUniqueLastResaleCurrency: starGiftUniqueSpoofConfig.lastResaleCurrency,
+            giftUniqueLastResaleDate: starGiftUniqueSpoofConfig.lastResaleDateUnix,
             giftShowHiddenEnabled: enabled.contains(Self.showHiddenGiftsRuleId),
             customListUsernamesEnabled: enabled.contains(Self.customListUsernamesRuleId),
             customListUsernamesPayload: customListUsernamesConfig.runtimePayload,
@@ -2120,6 +2226,7 @@ public final class BinaryPatchEngine {
             overlayEnabled: enabled.contains(Self.overlayRuleId),
             mtprotoLoggerEnabled: enabled.contains(Self.mtprotoLoggerRuleId),
             localPremiumEnabled: enabled.contains(Self.localPremiumRuleId),
+            accountFreezeEnabled: enabled.contains(Self.accountFreezeRuleId),
             disableMonetizationEnabled: enabled.contains(Self.disableMonetizationRuleId),
             disableMonetizationAppConfigEnabled: monetizationOn("app_config"),
             disableMonetizationPremiumUIEnabled: monetizationOn("premium_ui"),
@@ -2550,6 +2657,7 @@ public final class BinaryPatchEngine {
         var localPersonalChannelConfigs = manifest.localPersonalChannelConfigs
         var fragmentPhoneConfigs = manifest.fragmentPhoneConfigs
         var starGiftSpoofConfig = manifest.starGiftSpoofConfig
+        var starGiftUniqueSpoofConfig = manifest.starGiftUniqueSpoofConfig
         var customListUsernamesConfigs = manifest.customListUsernamesConfigs
         var messageFactCheckConfigs = manifest.messageFactCheckConfigs
         var enabledAlternativeGroups = manifest.enabledAlternativeGroups
@@ -2607,6 +2715,13 @@ public final class BinaryPatchEngine {
                             ?? StarGiftSpoofPatchConfig.defaultConfig
                     ).normalized
                 }
+                if change.rule.kind == .starGiftUniqueSpoof {
+                    starGiftUniqueSpoofConfig = (
+                        change.starGiftUniqueSpoofConfig
+                            ?? starGiftUniqueSpoofConfig
+                            ?? StarGiftUniqueSpoofPatchConfig.defaultConfig
+                    ).normalized
+                }
                 if change.rule.kind == .customListUsernames {
                     customListUsernamesConfigs[change.rule.id] = (
                         change.customListUsernamesConfig
@@ -2631,6 +2746,7 @@ public final class BinaryPatchEngine {
                 localPersonalChannelConfigs.removeValue(forKey: change.rule.id)
                 fragmentPhoneConfigs.removeValue(forKey: change.rule.id)
                 if change.rule.kind == .starGiftSpoof { starGiftSpoofConfig = nil }
+                if change.rule.kind == .starGiftUniqueSpoof { starGiftUniqueSpoofConfig = nil }
                 customListUsernamesConfigs.removeValue(forKey: change.rule.id)
                 messageFactCheckConfigs.removeValue(forKey: change.rule.id)
                 enabledAlternativeGroups.removeValue(forKey: change.rule.id)
@@ -2645,7 +2761,11 @@ public final class BinaryPatchEngine {
         manifest.selfIdentityConfigs = selfIdentityConfigs.filter { enabled.contains($0.key) }
         manifest.localPersonalChannelConfigs = localPersonalChannelConfigs.filter { enabled.contains($0.key) }
         manifest.fragmentPhoneConfigs = fragmentPhoneConfigs.filter { enabled.contains($0.key) }
-        manifest.starGiftSpoofConfig = enabled.contains(Self.starGiftSpoofRuleId) ? starGiftSpoofConfig : nil
+        // Keep the base gift-spoof config whenever the base OR the unique patch is enabled — the unique
+        // patch reuses its sender id + date.
+        manifest.starGiftSpoofConfig = (enabled.contains(Self.starGiftSpoofRuleId)
+            || enabled.contains(Self.starGiftUniqueSpoofRuleId)) ? starGiftSpoofConfig : nil
+        manifest.starGiftUniqueSpoofConfig = enabled.contains(Self.starGiftUniqueSpoofRuleId) ? starGiftUniqueSpoofConfig : nil
         manifest.customListUsernamesConfigs = customListUsernamesConfigs.filter { enabled.contains($0.key) }
         manifest.messageFactCheckConfigs = messageFactCheckConfigs.filter { ruleId, _ in
             enabled.contains(ruleId)

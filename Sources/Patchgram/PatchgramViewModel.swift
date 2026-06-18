@@ -35,7 +35,9 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         "binary.mtproto.logger",
         "binary.stickers.recent_limit",
         "binary.gifts.spoof_profile",
-        "binary.gifts.show_hidden"
+        "binary.gifts.spoof_unique",
+        "binary.gifts.show_hidden",
+        "binary.account.freeze"
     ]
 
     var id: String { status.id }
@@ -99,13 +101,14 @@ struct BinaryRuleRowState: Identifiable, Hashable {
     var updateButtonTitle: String? {
         guard canUpdateAppliedPatch else { return nil }
         // Gift spoofing is reconfigured from its own Settings window, not a Change/Update button.
-        if status.rule.kind == .starGiftSpoof { return nil }
+        if status.rule.kind == .starGiftSpoof || status.rule.kind == .starGiftUniqueSpoof { return nil }
         return (status.rule.parameter == nil
             && status.rule.kind != .botVerification
             && status.rule.kind != .customLevelRating
             && status.rule.kind != .selfIdentityOverride
             && status.rule.kind != .localPersonalChannel
             && status.rule.kind != .starGiftSpoof
+            && status.rule.kind != .starGiftUniqueSpoof
             && status.rule.kind != .customListUsernames) ? "Update" : "Change"
     }
 
@@ -289,6 +292,18 @@ final class PatchgramViewModel: ObservableObject {
     @Published var fragmentPhoneConfigs: [String: FragmentPhonePatchConfig] = [:]
     @Published var starGiftSpoofConfig: StarGiftSpoofPatchConfig = .defaultConfig
     @Published var isShowingGiftSpoofSettings = false
+    @Published var starGiftUniqueSpoofConfig: StarGiftUniqueSpoofPatchConfig = .defaultConfig
+    @Published var isShowingGiftUniqueSpoofSettings = false
+    // changes.tg catalog for the unique-gift settings window (gift names + per-gift backdrops/models/symbols).
+    @Published var uniqueGiftNames: [String] = []
+    @Published var uniqueGiftBackdrops: [GiftChangesBackdrop] = []
+    @Published var uniqueGiftModels: [GiftChangesAttribute] = []
+    @Published var uniqueGiftSymbols: [GiftChangesAttribute] = []
+    @Published var isLoadingUniqueGiftData = false
+    // Persisted changes.tg catalog so we don't re-hit the API every time; refreshed via the Update button.
+    struct UniqueGiftAttrs: Codable { var backdrops: [GiftChangesBackdrop]; var models: [GiftChangesAttribute]; var symbols: [GiftChangesAttribute] }
+    struct UniqueGiftCatalog: Codable { var names: [String] = []; var attrs: [String: UniqueGiftAttrs] = [:] }
+    private var uniqueGiftCatalog = UniqueGiftCatalog()
     @Published var customListUsernamesConfigs: [String: CustomListUsernamesPatchConfig] = [:]
     @Published var isShowingCustomListUsernamesSettings = false
     @Published var messageFactCheckConfigs: [String: MessageFactCheckPatchConfig] = [:]
@@ -312,6 +327,8 @@ final class PatchgramViewModel: ObservableObject {
     private static let localPersonalChannelDefaultsPrefix = "Patchgram.localPersonalChannelConfig."
     private static let fragmentPhoneDefaultsPrefix = "Patchgram.fragmentPhoneConfig."
     private static let starGiftSpoofDefaultsKey = "Patchgram.starGiftSpoofConfig"
+    private static let starGiftUniqueSpoofDefaultsKey = "Patchgram.starGiftUniqueSpoofConfig"
+    private static let uniqueGiftCatalogKey = "Patchgram.uniqueGiftCatalog"
     private static let customListUsernamesDefaultsPrefix = "Patchgram.customListUsernamesConfig."
     private static let messageFactCheckDefaultsPrefix = "Patchgram.messageFactCheckConfig."
     private static let botVerificationPresetsFileName = "BotVerificationPresets.json"
@@ -326,6 +343,7 @@ final class PatchgramViewModel: ObservableObject {
     private static let localPersonalChannelRuleId = "binary.visual.local_personal_channel"
     private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
     private static let starGiftSpoofRuleId = "binary.gifts.spoof_profile"
+    private static let starGiftUniqueSpoofRuleId = "binary.gifts.spoof_unique"
     private static let customListUsernamesRuleId = "binary.visual.custom_list_usernames"
     private static let dylibInjectionRuleId = "binary.dylib.inject"
     private static let appConfigDesiredSubpatchIdsKey = "Patchgram.appConfigSubpatches.desired"
@@ -374,7 +392,9 @@ final class PatchgramViewModel: ObservableObject {
         "binary.mtproto.logger",
         "binary.stickers.recent_limit",
         "binary.gifts.spoof_profile",
-        "binary.gifts.show_hidden"
+        "binary.gifts.spoof_unique",
+        "binary.gifts.show_hidden",
+        "binary.account.freeze"
     ]
     private static let compositeFeatureRuleIds: Set<String> = [
         customAccountFeatureRuleId,
@@ -392,7 +412,8 @@ final class PatchgramViewModel: ObservableObject {
         selfIdentityOverrideRuleId,
         localPersonalChannelRuleId,
         fragmentPhoneRuleId,
-        customListUsernamesRuleId
+        customListUsernamesRuleId,
+        "binary.account.freeze"
     ]
     private static let messageSettingsSubpatchDefinitions: [BinaryCompositeSubpatchDefinition] = [
         BinaryCompositeSubpatchDefinition(id: "typing", title: "Typing activity"),
@@ -424,6 +445,7 @@ final class PatchgramViewModel: ObservableObject {
         BinaryCompositeSubpatchDefinition(id: "visual_peer_badge", title: "Visual peer badge", internalRuleId: "binary.visual.peer_badge", showsChangeButton: true),
         BinaryCompositeSubpatchDefinition(id: "bot_verification", title: "Bot verification", internalRuleId: "binary.visual.bot_verification", showsSettingsButton: true, showsChangeButton: true),
         BinaryCompositeSubpatchDefinition(id: "local_premium", title: "Local Telegram Premium", internalRuleId: "binary.premium.local"),
+        BinaryCompositeSubpatchDefinition(id: "account_freeze", title: "Account freeze", internalRuleId: "binary.account.freeze"),
         BinaryCompositeSubpatchDefinition(id: customPhoneNumberSubpatchId, title: "Custom phone number", internalRuleId: selfIdentityOverrideRuleId, alternativeGroup: customPhoneNumberAlternativeGroup, showsChangeButton: true),
         BinaryCompositeSubpatchDefinition(id: customUserIdSubpatchId, title: "Custom userID", internalRuleId: selfIdentityOverrideRuleId, alternativeGroup: customUserIdAlternativeGroup, showsChangeButton: true),
         BinaryCompositeSubpatchDefinition(id: "local_personal_channel", title: "Local attached channel", internalRuleId: localPersonalChannelRuleId, showsChangeButton: true),
@@ -452,6 +474,11 @@ final class PatchgramViewModel: ObservableObject {
         localPersonalChannelConfigs = Self.loadLocalPersonalChannelConfigs()
         fragmentPhoneConfigs = Self.loadFragmentPhoneConfigs()
         starGiftSpoofConfig = Self.loadStarGiftSpoofConfig()
+        starGiftUniqueSpoofConfig = Self.loadStarGiftUniqueSpoofConfig()
+        if let data = UserDefaults.standard.data(forKey: Self.uniqueGiftCatalogKey),
+           let cat = try? JSONDecoder().decode(UniqueGiftCatalog.self, from: data) {
+            uniqueGiftCatalog = cat
+        }
         customListUsernamesConfigs = Self.loadCustomListUsernamesConfigs()
         messageFactCheckConfigs = Self.loadMessageFactCheckConfigs()
         desiredCustomAccountSubpatchIds = Self.loadCustomAccountSubpatchIds(
@@ -900,10 +927,176 @@ final class PatchgramViewModel: ObservableObject {
                 patchedMessageFactCheckConfig: nil
             )
             setOperationProgress(0.90, message: liveRuntimeUpdate ? "Runtime config updated." : "Opening selected app...")
+            markDylibInjectionEnabledRow()
             if !liveRuntimeUpdate {
                 _ = openSelectedApp(appURL: appURL)
             }
             finishOperation(liveRuntimeUpdate ? "Gift spoof updated live — re-open the profile to refresh." : "Gift spoof applied.")
+        } catch {
+            failOperation(error.localizedDescription)
+        }
+    }
+
+    func showGiftUniqueSpoofSettings() {
+        guard !isWorking else { return }
+        isShowingGiftUniqueSpoofSettings = true
+        loadUniqueGiftCatalogIfNeeded()
+    }
+
+    private func persistUniqueGiftCatalog() {
+        if let data = try? JSONEncoder().encode(uniqueGiftCatalog) {
+            UserDefaults.standard.set(data, forKey: Self.uniqueGiftCatalogKey)
+        }
+    }
+
+    /// Populate the gift-name list from the local cache; fetch from api.changes.tg only if the cache is
+    /// empty (first run). Subsequent opens are offline; use the Update button to refresh.
+    func loadUniqueGiftCatalogIfNeeded() {
+        if !uniqueGiftCatalog.names.isEmpty {
+            uniqueGiftNames = uniqueGiftCatalog.names
+            let chosen = starGiftUniqueSpoofConfig.giftName
+            if !chosen.isEmpty { loadUniqueGiftBackdrops(forGift: chosen) }
+            return
+        }
+        guard !isLoadingUniqueGiftData else { return }
+        isLoadingUniqueGiftData = true
+        Task {
+            let names = await Task.detached { GiftChangesAPI.fetchGiftNames() }.value
+            await MainActor.run {
+                self.uniqueGiftNames = names
+                self.uniqueGiftCatalog.names = names
+                self.persistUniqueGiftCatalog()
+                self.isLoadingUniqueGiftData = false
+                let chosen = self.starGiftUniqueSpoofConfig.giftName
+                if !chosen.isEmpty { self.loadUniqueGiftBackdrops(forGift: chosen) }
+            }
+        }
+    }
+
+    static let emptyGiftName = "Empty"
+
+    /// Backdrops/models/symbols for the chosen gift — from the cache if present, else fetched + cached.
+    /// "Empty" has no per-gift attributes: model/symbol are forced custom and backdrops come from the
+    /// global /backdrops list.
+    func loadUniqueGiftBackdrops(forGift gift: String) {
+        let g = gift.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !g.isEmpty else { uniqueGiftBackdrops = []; uniqueGiftModels = []; uniqueGiftSymbols = []; return }
+        if let a = uniqueGiftCatalog.attrs[g] {
+            uniqueGiftBackdrops = a.backdrops; uniqueGiftModels = a.models; uniqueGiftSymbols = a.symbols
+            return
+        }
+        let isEmpty = (g == Self.emptyGiftName)
+        isLoadingUniqueGiftData = true
+        Task {
+            let drops = await Task.detached { isEmpty ? GiftChangesAPI.fetchAllBackdrops() : GiftChangesAPI.fetchBackdrops(gift: g) }.value
+            let attrs = isEmpty ? (models: [GiftChangesAttribute](), symbols: [GiftChangesAttribute]())
+                                : await Task.detached { GiftChangesAPI.fetchModelsAndSymbols(gift: g) }.value
+            await MainActor.run {
+                self.uniqueGiftBackdrops = drops
+                self.uniqueGiftModels = attrs.models
+                self.uniqueGiftSymbols = attrs.symbols
+                self.uniqueGiftCatalog.attrs[g] = UniqueGiftAttrs(backdrops: drops, models: attrs.models, symbols: attrs.symbols)
+                self.persistUniqueGiftCatalog()
+                self.isLoadingUniqueGiftData = false
+            }
+        }
+    }
+
+    /// "Update lists" button: force a re-fetch of the gift names + the currently-selected gift's
+    /// attributes from api.changes.tg, replacing the local cache.
+    func refreshUniqueGiftCatalog(currentGift: String) {
+        guard !isLoadingUniqueGiftData else { return }
+        isLoadingUniqueGiftData = true
+        let g = currentGift.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            let names = await Task.detached { GiftChangesAPI.fetchGiftNames() }.value
+            var drops: [GiftChangesBackdrop] = []
+            var attrs: (models: [GiftChangesAttribute], symbols: [GiftChangesAttribute]) = ([], [])
+            if !g.isEmpty {
+                drops = await Task.detached { GiftChangesAPI.fetchBackdrops(gift: g) }.value
+                attrs = await Task.detached { GiftChangesAPI.fetchModelsAndSymbols(gift: g) }.value
+            }
+            await MainActor.run {
+                if !names.isEmpty { self.uniqueGiftNames = names; self.uniqueGiftCatalog.names = names }
+                if !g.isEmpty {
+                    self.uniqueGiftBackdrops = drops; self.uniqueGiftModels = attrs.models; self.uniqueGiftSymbols = attrs.symbols
+                    self.uniqueGiftCatalog.attrs[g] = UniqueGiftAttrs(backdrops: drops, models: attrs.models, symbols: attrs.symbols)
+                }
+                self.persistUniqueGiftCatalog()
+                self.isLoadingUniqueGiftData = false
+                self.statusMessage = "Gift lists updated."
+            }
+        }
+    }
+
+    /// Save the unique-gift spoof config and, when `applyNow` is set, push it to the dylib live (a
+    /// runtime-config reload — re-open the profile to re-fetch the gifts).
+    @discardableResult
+    func updateStarGiftUniqueSpoofConfig(_ config: StarGiftUniqueSpoofPatchConfig, applyNow: Bool) -> Bool {
+        let normalized = config.normalized
+        starGiftUniqueSpoofConfig = normalized
+        storeStarGiftUniqueSpoofConfig(normalized)
+        guard applyNow else {
+            statusMessage = "Unique gift spoof settings saved."
+            return true
+        }
+        applyGiftUniqueSpoofConfigLive(normalized)
+        return true
+    }
+
+    private func applyGiftUniqueSpoofConfigLive(_ config: StarGiftUniqueSpoofPatchConfig) {
+        guard !isWorking else { return }
+        guard let appURL else {
+            statusMessage = "Select Telegram Desktop first."
+            return
+        }
+        guard let rule = binaryRows.first(where: { $0.id == Self.starGiftUniqueSpoofRuleId })?.status.rule
+                ?? BinaryPatchRuleCatalog.rule(id: Self.starGiftUniqueSpoofRuleId) else { return }
+        guard verifyPatchWriteAccess(
+            appURL: appURL,
+            retryAction: .updateAppliedPatch(ruleId: Self.starGiftUniqueSpoofRuleId)
+        ) else { return }
+        beginOperation("Applying \(rule.title)...")
+        do {
+            let liveRuntimeUpdate = try canLiveUpdateRuntimeRule(rule, appURL: appURL)
+            if liveRuntimeUpdate {
+                setOperationProgress(0.22, message: "Writing runtime config...")
+            } else {
+                setOperationProgress(0.15, message: "Closing selected app if needed...")
+                _ = try closeSelectedAppIfRunning(appURL: appURL)
+                setOperationProgress(0.38, message: "Writing binary patch...")
+            }
+            _ = try binaryEngine.setRule(
+                rule,
+                enabled: true,
+                appURL: appURL,
+                parameterValue: nil,
+                botVerificationConfig: nil,
+                customLevelRatingConfig: nil,
+                selfIdentityConfig: nil,
+                starGiftUniqueSpoofConfig: config,
+                messageFactCheckConfig: nil,
+                signAfterPatch: !liveRuntimeUpdate
+            )
+            setOperationProgress(0.76, message: "Refreshing patch row...")
+            markBinaryRule(
+                rule,
+                enabled: true,
+                patchedParameterValue: nil,
+                patchedBotVerificationConfig: nil,
+                patchedCustomLevelRatingConfig: nil,
+                patchedSelfIdentityConfig: nil,
+                patchedLocalPersonalChannelConfig: nil,
+                patchedFragmentPhoneConfig: nil,
+                patchedCustomListUsernamesConfig: nil,
+                patchedMessageFactCheckConfig: nil
+            )
+            setOperationProgress(0.90, message: liveRuntimeUpdate ? "Runtime config updated." : "Opening selected app...")
+            markDylibInjectionEnabledRow()
+            if !liveRuntimeUpdate {
+                _ = openSelectedApp(appURL: appURL)
+            }
+            finishOperation(liveRuntimeUpdate ? "Unique gift spoof updated live — re-open the profile to refresh." : "Unique gift spoof applied.")
         } catch {
             failOperation(error.localizedDescription)
         }
@@ -1092,6 +1285,9 @@ final class PatchgramViewModel: ObservableObject {
             // Settings live in a separate window (GiftSpoofSettingsView); open it on enable so the
             // user can write the config, then apply live from there.
             isShowingGiftSpoofSettings = true
+        } else if enabled, row.status.rule.kind == .starGiftUniqueSpoof {
+            // Settings live in a separate window (GiftUniqueSpoofSettingsView); open it on enable.
+            isShowingGiftUniqueSpoofSettings = true
         } else if enabled, let value = promptForParameterIfNeeded(for: row.status.rule, actionTitle: "Enable") {
             binaryParameterValues[row.id] = value
             binaryRows[index].parameterValue = value
@@ -1119,6 +1315,18 @@ final class PatchgramViewModel: ObservableObject {
         binaryRows[index].desiredEnabled = true
     }
 
+    /// After applying a dylib patch from its own window (live), reflect that the Dylib-injection patch is
+    /// now on (the engine wrapper is installed whenever any runtime rule is enabled).
+    private func markDylibInjectionEnabledRow() {
+        guard let rule = BinaryPatchRuleCatalog.rule(id: Self.dylibInjectionRuleId) else { return }
+        markBinaryRule(
+            rule, enabled: true, patchedParameterValue: nil, patchedBotVerificationConfig: nil,
+            patchedCustomLevelRatingConfig: nil, patchedSelfIdentityConfig: nil,
+            patchedLocalPersonalChannelConfig: nil, patchedFragmentPhoneConfig: nil,
+            patchedCustomListUsernamesConfig: nil, patchedMessageFactCheckConfig: nil
+        )
+    }
+
     func setSubpatch(ruleId: String, subpatchId: String, enabled: Bool) {
         guard !isWorking else { return }
         guard Self.compositeFeatureRuleIds.contains(ruleId),
@@ -1143,6 +1351,15 @@ final class PatchgramViewModel: ObservableObject {
         var desired = desiredSubpatchIds(for: ruleId)
         if enabled {
             desired.insert(subpatchId)
+            // Account freeze drives its own (only-me) bot verification, so the two are mutually
+            // exclusive — enabling either clears the other.
+            if ruleId == Self.customAccountFeatureRuleId {
+                if subpatchId == "account_freeze" {
+                    desired.remove("bot_verification")
+                } else if subpatchId == "bot_verification" {
+                    desired.remove("account_freeze")
+                }
+            }
         } else {
             desired.remove(subpatchId)
         }
@@ -1208,6 +1425,10 @@ final class PatchgramViewModel: ObservableObject {
         if row.status.rule.kind == .starGiftSpoof {
             // "Change" opens the dedicated settings window; saving there applies the patch live.
             showGiftSpoofSettings()
+            return
+        }
+        if row.status.rule.kind == .starGiftUniqueSpoof {
+            showGiftUniqueSpoofSettings()
             return
         }
         let nextParameterValue: UInt64?
@@ -1848,6 +2069,7 @@ final class PatchgramViewModel: ObservableObject {
                 localPersonalChannelConfig: enabled ? localPersonalChannelConfig(for: rule) : nil,
                 fragmentPhoneConfig: enabled ? fragmentPhoneConfig(for: rule) : nil,
                 starGiftSpoofConfig: enabled ? resolvedStarGiftSpoofConfig(for: rule) : nil,
+                starGiftUniqueSpoofConfig: enabled ? resolvedStarGiftUniqueSpoofConfig(for: rule) : nil,
                 customListUsernamesConfig: enabled ? customListUsernamesConfig(for: rule) : nil,
                 messageFactCheckConfig: enabled ? messageFactCheckConfig(for: rule) : nil,
                 enabledAlternativeGroups: enabled ? alternativeGroupsForChange(row) : nil
@@ -1898,6 +2120,7 @@ final class PatchgramViewModel: ObservableObject {
                 localPersonalChannelConfig: enabled ? localPersonalChannelConfig(for: rule) : nil,
                 fragmentPhoneConfig: enabled ? fragmentPhoneConfig(for: rule) : nil,
                 starGiftSpoofConfig: enabled ? resolvedStarGiftSpoofConfig(for: rule) : nil,
+                starGiftUniqueSpoofConfig: enabled ? resolvedStarGiftUniqueSpoofConfig(for: rule) : nil,
                 customListUsernamesConfig: enabled ? customListUsernamesConfig(for: rule) : nil,
                 messageFactCheckConfig: enabled ? messageFactCheckConfig(for: rule) : nil,
                 enabledAlternativeGroups: groups
@@ -2358,6 +2581,25 @@ final class PatchgramViewModel: ObservableObject {
     private func resolvedStarGiftSpoofConfig(for rule: BinaryPatchRule) -> StarGiftSpoofPatchConfig? {
         guard rule.kind == .starGiftSpoof else { return nil }
         return starGiftSpoofConfig.normalized
+    }
+
+    private static func loadStarGiftUniqueSpoofConfig() -> StarGiftUniqueSpoofPatchConfig {
+        guard let data = UserDefaults.standard.data(forKey: starGiftUniqueSpoofDefaultsKey),
+              let config = try? JSONDecoder().decode(StarGiftUniqueSpoofPatchConfig.self, from: data) else {
+            return .defaultConfig
+        }
+        return config.normalized
+    }
+
+    private func storeStarGiftUniqueSpoofConfig(_ config: StarGiftUniqueSpoofPatchConfig) {
+        if let data = try? JSONEncoder().encode(config) {
+            UserDefaults.standard.set(data, forKey: Self.starGiftUniqueSpoofDefaultsKey)
+        }
+    }
+
+    private func resolvedStarGiftUniqueSpoofConfig(for rule: BinaryPatchRule) -> StarGiftUniqueSpoofPatchConfig? {
+        guard rule.kind == .starGiftUniqueSpoof else { return nil }
+        return starGiftUniqueSpoofConfig.normalized
     }
 
     private static func loadCustomListUsernamesConfigs() -> [String: CustomListUsernamesPatchConfig] {

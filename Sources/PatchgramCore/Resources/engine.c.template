@@ -497,6 +497,59 @@ static size_t g_captured_emoji_slim_len = 0;
 static int64_t g_captured_emoji_doc_id = 0;
 static uint32_t g_gift_spoof_logs = 0;
 
+// Spoof profile UNIQUE gifts: rewrite a savedStarGift whose gift is a starGiftUnique so its title,
+// unique number and backdrop (name + colors + rarity) become the configured upgradable-gift values
+// (sourced from api.changes.tg). It has its OWN date (g_unique_date); sender falls back to the base
+// Spoof-profile-gifts sender when this patch leaves it 0. Model/symbol stickers are left as-is for now.
+static int g_gift_unique_enabled = 0;
+static enum PatchgramTargetMode g_gift_unique_target_mode = PatchgramTargetOnlySelf;
+static char g_unique_gift_name[128] = {0};   // chosen gift name → title fallback when title is empty
+static char g_unique_title[256] = {0};       // starGiftUnique.title; empty = use the gift name
+static int32_t g_unique_num = 0;             // starGiftUnique.num + savedStarGift.gift_num; 0 = leave
+static char g_unique_backdrop_name[128] = {0}; // starGiftAttributeBackdrop.name; empty = leave
+static int g_unique_has_backdrop = 0;        // a backdrop is configured → overwrite colors/id/rarity
+static int32_t g_unique_backdrop_center = 0; // center_color (RGB int)
+static int32_t g_unique_backdrop_edge = 0;   // edge_color
+static int32_t g_unique_backdrop_pattern = 0;// pattern_color
+static int32_t g_unique_backdrop_text = 0;   // text_color
+static int32_t g_unique_backdrop_rarity = 0; // starGiftAttributeRarity.permille for the backdrop
+// model + symbol (pattern) attributes: the chosen custom-emoji document ids (from /emoji/:gift) + name
+// + rarity. The document.id swap relies on Telegram resolving the custom emoji by id.
+static char g_unique_model_name[128] = {0};
+static int64_t g_unique_model_emoji_id = 0;  // 0 = leave the model alone
+static int32_t g_unique_model_rarity = 0;
+static char g_unique_symbol_name[128] = {0};
+static int64_t g_unique_symbol_emoji_id = 0; // 0 = leave the symbol/pattern alone
+static int32_t g_unique_symbol_rarity = 0;
+static int32_t g_unique_total_upgraded = 0;  // starGiftUnique.availability_issued ("N of M issued"); 0 = default
+static int32_t g_unique_max_upgraded = 0;    // starGiftUnique.availability_total; 0 = default
+static int32_t g_unique_date = 0;            // savedStarGift.date (this patch's own field); 0 = leave the original
+// Identity: savedStarGift.from_id (sender) + starGiftUnique.owner_id / host_id (Peers) + owner_address.
+static int64_t g_unique_sender_id = 0;
+static int g_unique_sender_peer_type = 0;
+static int64_t g_unique_owner_id = 0;
+static int g_unique_owner_peer_type = 0;
+static int64_t g_unique_host_id = 0;
+static int g_unique_host_peer_type = 0;
+static char g_unique_owner_address[192] = {0};
+// Value: starGiftUnique.value_amount / value_currency / value_usd_amount (all flags.8). 0/empty = leave.
+static int64_t g_unique_value_amount = 0;
+static int64_t g_unique_value_usd = 0;
+static char g_unique_value_currency[16] = {0};
+// Last resale: payments.uniqueStarGiftValueInfo.last_sale_price (flags.0) + last_sale_date (flags.0) +
+// shared currency. last_sale_date is the "when last resold" timestamp. 0/empty = leave.
+static int64_t g_unique_last_resale_amount = 0;
+static char g_unique_last_resale_currency[16] = {0};
+static int32_t g_unique_last_resale_date = 0;
+// Captured REAL custom-emoji documents (slim, correct access_hash) for the chosen model/symbol ids — used
+// to embed a renderable document in the built unique gift. Filled opportunistically from
+// getCustomEmojiDocuments / messages.stickerSet responses as those emojis flow by.
+#define PATCHGRAM_UNIQUE_DOC_SLOTS 4
+static int64_t g_unique_doc_ids[PATCHGRAM_UNIQUE_DOC_SLOTS] = {0};
+static uint16_t g_unique_doc_len[PATCHGRAM_UNIQUE_DOC_SLOTS] = {0};
+static uint8_t g_unique_doc_bytes[PATCHGRAM_UNIQUE_DOC_SLOTS][4096];
+static uint32_t g_gift_unique_logs = 0;
+
 // Show-hidden-gifts patch: inject extra starGift entries (stars=50, not limited) into the
 // payments.starGifts (available-gifts) response. The app resolves each gift id → custom-emoji id via
 // api.changes.tg and passes the pairs; the dylib captures each emoji's slim Document (thumbs emptied)
@@ -510,6 +563,13 @@ static int64_t g_hidden_doc_ids[PATCHGRAM_MAX_HIDDEN_GIFTS] = {0};   // emoji id
 static uint16_t g_hidden_doc_len[PATCHGRAM_MAX_HIDDEN_GIFTS] = {0};
 static uint8_t g_hidden_doc_bytes[PATCHGRAM_MAX_HIDDEN_GIFTS][1024];
 static uint32_t g_hidden_gift_logs = 0;
+
+// Account-freeze patch: inject freeze_since_date / freeze_until_date / freeze_appeal_url into the
+// help.appConfig response so Telegram Desktop reads the account as frozen (Main::Session::frozen()
+// becomes true via since != 0). since = now (activation time, "always today"), until = a fixed far
+// future date. Appended into the appConfig jsonObject; grows only into the buffer's spare capacity.
+static int g_account_freeze_enabled = 0;
+static uint32_t g_account_freeze_logs = 0;
 
 static void patchgram_set_log_path(const char *config_path) {
     if (!config_path || !config_path[0]) {
@@ -2470,10 +2530,77 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     snprintf(g_gift_spoof_auction_title, sizeof(g_gift_spoof_auction_title), "%s", gift_spoof_auction_title);
     g_gift_spoof_gift_num = (int32_t)patchgram_json_i64(json, "giftSpoofGiftNum", 0);
     g_gift_spoof_was_refunded = patchgram_json_bool(json, "giftSpoofWasRefunded", false) ? 1 : 0;
+    // Spoof profile UNIQUE gifts: title/num + backdrop (name + colours + rarity). sender/date are reused
+    // from the base giftSpoof* values above.
+    g_gift_unique_enabled = patchgram_json_bool(json, "giftUniqueEnabled", false) ? 1 : 0;
+    {
+        char unique_title[256]; unique_title[0] = 0;
+        patchgram_json_string(json, "giftUniqueTitle", unique_title, sizeof(unique_title));
+        snprintf(g_unique_title, sizeof(g_unique_title), "%s", unique_title);
+        char unique_bd_name[128]; unique_bd_name[0] = 0;
+        patchgram_json_string(json, "giftUniqueBackdropName", unique_bd_name, sizeof(unique_bd_name));
+        snprintf(g_unique_backdrop_name, sizeof(g_unique_backdrop_name), "%s", unique_bd_name);
+    }
+    g_unique_num = (int32_t)patchgram_json_i64(json, "giftUniqueNum", 0);
+    g_unique_has_backdrop = patchgram_json_bool(json, "giftUniqueHasBackdrop", false) ? 1 : 0;
+    g_unique_backdrop_center = (int32_t)patchgram_json_i64(json, "giftUniqueBackdropCenter", 0);
+    g_unique_backdrop_edge = (int32_t)patchgram_json_i64(json, "giftUniqueBackdropEdge", 0);
+    g_unique_backdrop_pattern = (int32_t)patchgram_json_i64(json, "giftUniqueBackdropPattern", 0);
+    g_unique_backdrop_text = (int32_t)patchgram_json_i64(json, "giftUniqueBackdropText", 0);
+    g_unique_backdrop_rarity = (int32_t)patchgram_json_i64(json, "giftUniqueBackdropRarity", 0);
+    {
+        char unique_target_mode[32]; unique_target_mode[0] = 0;
+        patchgram_json_string(json, "giftUniqueTargetMode", unique_target_mode, sizeof(unique_target_mode));
+        g_gift_unique_target_mode = patchgram_parse_target_mode(unique_target_mode);
+        char unique_gift_name[128]; unique_gift_name[0] = 0;
+        patchgram_json_string(json, "giftUniqueGiftName", unique_gift_name, sizeof(unique_gift_name));
+        snprintf(g_unique_gift_name, sizeof(g_unique_gift_name), "%s", unique_gift_name);
+        // Title fallback: empty title → use the chosen gift's name (e.g. "Artisan Brick").
+        if (!g_unique_title[0] && g_unique_gift_name[0]) {
+            snprintf(g_unique_title, sizeof(g_unique_title), "%s", g_unique_gift_name);
+        }
+        char unique_model_name[128]; unique_model_name[0] = 0;
+        patchgram_json_string(json, "giftUniqueModelName", unique_model_name, sizeof(unique_model_name));
+        snprintf(g_unique_model_name, sizeof(g_unique_model_name), "%s", unique_model_name);
+        char unique_symbol_name[128]; unique_symbol_name[0] = 0;
+        patchgram_json_string(json, "giftUniqueSymbolName", unique_symbol_name, sizeof(unique_symbol_name));
+        snprintf(g_unique_symbol_name, sizeof(g_unique_symbol_name), "%s", unique_symbol_name);
+    }
+    g_unique_model_emoji_id = patchgram_json_i64(json, "giftUniqueModelEmojiId", 0);
+    g_unique_model_rarity = (int32_t)patchgram_json_i64(json, "giftUniqueModelRarity", 0);
+    g_unique_symbol_emoji_id = patchgram_json_i64(json, "giftUniqueSymbolEmojiId", 0);
+    g_unique_symbol_rarity = (int32_t)patchgram_json_i64(json, "giftUniqueSymbolRarity", 0);
+    g_unique_total_upgraded = (int32_t)patchgram_json_i64(json, "giftUniqueTotalUpgraded", 0);
+    g_unique_max_upgraded = (int32_t)patchgram_json_i64(json, "giftUniqueMaxUpgraded", 0);
+    g_unique_date = (int32_t)patchgram_json_i64(json, "giftUniqueDate", 0);
+    g_unique_sender_id = patchgram_json_i64(json, "giftUniqueSenderId", 0);
+    g_unique_sender_peer_type = (int)patchgram_json_i64(json, "giftUniqueSenderPeerType", 0);
+    g_unique_owner_id = patchgram_json_i64(json, "giftUniqueOwnerId", 0);
+    g_unique_owner_peer_type = (int)patchgram_json_i64(json, "giftUniqueOwnerPeerType", 0);
+    g_unique_host_id = patchgram_json_i64(json, "giftUniqueHostId", 0);
+    g_unique_host_peer_type = (int)patchgram_json_i64(json, "giftUniqueHostPeerType", 0);
+    {
+        char unique_owner_addr[192]; unique_owner_addr[0] = 0;
+        patchgram_json_string(json, "giftUniqueOwnerAddress", unique_owner_addr, sizeof(unique_owner_addr));
+        snprintf(g_unique_owner_address, sizeof(g_unique_owner_address), "%s", unique_owner_addr);
+    }
+    g_unique_value_amount = patchgram_json_i64(json, "giftUniqueValueAmount", 0);
+    g_unique_value_usd = patchgram_json_i64(json, "giftUniqueValueUsdAmount", 0);
+    g_unique_last_resale_amount = patchgram_json_i64(json, "giftUniqueLastResaleAmount", 0);
+    g_unique_last_resale_date = (int32_t)patchgram_json_i64(json, "giftUniqueLastResaleDate", 0);
+    {
+        char cur[16]; cur[0] = 0;
+        patchgram_json_string(json, "giftUniqueValueCurrency", cur, sizeof(cur));
+        snprintf(g_unique_value_currency, sizeof(g_unique_value_currency), "%s", cur);
+        cur[0] = 0;
+        patchgram_json_string(json, "giftUniqueLastResaleCurrency", cur, sizeof(cur));
+        snprintf(g_unique_last_resale_currency, sizeof(g_unique_last_resale_currency), "%s", cur);
+    }
     // Show hidden gifts: enabled flag + the gift→custom-emoji pairs to inject. The pairs are the known
     // hidden gifts with their api.changes.tg emoji ids (baked in); an optional config
     // "giftHiddenPayload" ("giftId:emojiId,…") overrides them.
     g_show_hidden_gifts_enabled = patchgram_json_bool(json, "giftShowHiddenEnabled", false) ? 1 : 0;
+    g_account_freeze_enabled = patchgram_json_bool(json, "accountFreezeEnabled", false) ? 1 : 0;
     g_hidden_gift_count = 0;
     {
         static char hidden_payload[PATCHGRAM_MAX_HIDDEN_GIFTS * 48];
@@ -5129,6 +5256,7 @@ __PATCHGRAM_TL_SCHEMA_PLACEHOLDER__
 
 #define PATCHGRAM_TL_VECTOR_ID 0x1cb5c415u
 #define PATCHGRAM_TL_MESSAGES_STICKER_SET 0x6e153f16u
+#define PATCHGRAM_TL_STAR_GIFT_UPGRADE_PREVIEW 0x3de1dfedu  // payments.starGiftUpgradePreview (sample_attributes)
 #define PATCHGRAM_TL_DOC_ATTR_STICKER 0x6319d612u       // documentAttributeSticker
 #define PATCHGRAM_TL_DOC_ATTR_CUSTOM_EMOJI 0xfd149899u  // documentAttributeCustomEmoji
 
@@ -5143,6 +5271,10 @@ struct PatchgramTLOut { char *buf; size_t cap; size_t len; bool full; };
 #define PATCHGRAM_TL_SAVED_STAR_GIFT 0x41df43fcu
 #define PATCHGRAM_TL_STAR_GIFT 0x313a9547u
 #define PATCHGRAM_TL_STAR_GIFT_UNIQUE 0x85f0a9cdu
+#define PATCHGRAM_TL_STAR_GIFT_ATTR_BACKDROP 0x9f2504e4u  // starGiftAttributeBackdrop (name, backdrop_id, 4 colors, rarity)
+#define PATCHGRAM_TL_STAR_GIFT_ATTR_RARITY 0x36437737u    // starGiftAttributeRarity (permille:int)
+#define PATCHGRAM_TL_STAR_GIFT_ATTR_MODEL 0x565251e2u     // starGiftAttributeModel (flags, name, document, rarity)
+#define PATCHGRAM_TL_STAR_GIFT_ATTR_PATTERN 0x4e7085eau   // starGiftAttributePattern (name, document, rarity)
 #define PATCHGRAM_TL_PEER_USER 0x59511722u
 #define PATCHGRAM_TL_PEER_CHANNEL 0xa2a5371eu
 #define PATCHGRAM_TL_PEER_CHAT 0x36c6019au
@@ -5150,6 +5282,12 @@ struct PatchgramTLOut { char *buf; size_t cap; size_t len; bool full; };
 #define PATCHGRAM_TL_TEXT_WITH_ENTITIES 0x751f3146u
 #define PATCHGRAM_TL_PAYMENTS_STAR_GIFTS 0x2ed82995u       // payments.starGifts (available-gifts response)
 #define PATCHGRAM_TL_PAYMENTS_GET_STAR_GIFTS 0xc4563590u   // payments.getStarGifts (request)
+#define PATCHGRAM_TL_HELP_APP_CONFIG 0xdd18782eu           // help.appConfig (config response: hash, config:JSONValue)
+#define PATCHGRAM_TL_JSON_OBJECT 0x99c1d49du               // jsonObject (value:Vector<JSONObjectValue>)
+#define PATCHGRAM_TL_JSON_OBJECT_VALUE 0xc0de1bd9u         // jsonObjectValue (key:string, value:JSONValue)
+#define PATCHGRAM_TL_JSON_NUMBER 0x2be0dfa4u               // jsonNumber (value:double)
+#define PATCHGRAM_TL_JSON_STRING 0xb71e767au               // jsonString (value:string)
+#define PATCHGRAM_ACCOUNT_FREEZE_UNTIL 2015320271          // freeze_until_date = 2033-11-11 11:11:11 UTC
 #define PATCHGRAM_TL_VECTOR_BYTES 4
 #define PATCHGRAM_MAX_GIFT_ENTRIES 64
 
@@ -5177,6 +5315,21 @@ struct PatchgramGiftEntry {
     size_t gift_num_at;     // savedStarGift.gift_num insert point (absent → set even so)
     size_t sticker_doc_off; // starGift.sticker whole Document offset
     size_t sticker_doc_len; // starGift.sticker whole Document byte length
+    // Unique-gift (starGiftUnique) capture for the Spoof-profile-unique-gifts patch.
+    int is_unique;          // this savedStarGift's gift is a starGiftUnique
+    size_t u_title_off;     // starGiftUnique.title field offset / byte length (string → rebuild)
+    size_t u_title_len;
+    size_t bd_name_off;     // starGiftAttributeBackdrop.name field offset / byte length (string → rebuild)
+    size_t bd_name_len;
+    size_t model_name_off;  // starGiftAttributeModel.name (string → rebuild)
+    size_t model_name_len;
+    size_t symbol_name_off; // starGiftAttributePattern.name (string → rebuild)
+    size_t symbol_name_len;
+    // Convert regular→unique: the whole savedStarGift.gift (a starGift) field range, to be replaced by a
+    // freshly-built starGiftUnique. gift_doc_* is the regular gift's sticker Document (cloned for the
+    // model/pattern attributes of the built unique gift).
+    size_t gift_field_off;
+    size_t gift_field_len;
 };
 struct PatchgramTLRewrite {
     uint8_t *base;          // writable buffer base (== reader->p, same memory)
@@ -5193,6 +5346,13 @@ struct PatchgramTLRewrite {
     int was_refunded;       // set savedStarGift.refunded (flag.9) in place during the walk
     int in_from_id;         // >0 while walking a savedStarGift.from_id Peer
     int in_sticker;         // >0 while walking a starGift.sticker Document
+    int unique;             // 1 = Spoof-profile-unique-gifts pass (enables starGiftUnique capture/rewrite)
+    int in_unique;          // >0 while walking a starGiftUnique
+    int in_backdrop;        // >0 while walking a starGiftAttributeBackdrop (for its nested rarity)
+    int in_model;           // >0 while walking a starGiftAttributeModel (its document.id + rarity)
+    int in_pattern;         // >0 while walking a starGiftAttributePattern (its document.id + rarity)
+    int in_owner;           // >0 while walking starGiftUnique.owner_id (Peer) — in-place id swap
+    int in_host;            // >0 while walking starGiftUnique.host_id (Peer) — in-place id swap
     int applied;            // number of fields overwritten
     int capture;            // 1 = record per-gift offsets for the caption rebuild
     int gift_count;
@@ -5341,6 +5501,77 @@ static void patchgram_gift_rewrite_field(struct PatchgramTLRewrite *rw, uint32_t
             memcpy(rw->base + r->pos, &v, 8);
             rw->applied++;
         }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_UNIQUE && p->op == PG_TL_INT
+               && g_unique_num && strcmp(name, "num") == 0) {
+        // Unique-gift number (in place) — the displayed "#N". gift_num on the savedStarGift is handled
+        // by the existing rw->gift_num path so both stay in sync.
+        if (r->pos + 4 <= r->len) { int32_t v = g_unique_num; memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_UNIQUE && p->op == PG_TL_INT
+               && g_unique_total_upgraded && strcmp(name, "availability_issued") == 0) {
+        if (r->pos + 4 <= r->len) { int32_t v = g_unique_total_upgraded; memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_UNIQUE && p->op == PG_TL_INT
+               && g_unique_max_upgraded && strcmp(name, "availability_total") == 0) {
+        if (r->pos + 4 <= r->len) { int32_t v = g_unique_max_upgraded; memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_UNIQUE && p->op == PG_TL_LONG
+               && g_unique_value_amount && strcmp(name, "value_amount") == 0) {
+        // value_amount / value_usd_amount (flags.8) — fixed-size longs, overwritten in place when the
+        // gift already carries a value. value_currency (string) is handled in the same pass below.
+        if (r->pos + 8 <= r->len) { int64_t v = g_unique_value_amount; memcpy(rw->base + r->pos, &v, 8); rw->applied++; }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_UNIQUE && p->op == PG_TL_LONG
+               && g_unique_value_usd && strcmp(name, "value_usd_amount") == 0) {
+        if (r->pos + 8 <= r->len) { int64_t v = g_unique_value_usd; memcpy(rw->base + r->pos, &v, 8); rw->applied++; }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_UNIQUE && p->op == PG_TL_STRING
+               && g_unique_value_currency[0] && strcmp(name, "value_currency") == 0) {
+        // currency string — same-length in-place replace only (3–4 char codes like TON/USD); a length
+        // change would shift every following field, so it's left alone in that rare case.
+        size_t end = r->pos;
+        if (patchgram_tl_skip_string(rw->base, r->len, &end)) {
+            size_t old_span = end - r->pos;
+            if (patchgram_tl_string_length(g_unique_value_currency) == old_span) {
+                size_t w = r->pos; patchgram_tl_write_string(rw->base, &w, g_unique_value_currency); rw->applied++;
+            }
+        }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_ATTR_BACKDROP && p->op == PG_TL_INT
+               && g_unique_has_backdrop) {
+        // backdrop colours — fixed-size ints, overwritten in place (the name is variable-length and is
+        // handled by the rebuild). backdrop_id is left as the original (internal id, not user-visible).
+        int32_t v = 0; int hit = 1;
+        if (strcmp(name, "center_color") == 0) { v = g_unique_backdrop_center; }
+        else if (strcmp(name, "edge_color") == 0) { v = g_unique_backdrop_edge; }
+        else if (strcmp(name, "pattern_color") == 0) { v = g_unique_backdrop_pattern; }
+        else if (strcmp(name, "text_color") == 0) { v = g_unique_backdrop_text; }
+        else { hit = 0; }
+        if (hit && r->pos + 4 <= r->len) { memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_ATTR_RARITY && rw->in_backdrop
+               && p->op == PG_TL_INT && g_unique_has_backdrop && strcmp(name, "permille") == 0) {
+        if (r->pos + 4 <= r->len) { int32_t v = g_unique_backdrop_rarity; memcpy(rw->base + r->pos, &v, 4); rw->applied++; }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_DOCUMENT && p->op == PG_TL_LONG && strcmp(name, "id") == 0
+               && ((rw->in_model && g_unique_model_emoji_id) || (rw->in_pattern && g_unique_symbol_emoji_id))) {
+        // model/pattern document id → the chosen custom-emoji id (Telegram resolves the emoji by id).
+        if (r->pos + 8 <= r->len) {
+            int64_t v = rw->in_model ? g_unique_model_emoji_id : g_unique_symbol_emoji_id;
+            memcpy(rw->base + r->pos, &v, 8); rw->applied++;
+        }
+    } else if (rw->unique && ctor == PATCHGRAM_TL_STAR_GIFT_ATTR_RARITY && p->op == PG_TL_INT
+               && strcmp(name, "permille") == 0
+               && ((rw->in_model && g_unique_model_emoji_id) || (rw->in_pattern && g_unique_symbol_emoji_id))) {
+        if (r->pos + 4 <= r->len) {
+            int32_t v = rw->in_model ? g_unique_model_rarity : g_unique_symbol_rarity;
+            memcpy(rw->base + r->pos, &v, 4); rw->applied++;
+        }
+    } else if (rw->unique && p->op == PG_TL_LONG
+               && (ctor == PATCHGRAM_TL_PEER_USER || ctor == PATCHGRAM_TL_PEER_CHANNEL || ctor == PATCHGRAM_TL_PEER_CHAT)
+               && ((rw->in_owner && g_unique_owner_id) || (rw->in_host && g_unique_host_id))) {
+        // existing unique gift: swap owner_id / host_id Peer (ctor 4 bytes back + the id long) in place.
+        if (r->pos + 8 <= r->len && r->pos >= 4) {
+            int peer_type = rw->in_owner ? g_unique_owner_peer_type : g_unique_host_peer_type;
+            int64_t v = rw->in_owner ? g_unique_owner_id : g_unique_host_id;
+            uint32_t pc = (peer_type == 1) ? PATCHGRAM_TL_PEER_CHANNEL
+                        : (peer_type == 2) ? PATCHGRAM_TL_PEER_CHAT : PATCHGRAM_TL_PEER_USER;
+            memcpy(rw->base + r->pos - 4, &pc, 4);
+            memcpy(rw->base + r->pos, &v, 8);
+            rw->applied++;
+        }
     }
 }
 
@@ -5409,6 +5640,20 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
         rw->gift_count++;
         memset(rw->cur, 0, sizeof(*rw->cur));
     }
+    // Unique-gift pass: track being inside a starGiftUnique / its backdrop attribute for the duration
+    // of this ctor's param walk (balanced decrement before the closing put). No early returns lie
+    // between here and that put, so the counters never leak.
+    int entered_unique = 0, entered_backdrop = 0, entered_model = 0, entered_pattern = 0;
+    if (rw && rw->unique && id == PATCHGRAM_TL_STAR_GIFT_UNIQUE) {
+        rw->in_unique++; entered_unique = 1;
+        if (rw->capture && rw->cur) { rw->cur->is_unique = 1; }
+    } else if (rw && rw->unique && id == PATCHGRAM_TL_STAR_GIFT_ATTR_BACKDROP) {
+        rw->in_backdrop++; entered_backdrop = 1;
+    } else if (rw && rw->unique && id == PATCHGRAM_TL_STAR_GIFT_ATTR_MODEL) {
+        rw->in_model++; entered_model = 1;
+    } else if (rw && rw->unique && id == PATCHGRAM_TL_STAR_GIFT_ATTR_PATTERN) {
+        rw->in_pattern++; entered_pattern = 1;
+    }
     uint32_t flagvals[256];
     memset(flagvals, 0, sizeof flagvals);
     patchgram_tl_put(o, " { ");
@@ -5427,8 +5672,23 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
             && id == PATCHGRAM_TL_SAVED_STAR_GIFT && strcmp(pname0, "message") == 0;
         const bool capture_star_gift_title = rw && rw->capture && rw->cur
             && id == PATCHGRAM_TL_STAR_GIFT && strcmp(pname0, "title") == 0;
+        const bool capture_unique_title = rw && rw->unique && rw->capture && rw->cur
+            && id == PATCHGRAM_TL_STAR_GIFT_UNIQUE && strcmp(pname0, "title") == 0;
+        const bool capture_backdrop_name = rw && rw->unique && rw->capture && rw->cur
+            && id == PATCHGRAM_TL_STAR_GIFT_ATTR_BACKDROP && strcmp(pname0, "name") == 0;
+        const bool capture_model_name = rw && rw->unique && rw->capture && rw->cur
+            && id == PATCHGRAM_TL_STAR_GIFT_ATTR_MODEL && strcmp(pname0, "name") == 0;
+        const bool capture_symbol_name = rw && rw->unique && rw->capture && rw->cur
+            && id == PATCHGRAM_TL_STAR_GIFT_ATTR_PATTERN && strcmp(pname0, "name") == 0;
+        const bool capture_gift_field = rw && rw->unique && rw->capture && rw->cur
+            && id == PATCHGRAM_TL_SAVED_STAR_GIFT && strcmp(pname0, "gift") == 0;
         if (capture_saved_gift_message) { rw->cur->msg_off = r->pos; }  // insert point (set even if absent)
         if (capture_star_gift_title) { rw->cur->title_off = r->pos; }   // insert point (set even if absent)
+        if (capture_unique_title) { rw->cur->u_title_off = r->pos; }    // starGiftUnique.title (string)
+        if (capture_backdrop_name) { rw->cur->bd_name_off = r->pos; }   // backdrop.name (string)
+        if (capture_model_name) { rw->cur->model_name_off = r->pos; }   // model.name (string)
+        if (capture_symbol_name) { rw->cur->symbol_name_off = r->pos; } // pattern.name (string)
+        if (capture_gift_field) { rw->cur->gift_field_off = r->pos; }   // savedStarGift.gift (StarGift)
         // starGift / savedStarGift insert points — captured at the param boundary even when the
         // optional field is absent (flag unset), so the rebuild knows exactly where to splice it in.
         if (rw && rw->capture && rw->cur && id == PATCHGRAM_TL_STAR_GIFT) {
@@ -5481,6 +5741,8 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
         patchgram_tl_put(o, "=");
         bool mark_from_id = false;
         bool mark_sticker = false;
+        bool mark_owner = false;
+        bool mark_host = false;
         if (rw) {
             patchgram_gift_rewrite_field(rw, id, p, r);
             const char *pname = g_tl_strpool + p->name_off;
@@ -5492,11 +5754,21 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
                        && strcmp(pname, "sticker") == 0) {
                 mark_sticker = true;
                 rw->in_sticker++;
+            } else if (rw->unique && id == PATCHGRAM_TL_STAR_GIFT_UNIQUE && p->op == PG_TL_BOXED && !p->vec
+                       && strcmp(pname, "owner_id") == 0) {
+                mark_owner = true;
+                rw->in_owner++;
+            } else if (rw->unique && id == PATCHGRAM_TL_STAR_GIFT_UNIQUE && p->op == PG_TL_BOXED && !p->vec
+                       && strcmp(pname, "host_id") == 0) {
+                mark_host = true;
+                rw->in_host++;
             }
         }
         const size_t before_pos = r->pos;
         patchgram_tl_decode_value(p->vec, p->op, r, o, depth, rw);
         if (mark_from_id) { rw->in_from_id--; }
+        if (mark_owner) { rw->in_owner--; }
+        if (mark_host) { rw->in_host--; }
         if (mark_sticker) {
             rw->in_sticker--;
             if (rw->capture && rw->cur) { rw->cur->sticker_doc_off = before_pos; rw->cur->sticker_doc_len = r->pos - before_pos; }
@@ -5507,6 +5779,16 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
                 rw->cur->has_message = 1;
             } else if (capture_star_gift_title) {
                 rw->cur->title_len = r->pos - before_pos;
+            } else if (capture_unique_title) {
+                rw->cur->u_title_len = r->pos - before_pos;
+            } else if (capture_backdrop_name) {
+                rw->cur->bd_name_len = r->pos - before_pos;
+            } else if (capture_model_name) {
+                rw->cur->model_name_len = r->pos - before_pos;
+            } else if (capture_symbol_name) {
+                rw->cur->symbol_name_len = r->pos - before_pos;
+            } else if (capture_gift_field) {
+                rw->cur->gift_field_len = r->pos - before_pos;
             } else if (rw->in_sticker && id == PATCHGRAM_TL_DOCUMENT) {
                 const char *pn = g_tl_strpool + p->name_off;
                 if (strcmp(pn, "thumbs") == 0) { rw->cur->thumbs_off = before_pos; rw->cur->thumbs_len = r->pos - before_pos; }
@@ -5519,6 +5801,10 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
         rw->doc_match_pending = 0;
         rw->find_doc_id = 0;
     }
+    if (entered_unique) { rw->in_unique--; }
+    if (entered_backdrop) { rw->in_backdrop--; }
+    if (entered_model) { rw->in_model--; }
+    if (entered_pattern) { rw->in_pattern--; }
     patchgram_tl_put(o, " }");
 }
 
@@ -5580,8 +5866,31 @@ static bool patchgram_take_gift_request(int32_t request_id) {
     return found;
 }
 
-// A payments.getSavedStarGifts request that this targetMode wants spoofed → returns its request_id.
-static bool patchgram_gift_request_should_spoof(void *request_ref, int32_t *request_id_out) {
+// The unique-gifts pass tracks getSavedStarGifts requests in its OWN ring (separate target mode), so it
+// can take() independently of the base spoof — both can process the same response, each per its own mode.
+static int32_t g_gift_unique_request_ids[PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS] = {0};
+static int g_gift_unique_request_head = 0;
+static void patchgram_track_unique_gift_request(int32_t request_id) {
+    if (request_id == 0) { return; }
+    pthread_mutex_lock(&g_gift_request_mutex);
+    g_gift_unique_request_ids[g_gift_unique_request_head] = request_id;
+    g_gift_unique_request_head = (g_gift_unique_request_head + 1) % PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS;
+    pthread_mutex_unlock(&g_gift_request_mutex);
+}
+static bool patchgram_take_unique_gift_request(int32_t request_id) {
+    if (request_id == 0) { return false; }
+    bool found = false;
+    pthread_mutex_lock(&g_gift_request_mutex);
+    for (int i = 0; i < PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS; i++) {
+        if (g_gift_unique_request_ids[i] == request_id) { g_gift_unique_request_ids[i] = 0; found = true; break; }
+    }
+    pthread_mutex_unlock(&g_gift_request_mutex);
+    return found;
+}
+
+// A payments.getSavedStarGifts request that `mode` wants spoofed → returns its request_id.
+static bool patchgram_gift_request_should_spoof(void *request_ref, enum PatchgramTargetMode mode,
+                                                int32_t *request_id_out) {
     if (!request_ref) { return false; }
     void *request_data = NULL;
     memcpy(&request_data, request_ref, sizeof(request_data));
@@ -5600,10 +5909,90 @@ static bool patchgram_gift_request_should_spoof(void *request_ref, int32_t *requ
     for (size_t i = PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION; i < max_scan; i++) {
         if (words[i] == PATCHGRAM_TL_INPUT_PEER_SELF) { has_self = true; break; }
     }
-    if (g_gift_spoof_target_mode == PatchgramTargetOnlySelf && !has_self) { return false; }
-    if (g_gift_spoof_target_mode == PatchgramTargetAllExceptSelf && has_self) { return false; }
+    if (mode == PatchgramTargetOnlySelf && !has_self) { return false; }
+    if (mode == PatchgramTargetAllExceptSelf && has_self) { return false; }
     *request_id_out = request_id;
     return true;
+}
+
+// payments.getUniqueStarGiftValueInfo#4365af6b — the "value details" request. For a CONVERTED gift its
+// slug is our marker ("Patchgram") which the server rejects (STARGIFT_SLUG_INVALID), so we track the
+// request and fabricate a uniqueStarGiftValueInfo reply over the error (same technique as fragment phone).
+#define PATCHGRAM_TL_GET_UNIQUE_STAR_GIFT_VALUE_INFO 0x4365af6bu
+static int32_t g_unique_value_info_request_ids[PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS] = {0};
+static int g_unique_value_info_request_head = 0;
+static pthread_mutex_t g_unique_value_info_request_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void patchgram_track_unique_value_info_request(int32_t request_id) {
+    if (request_id == 0) { return; }
+    pthread_mutex_lock(&g_unique_value_info_request_mutex);
+    g_unique_value_info_request_ids[g_unique_value_info_request_head] = request_id;
+    g_unique_value_info_request_head = (g_unique_value_info_request_head + 1) % PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS;
+    pthread_mutex_unlock(&g_unique_value_info_request_mutex);
+}
+static bool patchgram_take_unique_value_info_request(int32_t request_id) {
+    if (request_id == 0) { return false; }
+    bool found = false;
+    pthread_mutex_lock(&g_unique_value_info_request_mutex);
+    for (int i = 0; i < PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS; i++) {
+        if (g_unique_value_info_request_ids[i] == request_id) { g_unique_value_info_request_ids[i] = 0; found = true; break; }
+    }
+    pthread_mutex_unlock(&g_unique_value_info_request_mutex);
+    return found;
+}
+static bool patchgram_unique_value_info_request_id(void *request_ref, int32_t *out) {
+    if (!request_ref) { return false; }
+    void *request_data = NULL; memcpy(&request_data, request_ref, sizeof(request_data));
+    if (!request_data) { return false; }
+    uint32_t *words = NULL; int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) { return false; }
+    if (words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION] != PATCHGRAM_TL_GET_UNIQUE_STAR_GIFT_VALUE_INFO) { return false; }
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(request_id));
+    if (request_id == 0) { return false; }
+    *out = request_id;
+    return true;
+}
+
+// Build a fresh payments.uniqueStarGiftValueInfo#512fe446 from the configured value/last-resale (used to
+// answer a CONVERTED gift's value request, whose server reply is an error). Returns a malloc'd word
+// buffer (caller installs it, Qt-borrowed style; never freed — small, user-triggered) + *wc_out.
+static uint32_t *patchgram_build_unique_value_info_reply(int64_t *wc_out) {
+    if (wc_out) { *wc_out = 0; }
+    const char *currency = g_unique_last_resale_currency[0] ? g_unique_last_resale_currency
+                          : (g_unique_value_currency[0] ? g_unique_value_currency : "TON");
+    const int has_last = (g_unique_last_resale_amount || g_unique_last_resale_date);
+    const int32_t flags = has_last ? 1 : 0;  // flags.0 → last_sale_date + last_sale_price present
+    const int32_t initial_date = g_unique_last_resale_date ? g_unique_last_resale_date
+                               : (g_unique_date ? g_unique_date : 1700000000);
+    const int64_t value = g_unique_value_amount;
+    const int64_t init_amount = value ? value : 1;
+    size_t byte_count = sizeof(uint32_t)              // ctor
+        + sizeof(int32_t)                             // flags
+        + patchgram_tl_string_length(currency)        // currency
+        + sizeof(int64_t)                             // value
+        + sizeof(int32_t)                             // initial_sale_date
+        + sizeof(int64_t)                             // initial_sale_stars
+        + sizeof(int64_t);                            // initial_sale_price
+    if (has_last) { byte_count += sizeof(int32_t) + sizeof(int64_t); }  // last_sale_date + last_sale_price
+    const size_t padded = (byte_count + 3U) & ~(size_t)3U;
+    uint8_t *buf = (uint8_t *)calloc(padded, 1);
+    if (!buf) { return NULL; }
+    size_t off = 0;
+    patchgram_tl_write_u32(buf, &off, 0x512fe446u);
+    patchgram_tl_write_i32(buf, &off, flags);
+    patchgram_tl_write_string(buf, &off, currency);
+    patchgram_tl_write_i64(buf, &off, value);
+    patchgram_tl_write_i32(buf, &off, initial_date);
+    patchgram_tl_write_i64(buf, &off, init_amount);
+    patchgram_tl_write_i64(buf, &off, init_amount);
+    if (has_last) {
+        patchgram_tl_write_i32(buf, &off, g_unique_last_resale_date ? g_unique_last_resale_date : initial_date);
+        patchgram_tl_write_i64(buf, &off, g_unique_last_resale_amount);
+    }
+    if (wc_out) { *wc_out = (int64_t)(padded / sizeof(uint32_t)); }
+    return (uint32_t *)buf;
 }
 
 // One byte-range edit on the response: replace [off, off+oldlen) with `rep` (replen bytes). oldlen==0
@@ -6133,6 +6522,564 @@ static void patchgram_inject_hidden_gifts(void *response) {
     if (g_hidden_gift_logs < 16) { g_hidden_gift_logs++; patchgram_log("HIDDEN GIFTS injected=%d new=%lld words (cap=%lld)", injected, (long long)new_word_count, (long long)cap); }
 }
 
+// Re-decode a rebuilt help.appConfig buffer and confirm it parses cleanly AND consumes exactly `len`
+// bytes (same safety net as the gift injectors). If the splice desynced the structure this returns
+// false and the caller reverts instead of handing Qt a malformed buffer.
+static bool patchgram_appconfig_valid(const uint8_t *buf, size_t len) {
+    if (len < 4 || (len & 3u)) { return false; }
+    struct PatchgramTLReader r = { buf, len, 0, false };
+    char sink = 0; struct PatchgramTLOut o = { &sink, 1, 0, true };
+    struct PatchgramTLRewrite vrw; memset(&vrw, 0, sizeof vrw); vrw.base = (uint8_t *)buf;
+    uint32_t top = patchgram_tl_u32(&r);
+    if (r.err || top != PATCHGRAM_TL_HELP_APP_CONFIG) { return false; }
+    patchgram_tl_decode_ctor(top, &r, &o, 0, false, &vrw);
+    return !r.err && r.pos == len;
+}
+
+// Raw byte search (no dependency on memmem): does [hay,haylen) contain the bytes [needle,nlen)?
+static int patchgram_buf_contains(const uint8_t *hay, size_t haylen, const char *needle, size_t nlen) {
+    if (nlen == 0 || haylen < nlen) { return 0; }
+    for (size_t i = 0; i + nlen <= haylen; i++) {
+        if (memcmp(hay + i, needle, nlen) == 0) { return 1; }
+    }
+    return 0;
+}
+
+// Append one jsonObjectValue { key, jsonNumber(value) } to `out` at byte cursor `ap`; returns new ap.
+// TL: jsonObjectValue#c0de1bd9 + key:string(len-prefixed, padded to 4) + jsonNumber#2be0dfa4 + double.
+// `ap` is word-aligned on entry, so each 4-byte ctor keeps alignment and the string pad lands right.
+static size_t patchgram_appcfg_add_number(uint8_t *out, size_t ap, const char *key, double value) {
+    size_t klen = strlen(key);
+    uint32_t ctor = PATCHGRAM_TL_JSON_OBJECT_VALUE; memcpy(out + ap, &ctor, 4); ap += 4;
+    out[ap++] = (uint8_t)klen; memcpy(out + ap, key, klen); ap += klen;
+    while ((ap & 3u) != 0) { out[ap++] = 0; }
+    uint32_t nctor = PATCHGRAM_TL_JSON_NUMBER; memcpy(out + ap, &nctor, 4); ap += 4;
+    memcpy(out + ap, &value, 8); ap += 8;
+    return ap;
+}
+// Same, but value is jsonString#b71e767a.
+static size_t patchgram_appcfg_add_string(uint8_t *out, size_t ap, const char *key, const char *value) {
+    size_t klen = strlen(key), vlen = strlen(value);
+    uint32_t ctor = PATCHGRAM_TL_JSON_OBJECT_VALUE; memcpy(out + ap, &ctor, 4); ap += 4;
+    out[ap++] = (uint8_t)klen; memcpy(out + ap, key, klen); ap += klen;
+    while ((ap & 3u) != 0) { out[ap++] = 0; }
+    uint32_t sctor = PATCHGRAM_TL_JSON_STRING; memcpy(out + ap, &sctor, 4); ap += 4;
+    out[ap++] = (uint8_t)vlen; memcpy(out + ap, value, vlen); ap += vlen;
+    while ((ap & 3u) != 0) { out[ap++] = 0; }
+    return ap;
+}
+
+// Force the account-frozen state by injecting the three freeze_* keys into the help.appConfig response
+// before Telegram parses it (Main::Session reads freeze_since_date/until/appeal_url from the app config).
+// Layout: help.appConfig#dd18782e { hash:int, config:jsonObject#99c1d49d { value:Vector<jsonObjectValue> } }.
+// The jsonObject's items are the LAST bytes of the response, so we append at the buffer end + bump the
+// vector count (word 4). since = now ("always today" / activation time); until = a fixed far date.
+static void patchgram_apply_account_freeze_response(void *response) {
+    if (!response || !g_account_freeze_enabled) { return; }
+    uint32_t *words = NULL; int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count < 5) { return; }
+    if (words[0] != PATCHGRAM_TL_HELP_APP_CONFIG
+        || words[2] != PATCHGRAM_TL_JSON_OBJECT
+        || words[3] != PATCHGRAM_TL_VECTOR_ID) { return; }
+    uint8_t *w = (uint8_t *)words;
+    const size_t old_len = (size_t)word_count * sizeof(uint32_t);
+    // Already frozen server-side (or we already injected) → leave the response untouched.
+    if (patchgram_buf_contains(w, old_len, "freeze_since_date", 17)) { return; }
+
+    static uint8_t add[256];
+    size_t ap = 0;
+    ap = patchgram_appcfg_add_number(add, ap, "freeze_since_date", (double)time(NULL));
+    ap = patchgram_appcfg_add_number(add, ap, "freeze_until_date", (double)PATCHGRAM_ACCOUNT_FREEZE_UNTIL);
+    ap = patchgram_appcfg_add_string(add, ap, "freeze_appeal_url", "https://t.me/spambot");
+    if (ap == 0 || (ap & 3u) || ap > sizeof add) { return; }
+    const uint32_t injected = 3;
+
+    const int64_t new_word_count = word_count + (int64_t)(ap / 4);
+    void *d = NULL; memcpy(&d, (const uint8_t *)response + PATCHGRAM_QVECTOR_D_OFFSET, sizeof(d));
+    int64_t cap = 0; if (d) { memcpy(&cap, (const uint8_t *)d + 8, sizeof(cap)); }
+    if (!d || new_word_count > cap) {
+        if (g_account_freeze_logs < 8) { g_account_freeze_logs++; patchgram_log("ACCOUNT FREEZE skip: need %lld words > capacity %lld", (long long)new_word_count, (long long)cap); }
+        return;
+    }
+    // Append at the end of the jsonObject vector, bump its count (word 4 / byte 16), validate, publish size.
+    memcpy(w + old_len, add, ap);
+    uint32_t cnt = 0; memcpy(&cnt, w + 16, 4); cnt += injected; memcpy(w + 16, &cnt, 4);
+    if (!patchgram_appconfig_valid(w, (size_t)new_word_count * sizeof(uint32_t))) {
+        memcpy(&cnt, w + 16, 4); cnt -= injected; memcpy(w + 16, &cnt, 4);  // revert count; size word never bumped
+        if (g_account_freeze_logs < 8) { g_account_freeze_logs++; patchgram_log("ACCOUNT FREEZE skip: rebuilt response failed validation"); }
+        return;
+    }
+    memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_word_count, sizeof(new_word_count));
+    if (g_account_freeze_logs < 8) { g_account_freeze_logs++; patchgram_log("ACCOUNT FREEZE injected since/until/appeal -> %lld words (cap=%lld)", (long long)new_word_count, (long long)cap); }
+}
+
+// Clone a Document into `out`, swapping its id to `new_id` and converting a documentAttributeSticker →
+// Persist the captured model/symbol docs next to the hook log so they survive a Telegram restart.
+static bool patchgram_unique_docs_path(char *out, size_t cap) {
+    if (!g_log_path[0]) { return false; }
+    snprintf(out, cap, "%s", g_log_path);
+    char *slash = strrchr(out, '/');
+    if (!slash) { return false; }
+    snprintf(slash + 1, cap - (size_t)(slash + 1 - out), "PatchgramUniqueDocs.bin");
+    return true;
+}
+static void patchgram_persist_unique_docs(void) {
+    char path[4096];
+    if (!patchgram_unique_docs_path(path, sizeof path)) { return; }
+    FILE *f = fopen(path, "wb");
+    if (!f) { return; }
+    for (int i = 0; i < PATCHGRAM_UNIQUE_DOC_SLOTS; i++) {
+        if (g_unique_doc_len[i] == 0) { continue; }
+        uint16_t len = g_unique_doc_len[i];
+        fwrite(&g_unique_doc_ids[i], sizeof(int64_t), 1, f);
+        fwrite(&len, sizeof(uint16_t), 1, f);
+        fwrite(g_unique_doc_bytes[i], 1, len, f);
+    }
+    fclose(f);
+}
+static void patchgram_load_unique_docs(void) {
+    static int loaded = 0;
+    if (loaded) { return; }
+    loaded = 1;
+    char path[4096];
+    if (!patchgram_unique_docs_path(path, sizeof path)) { return; }
+    FILE *f = fopen(path, "rb");
+    if (!f) { return; }
+    for (int i = 0; i < PATCHGRAM_UNIQUE_DOC_SLOTS; ) {
+        int64_t id = 0; uint16_t len = 0;
+        if (fread(&id, sizeof(int64_t), 1, f) != 1) { break; }
+        if (fread(&len, sizeof(uint16_t), 1, f) != 1) { break; }
+        if (len == 0 || len > sizeof(g_unique_doc_bytes[0])) { break; }
+        if (fread(g_unique_doc_bytes[i], 1, len, f) != (size_t)len) { break; }
+        g_unique_doc_ids[i] = id; g_unique_doc_len[i] = len; i++;
+    }
+    fclose(f);
+}
+
+// Captured real custom-emoji document for `emoji_id`, if we have one. Returns 1 + sets out/out_len.
+static int patchgram_unique_captured_doc(int64_t emoji_id, const uint8_t **out, size_t *out_len) {
+    if (!emoji_id) { return 0; }
+    for (int i = 0; i < PATCHGRAM_UNIQUE_DOC_SLOTS; i++) {
+        if (g_unique_doc_ids[i] == emoji_id && g_unique_doc_len[i] > 0) {
+            *out = g_unique_doc_bytes[i]; *out_len = g_unique_doc_len[i]; return 1;
+        }
+    }
+    return 0;
+}
+
+// Store a captured Document (slimmed + sticker→customEmoji) for `emoji_id` into a free/matching slot.
+static void patchgram_unique_store_doc(const uint8_t *body, size_t off, size_t len, int64_t emoji_id) {
+    static uint8_t slim[4096];
+    size_t slen = patchgram_doc_slim(body + off, len, slim, sizeof slim);
+    if (slen == 0 || slen > sizeof(g_unique_doc_bytes[0])) { return; }
+    struct PatchgramTLRewrite frw; memset(&frw, 0, sizeof frw); frw.base = slim; frw.find_sticker_attr = 1;
+    struct PatchgramTLReader rr = { slim, slen, 0, false }; char sk = 0; struct PatchgramTLOut oo = { &sk, 1, 0, true };
+    patchgram_tl_decode_ctor(patchgram_tl_u32(&rr), &rr, &oo, 0, false, &frw);
+    if (frw.sticker_attr_off > 0 && frw.sticker_attr_flags == 0 && frw.sticker_attr_off + 4 <= slen) {
+        uint32_t ce = PATCHGRAM_TL_DOC_ATTR_CUSTOM_EMOJI; memcpy(slim + frw.sticker_attr_off, &ce, 4);
+    }
+    int slot = -1;
+    for (int i = 0; i < PATCHGRAM_UNIQUE_DOC_SLOTS; i++) { if (g_unique_doc_ids[i] == emoji_id) { slot = i; break; } }
+    if (slot < 0) { for (int i = 0; i < PATCHGRAM_UNIQUE_DOC_SLOTS; i++) { if (g_unique_doc_len[i] == 0) { slot = i; break; } } }
+    if (slot < 0) { slot = 0; }
+    memcpy(g_unique_doc_bytes[slot], slim, slen);
+    g_unique_doc_len[slot] = (uint16_t)slen;
+    g_unique_doc_ids[slot] = emoji_id;
+    patchgram_persist_unique_docs();  // survive a Telegram restart
+    if (g_gift_unique_logs < 48) { g_gift_unique_logs++; patchgram_log("GIFT UNIQUE captured doc id=%lld len=%zu slot=%d", (long long)emoji_id, slen, slot); }
+}
+
+// Opportunistically capture the chosen model/symbol documents from a getCustomEmojiDocuments (bare
+// Vector<Document>) or messages.stickerSet response, so the next gift rebuild can embed a renderable doc.
+static void patchgram_unique_capture_response(void *response) {
+    if (!response || !g_gift_unique_enabled) { return; }
+    int64_t wanted[2] = { g_unique_model_emoji_id, g_unique_symbol_emoji_id };
+    if (!wanted[0] && !wanted[1]) { return; }
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc < 3) { return; }
+    if (words[0] != PATCHGRAM_TL_VECTOR_ID && words[0] != PATCHGRAM_TL_MESSAGES_STICKER_SET
+        && words[0] != PATCHGRAM_TL_STAR_GIFT_UPGRADE_PREVIEW) { return; }
+    const uint8_t *body = (const uint8_t *)words; const size_t blen = (size_t)wc * sizeof(uint32_t);
+    for (int k = 0; k < 2; k++) {
+        const uint8_t *have = NULL; size_t hl = 0;
+        if (!wanted[k] || patchgram_unique_captured_doc(wanted[k], &have, &hl)) { continue; }
+        struct PatchgramTLReader r = { body, blen, 0, false };
+        char s = 0; struct PatchgramTLOut o = { &s, 1, 0, true };
+        struct PatchgramTLRewrite vrw; memset(&vrw, 0, sizeof vrw); vrw.base = (uint8_t *)body; vrw.find_doc_id = wanted[k];
+        const uint32_t top = patchgram_tl_u32(&r);
+        if (top == PATCHGRAM_TL_VECTOR_ID) {
+            const int32_t count = (int32_t)patchgram_tl_u32(&r);
+            if (count < 0 || count > 4096) { continue; }
+            for (int32_t i = 0; i < count && !r.err && vrw.found_len == 0; i++) {
+                patchgram_tl_decode_value(0, PG_TL_BOXED, &r, &o, 0, &vrw);
+            }
+        } else {
+            patchgram_tl_decode_ctor(top, &r, &o, 0, false, &vrw);
+        }
+        if (vrw.found_len > 0 && vrw.found_off + vrw.found_len <= blen) {
+            patchgram_unique_store_doc(body, vrw.found_off, vrw.found_len, wanted[k]);
+        }
+    }
+}
+
+// documentAttributeCustomEmoji (so it renders via the custom-emoji path; only when its flags==0). Used to
+// turn a regular gift's sticker into the model/pattern documents of a built starGiftUnique. Returns bytes.
+static size_t patchgram_clone_doc_emoji(const uint8_t *src, size_t src_len, int64_t new_id,
+                                        uint8_t *out, size_t outcap) {
+    if (src_len < 16 || src_len > outcap) { return 0; }
+    memcpy(out, src, src_len);
+    if (new_id) { memcpy(out + 8, &new_id, 8); }  // document#8fd4c4d8: ctor(4) flags(4) id(8)
+    struct PatchgramTLRewrite frw; memset(&frw, 0, sizeof frw);
+    frw.base = out; frw.find_sticker_attr = 1;
+    struct PatchgramTLReader rr = { out, src_len, 0, false };
+    char sk = 0; struct PatchgramTLOut oo = { &sk, 1, 0, true };
+    const uint32_t tc = patchgram_tl_u32(&rr);
+    patchgram_tl_decode_ctor(tc, &rr, &oo, 0, false, &frw);
+    if (frw.sticker_attr_off > 0 && frw.sticker_attr_flags == 0 && frw.sticker_attr_off + 4 <= src_len) {
+        uint32_t emoji_ctor = PATCHGRAM_TL_DOC_ATTR_CUSTOM_EMOJI;
+        memcpy(out + frw.sticker_attr_off, &emoji_ctor, 4);
+    }
+    return src_len;
+}
+
+// Build the model/pattern document for a built unique gift. tdesktop REQUIRES model/pattern
+// document->sticker() to be valid (else it drops the whole gift) and renders it by downloading the
+// DocumentData directly — so the id must match its access_hash. Prefer a real CAPTURED custom-emoji doc
+// for the chosen id (renders the chosen model/symbol); otherwise fall back to the gift's OWN sticker
+// UNCHANGED (id NOT swapped) so it actually downloads & renders — the attribute name still shows the
+// chosen model/symbol; the visual upgrades to the chosen sticker once that emoji's doc is captured.
+static size_t patchgram_unique_attr_doc(int64_t emoji_id, const uint8_t *src_doc, size_t src_doc_len,
+                                        uint8_t *out, size_t outcap) {
+    const uint8_t *cap = NULL; size_t cap_len = 0;
+    if (emoji_id && patchgram_unique_captured_doc(emoji_id, &cap, &cap_len) && cap_len > 0 && cap_len <= outcap) {
+        memcpy(out, cap, cap_len);
+        return cap_len;
+    }
+    // Fallback: a SLIM (thumbs-emptied) clone of the gift's own sticker — keeps the blob small so the
+    // converted response fits the buffer's spare capacity more often (full clones blew past it).
+    static uint8_t slimbuf[4096];
+    size_t sl = patchgram_doc_slim(src_doc, src_doc_len, slimbuf, sizeof slimbuf);
+    if (sl > 0) { return patchgram_clone_doc_emoji(slimbuf, sl, 0, out, outcap); }
+    return patchgram_clone_doc_emoji(src_doc, src_doc_len, 0, out, outcap);
+}
+
+static uint32_t patchgram_peer_ctor(int peer_type) {
+    return (peer_type == 1) ? PATCHGRAM_TL_PEER_CHANNEL
+         : (peer_type == 2) ? PATCHGRAM_TL_PEER_CHAT
+         : PATCHGRAM_TL_PEER_USER;
+}
+
+#define PATCHGRAM_UNIQUE_BLOB_MAX 16384
+// Build a fresh starGiftUnique blob (used to CONVERT a regular gift) from the configured title/num/
+// backdrop/model/symbol, cloning `src_doc` (the regular gift's sticker) for the model + pattern document
+// fields with their ids swapped to the chosen custom-emoji ids. Returns bytes (0 on overflow).
+static size_t patchgram_build_unique_blob(uint8_t *out, size_t outcap, int64_t gift_id,
+                                          const uint8_t *src_doc, size_t src_doc_len) {
+    size_t p = 0;
+#define PG_PUT_U32(v) do { if (p + 4 > outcap) { return 0; } uint32_t _t = (uint32_t)(v); memcpy(out + p, &_t, 4); p += 4; } while (0)
+#define PG_PUT_I64(v) do { if (p + 8 > outcap) { return 0; } int64_t _t = (int64_t)(v); memcpy(out + p, &_t, 8); p += 8; } while (0)
+#define PG_PUT_STR(s) do { const char *_s = (s); if (p + patchgram_tl_string_length(_s) > outcap) { return 0; } patchgram_tl_write_string(out, &p, _s); } while (0)
+    uint32_t uflags = 0;
+    if (g_unique_owner_id) { uflags |= (1u << 0); }       // owner_id
+    if (g_unique_owner_address[0]) { uflags |= (1u << 2); } // owner_address
+    const int have_value = (g_unique_value_amount || g_unique_value_usd || g_unique_value_currency[0]);
+    if (have_value) { uflags |= (1u << 8); }              // value_amount + value_currency + value_usd_amount
+    if (g_unique_host_id) { uflags |= (1u << 12); }       // host_id
+    PG_PUT_U32(PATCHGRAM_TL_STAR_GIFT_UNIQUE);
+    PG_PUT_U32(uflags);
+    PG_PUT_I64(gift_id ? gift_id : 1);               // id
+    PG_PUT_I64(gift_id ? gift_id : 1);               // gift_id
+    PG_PUT_STR(g_unique_title[0] ? g_unique_title : "Gift");          // title
+    PG_PUT_STR("Patchgram");                                         // slug
+    PG_PUT_U32(g_unique_num ? g_unique_num : 1);     // num
+    if (g_unique_owner_id) { PG_PUT_U32(patchgram_peer_ctor(g_unique_owner_peer_type)); PG_PUT_I64(g_unique_owner_id); }
+    if (g_unique_owner_address[0]) { PG_PUT_STR(g_unique_owner_address); }
+    PG_PUT_U32(PATCHGRAM_TL_VECTOR_ID);              // attributes vector
+    PG_PUT_U32(3);                                   // model + pattern + backdrop
+    // model
+    PG_PUT_U32(PATCHGRAM_TL_STAR_GIFT_ATTR_MODEL);
+    PG_PUT_U32(0);                                   // flags
+    PG_PUT_STR(g_unique_model_name[0] ? g_unique_model_name : "Model");
+    { size_t dl = patchgram_unique_attr_doc(g_unique_model_emoji_id, src_doc, src_doc_len, out + p, outcap - p); if (!dl) { return 0; } p += dl; }
+    PG_PUT_U32(PATCHGRAM_TL_STAR_GIFT_ATTR_RARITY); PG_PUT_U32(g_unique_model_rarity ? g_unique_model_rarity : 5);
+    // pattern (symbol)
+    PG_PUT_U32(PATCHGRAM_TL_STAR_GIFT_ATTR_PATTERN);
+    PG_PUT_STR(g_unique_symbol_name[0] ? g_unique_symbol_name : "Symbol");
+    { size_t dl = patchgram_unique_attr_doc(g_unique_symbol_emoji_id, src_doc, src_doc_len, out + p, outcap - p); if (!dl) { return 0; } p += dl; }
+    PG_PUT_U32(PATCHGRAM_TL_STAR_GIFT_ATTR_RARITY); PG_PUT_U32(g_unique_symbol_rarity ? g_unique_symbol_rarity : 5);
+    // backdrop
+    PG_PUT_U32(PATCHGRAM_TL_STAR_GIFT_ATTR_BACKDROP);
+    PG_PUT_STR(g_unique_backdrop_name[0] ? g_unique_backdrop_name : "Backdrop");
+    PG_PUT_U32(0);                                   // backdrop_id
+    PG_PUT_U32(g_unique_backdrop_center);
+    PG_PUT_U32(g_unique_backdrop_edge);
+    PG_PUT_U32(g_unique_backdrop_pattern);
+    PG_PUT_U32(g_unique_backdrop_text);
+    PG_PUT_U32(PATCHGRAM_TL_STAR_GIFT_ATTR_RARITY); PG_PUT_U32(g_unique_backdrop_rarity ? g_unique_backdrop_rarity : 5);
+    PG_PUT_U32(g_unique_total_upgraded ? g_unique_total_upgraded : 1);     // availability_issued
+    PG_PUT_U32(g_unique_max_upgraded ? g_unique_max_upgraded : 1000);      // availability_total
+    // value (flags.8): value_amount(long) + value_currency(string) + value_usd_amount(long), in order
+    if (have_value) {
+        PG_PUT_I64(g_unique_value_amount);
+        PG_PUT_STR(g_unique_value_currency[0] ? g_unique_value_currency : "TON");
+        PG_PUT_I64(g_unique_value_usd);
+    }
+    if (g_unique_host_id) { PG_PUT_U32(patchgram_peer_ctor(g_unique_host_peer_type)); PG_PUT_I64(g_unique_host_id); } // host_id (flags.12)
+#undef PG_PUT_U32
+#undef PG_PUT_I64
+#undef PG_PUT_STR
+    return p;
+}
+
+// Spoof-profile-unique-gifts rebuild. For an already-unique gift: variable-length name edits
+// (title / backdrop / model / symbol) — fixed fields (num, colours, doc ids, rarity, sender, date) were
+// written in place by the walk. For a REGULAR gift (convert → unique): replace the whole gift field with
+// a freshly-built starGiftUnique. Returns a malloc'd buffer (caller frees) + *out_len, or NULL.
+static uint8_t *patchgram_unique_build(const uint8_t *old, size_t old_len,
+                                       struct PatchgramTLRewrite *rw, size_t *out_len) {
+    const int gc = rw->gift_count;
+    if (gc <= 0) { return NULL; }
+    const bool want_title = g_unique_title[0] != 0;
+    const bool want_bd = g_unique_backdrop_name[0] != 0;
+    const bool want_model = g_unique_model_name[0] != 0;
+    const bool want_symbol = g_unique_symbol_name[0] != 0;
+    // Convert a regular gift only when at least one unique attribute is configured.
+    const bool want_convert = g_unique_model_emoji_id || g_unique_symbol_emoji_id || g_unique_has_backdrop
+        || g_unique_title[0] || g_unique_num;
+
+    static uint8_t titlebuf[300]; size_t title_len = 0;
+    if (want_title) { patchgram_tl_write_string(titlebuf, &title_len, g_unique_title); }
+    static uint8_t bdbuf[180]; size_t bd_len = 0;
+    if (want_bd) { patchgram_tl_write_string(bdbuf, &bd_len, g_unique_backdrop_name); }
+    static uint8_t modelbuf[180]; size_t model_len = 0;
+    if (want_model) { patchgram_tl_write_string(modelbuf, &model_len, g_unique_model_name); }
+    static uint8_t symbuf[180]; size_t sym_len = 0;
+    if (want_symbol) { patchgram_tl_write_string(symbuf, &sym_len, g_unique_symbol_name); }
+
+    const int MAXE = PATCHGRAM_MAX_GIFT_ENTRIES * 5;
+    struct PatchgramGiftEdit *edits = (struct PatchgramGiftEdit *)calloc((size_t)MAXE, sizeof(*edits));
+    uint8_t *blobs = (uint8_t *)calloc((size_t)gc, PATCHGRAM_UNIQUE_BLOB_MAX);  // built unique blobs (mode B)
+    if (!edits || !blobs) { free(edits); free(blobs); return NULL; }
+    int ne = 0;
+    for (int g = 0; g < gc; g++) {
+        struct PatchgramGiftEntry *e = &rw->entries[g];
+        if (e->is_unique) {
+            if (want_title && e->u_title_off && e->u_title_len) {
+                edits[ne].off = e->u_title_off; edits[ne].oldlen = e->u_title_len; edits[ne].rep = titlebuf; edits[ne].replen = title_len; ne++;
+            }
+            if (want_bd && e->bd_name_off && e->bd_name_len) {
+                edits[ne].off = e->bd_name_off; edits[ne].oldlen = e->bd_name_len; edits[ne].rep = bdbuf; edits[ne].replen = bd_len; ne++;
+            }
+            if (want_model && e->model_name_off && e->model_name_len) {
+                edits[ne].off = e->model_name_off; edits[ne].oldlen = e->model_name_len; edits[ne].rep = modelbuf; edits[ne].replen = model_len; ne++;
+            }
+            if (want_symbol && e->symbol_name_off && e->symbol_name_len) {
+                edits[ne].off = e->symbol_name_off; edits[ne].oldlen = e->symbol_name_len; edits[ne].rep = symbuf; edits[ne].replen = sym_len; ne++;
+            }
+        } else if (want_convert && e->gift_field_off && e->gift_field_len) {
+            // Regular gift → build a starGiftUnique and replace the whole gift field. Model/pattern use
+            // minimal custom-emoji docs for the chosen ids; the gift's own sticker is only the fallback
+            // when an attribute wasn't chosen.
+            const uint8_t *sd = (e->sticker_doc_off && e->sticker_doc_len) ? old + e->sticker_doc_off : (const uint8_t *)"";
+            const size_t sdl = (e->sticker_doc_off && e->sticker_doc_len) ? e->sticker_doc_len : 0;
+            uint8_t *slot = blobs + (size_t)g * PATCHGRAM_UNIQUE_BLOB_MAX;
+            size_t blen = patchgram_build_unique_blob(slot, PATCHGRAM_UNIQUE_BLOB_MAX, 0, sd, sdl);
+            if (blen > 0) {
+                edits[ne].off = e->gift_field_off; edits[ne].oldlen = e->gift_field_len; edits[ne].rep = slot; edits[ne].replen = blen; ne++;
+            }
+        }
+    }
+    if (ne == 0) { free(edits); free(blobs); return NULL; }
+    for (int i = 1; i < ne; i++) {  // sort by offset
+        struct PatchgramGiftEdit key = edits[i]; int j = i - 1;
+        while (j >= 0 && edits[j].off > key.off) { edits[j + 1] = edits[j]; j--; }
+        edits[j + 1] = key;
+    }
+    long long delta = 0;
+    for (int i = 0; i < ne; i++) { delta += (long long)edits[i].replen - (long long)edits[i].oldlen; }
+    if ((long long)old_len + delta <= 0) { free(edits); free(blobs); return NULL; }
+    size_t new_len = (size_t)((long long)old_len + delta);
+    uint8_t *buf = (uint8_t *)malloc(new_len);
+    if (!buf) { free(edits); free(blobs); return NULL; }
+    size_t src = 0, dst = 0; bool ok = true;
+    for (int i = 0; i < ne && ok; i++) {
+        if (edits[i].off < src || edits[i].off + edits[i].oldlen > old_len) { ok = false; break; }
+        size_t gap = edits[i].off - src;
+        if (dst + gap + edits[i].replen > new_len) { ok = false; break; }
+        memcpy(buf + dst, old + src, gap); dst += gap; src += gap;
+        memcpy(buf + dst, edits[i].rep, edits[i].replen); dst += edits[i].replen; src += edits[i].oldlen;
+    }
+    if (ok && src <= old_len && dst + (old_len - src) <= new_len) {
+        memcpy(buf + dst, old + src, old_len - src); dst += old_len - src;
+    } else { ok = false; }
+    free(edits); free(blobs);  // blob bytes already copied into buf
+    if (!ok || dst != new_len) { free(buf); return NULL; }
+    if (!patchgram_savedgifts_valid(buf, dst)) { free(buf); return NULL; }
+    *out_len = dst;
+    return buf;
+}
+
+// Install a rebuilt unique-gifts response: shrink-in-place, or grow only into the buffer's existing
+// spare capacity (QArrayData.alloc) — never reallocate Qt's buffer. Skips (keeping the in-place spoofs)
+// if it doesn't fit, so the client can't crash.
+static bool patchgram_unique_writeback(void *response, uint32_t *words, int64_t old_count,
+                                       const uint8_t *newbuf, size_t new_len) {
+    if (new_len == 0 || (new_len & 3u) != 0) { return false; }
+    int64_t new_count = (int64_t)(new_len / sizeof(uint32_t));
+    if (new_count <= old_count) {
+        memcpy(words, newbuf, new_len);
+        memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_count, sizeof(new_count));
+        return true;
+    }
+    // Grow only into the buffer's existing spare capacity (QArrayData.alloc at d+8). The `d` field is
+    // ONLY a real QArrayData header when this is an owned QList; some responses carry a borrowed/raw
+    // vector whose `d` holds a non-pointer value (observed garbage like 0x1c13… → deref crashed). Validate
+    // before touching d+8: `d` must be an aligned heap pointer AND `words` (the data) must sit just past
+    // the header (Qt6 QArrayData is 16 bytes; data follows, aligned) — true only for a genuine owned d.
+    // If it doesn't hold, skip the grow (the in-place scalar spoofs from the walk still stand). No crash.
+    void *d = NULL; memcpy(&d, (const uint8_t *)response + PATCHGRAM_QVECTOR_D_OFFSET, sizeof(d));
+    const uintptr_t dp = (uintptr_t)d;
+    const uintptr_t wp = (uintptr_t)words;
+    const uintptr_t data_off = (wp > dp) ? (wp - dp) : 0;  // data sits just past the QArrayData header
+    const bool d_sane = d && (dp & 7u) == 0 && dp >= 0x1000u && dp < 0x0001000000000000ULL
+                        && data_off >= 16 && data_off <= 64;
+    if (d_sane) {
+        int64_t cap = 0; memcpy(&cap, (const uint8_t *)d + 8, sizeof(cap));
+        if (cap >= new_count && cap < (1 << 28)) {
+            memcpy(words, newbuf, new_len);
+            memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_count, sizeof(new_count));
+            return true;
+        }
+    }
+    if (g_gift_unique_logs < 16) { g_gift_unique_logs++; patchgram_log("GIFT UNIQUE WB skip: rebuilt %lld words > old %lld (d=%p dataOff=%lu sane=%d) — in-place only", (long long)new_count, (long long)old_count, d, (unsigned long)data_off, (int)d_sane); }
+    return false;
+}
+
+static void patchgram_apply_gift_unique_response(void *response) {
+    if (!response || !g_gift_unique_enabled) { return; }
+    patchgram_load_unique_docs();  // restore previously-captured model/symbol docs (once)
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+    if (!patchgram_take_unique_gift_request(request_id)) { return; }  // only OUR getSavedStarGifts (unique target mode)
+    uint32_t *words = NULL; int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count <= 0) { return; }
+    struct PatchgramTLRewrite rw; memset(&rw, 0, sizeof(rw));
+    rw.base = (uint8_t *)words;
+    rw.unique = 1;
+    rw.capture = 1;  // need title/backdrop-name offsets for the rebuild
+    // sender (savedStarGift.from_id): the unique patch's own value if set, else the base spoof's.
+    rw.sender_id = g_unique_sender_id ? g_unique_sender_id : g_gift_spoof_sender_id;
+    rw.sender_peer_type = g_unique_sender_id ? g_unique_sender_peer_type : g_gift_spoof_sender_peer_type;
+    rw.date = g_unique_date;                         // this patch's own date (0 = leave the original)
+    rw.gift_num = g_unique_num;                      // keep savedStarGift.gift_num in sync (when present)
+    const int applied = patchgram_tl_rewrite_saved_star_gifts((uint8_t *)words, (size_t)word_count * sizeof(uint32_t), &rw);
+    size_t new_len = 0;
+    uint8_t *buf = patchgram_unique_build((const uint8_t *)words, (size_t)word_count * sizeof(uint32_t), &rw, &new_len);
+    bool wrote = false;
+    if (buf) { wrote = patchgram_unique_writeback(response, words, word_count, buf, new_len); free(buf); }
+    if (g_gift_unique_logs < 32) {
+        g_gift_unique_logs++;
+        patchgram_log("GIFT UNIQUE reqId=%d words=%lld gifts=%d inplace=%d rebuild=%s (title=%s backdrop=%s num=%d issued=%d total=%d modelId=%lld symbolId=%lld sender=%lld date=%d)",
+                      (int)request_id, (long long)word_count, rw.gift_count, applied, wrote ? "applied" : "none/skip",
+                      g_unique_title, g_unique_backdrop_name, (int)g_unique_num,
+                      (int)g_unique_total_upgraded, (int)g_unique_max_upgraded,
+                      (long long)g_unique_model_emoji_id, (long long)g_unique_symbol_emoji_id,
+                      (long long)g_gift_spoof_sender_id, (int)g_gift_spoof_date);
+    }
+}
+
+// Spoof the unique-gift "value" sheet — payments.uniqueStarGiftValueInfo#512fe446 (the response to
+// getUniqueStarGiftValueInfo, shown when the user opens a unique gift's value details). Rewrites, in
+// place: value (the main value long) ← value_amount; currency ← last_resale_currency (else value_currency,
+// same byte-length only); and, when the gift carries a last-sale slot (flags.0), last_sale_price ←
+// last_resale_amount and last_sale_date ← the configured last-resale date. A gift never resold has no
+// flags.0 slot, so its last-sale can't be added in place (logged). Gated on the ctor only — this is a
+// different request than getSavedStarGifts, so it isn't request-tracked.
+static int g_unique_value_info_logs = 0;
+static void patchgram_apply_unique_value_info_response(void *response) {
+    if (!response || !g_gift_unique_enabled) { return; }
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+    const bool tracked = patchgram_take_unique_value_info_request(request_id);  // OUR getUniqueStarGiftValueInfo
+    uint32_t *words = NULL; int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    uint8_t *body = (uint8_t *)words;
+    size_t bytelen = (words && word_count > 0) ? (size_t)word_count * sizeof(uint32_t) : 0;
+    uint32_t top = 0; if (bytelen >= 4) { memcpy(&top, body, 4); }
+    // CONVERTED gift: our slug isn't a real one, so the server returns an error (no real value sheet to
+    // edit). Replace the whole response with a fabricated uniqueStarGiftValueInfo (Qt-borrowed buffer,
+    // same install as fragment phone — this reply is consumed once and not deep-copied/cached).
+    if (top != 0x512fe446u) {
+        if (!tracked) { return; }
+        int64_t new_wc = 0;
+        uint32_t *reply = patchgram_build_unique_value_info_reply(&new_wc);
+        if (!reply || new_wc <= 0) { free(reply); return; }
+        void *data_header = NULL;
+        memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_D_OFFSET, &data_header, sizeof(data_header));
+        memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, &reply, sizeof(reply));
+        memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_wc, sizeof(new_wc));
+        if (g_unique_value_info_logs < 32) {
+            g_unique_value_info_logs++;
+            patchgram_log("GIFT VALUEINFO fabricated reqId=%d wasCtor=%#x words=%lld (value=%lld currency=%s lastResale=%lld date=%d)",
+                          (int)request_id, (unsigned)top, (long long)new_wc,
+                          (long long)g_unique_value_amount,
+                          g_unique_last_resale_currency[0] ? g_unique_last_resale_currency
+                              : (g_unique_value_currency[0] ? g_unique_value_currency : "TON"),
+                          (long long)g_unique_last_resale_amount, (int)g_unique_last_resale_date);
+        }
+        return;
+    }
+    // REAL value sheet (an already-unique gift) — edit the configured fields in place.
+    const int want = (g_unique_value_amount || g_unique_value_currency[0]
+                      || g_unique_last_resale_amount || g_unique_last_resale_currency[0]
+                      || g_unique_last_resale_date);
+    if (!want || bytelen < 8) { return; }
+    uint32_t flags = 0; memcpy(&flags, body + 4, 4);
+    size_t off = 8;
+    size_t currency_off = off;
+    if (!patchgram_tl_skip_string(body, bytelen, &off)) { return; }   // currency: string
+    size_t value_off = off; if (off + 8 > bytelen) { return; } off += 8;          // value: long
+    if (off + 4 > bytelen) { return; } off += 4;                                  // initial_sale_date: int
+    if (off + 8 > bytelen) { return; } off += 8;                                  // initial_sale_stars: long
+    if (off + 8 > bytelen) { return; } off += 8;                                  // initial_sale_price: long
+    size_t lsd_off = 0, lsp_off = 0; int have_last = 0;
+    if (flags & 1u) {
+        lsd_off = off; if (off + 4 > bytelen) { return; } off += 4;               // last_sale_date: int (flags.0)
+        lsp_off = off; if (off + 8 > bytelen) { return; } off += 8;               // last_sale_price: long (flags.0)
+        have_last = 1;
+    }
+    int applied = 0;
+    if (g_unique_value_amount) { int64_t v = g_unique_value_amount; memcpy(body + value_off, &v, 8); applied++; }
+    const char *cur = g_unique_last_resale_currency[0] ? g_unique_last_resale_currency
+                     : (g_unique_value_currency[0] ? g_unique_value_currency : NULL);
+    if (cur) {
+        size_t end = currency_off;
+        if (patchgram_tl_skip_string(body, bytelen, &end)
+            && patchgram_tl_string_length(cur) == (end - currency_off)) {
+            size_t w = currency_off; patchgram_tl_write_string(body, &w, cur); applied++;
+        }
+    }
+    if (have_last) {
+        if (g_unique_last_resale_amount) { int64_t v = g_unique_last_resale_amount; memcpy(body + lsp_off, &v, 8); applied++; }
+        if (g_unique_last_resale_date) { int32_t v = g_unique_last_resale_date; memcpy(body + lsd_off, &v, 4); applied++; }
+    }
+    if (g_unique_value_info_logs < 32) {
+        g_unique_value_info_logs++;
+        patchgram_log("GIFT VALUEINFO applied=%d flags=%#x hasLastSale=%d (value=%lld currency=%s lastResale=%lld/%s date=%d)",
+                      applied, (unsigned)flags, have_last,
+                      (long long)g_unique_value_amount, cur ? cur : "(keep)",
+                      (long long)g_unique_last_resale_amount, g_unique_last_resale_currency,
+                      (int)g_unique_last_resale_date);
+    }
+}
+
 static void patchgram_apply_gift_spoof_response(void *response) {
     if (!response) { return; }
     int32_t request_id = 0;
@@ -6269,14 +7216,29 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
     if (byte_count == 0 || (byte_count % PATCHGRAM_RESPONSE_SIZE) != 0 || byte_count > PATCHGRAM_RESPONSE_SIZE * 512U) {
         return;
     }
+    // Serialize all response processing: the per-patch handlers share static scratch buffers (gift
+    // rebuild, emoji capture, etc.), so concurrent MTProto session threads (fast chat/channel switching)
+    // would otherwise race them and corrupt memory. One global lock keeps it safe with negligible cost.
+    static pthread_mutex_t g_received_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&g_received_queue_mutex);
     for (uint8_t *response = begin; response < end; response += PATCHGRAM_RESPONSE_SIZE) {
         patchgram_mtproto_log_response(response);
+        if (g_gift_unique_enabled) {
+            // Capture the chosen model/symbol custom-emoji documents as they flow by, then apply. The
+            // unique pass tracks/takes from its OWN request ring (own target mode), independent of base.
+            patchgram_unique_capture_response(response);
+            patchgram_apply_gift_unique_response(response);
+            patchgram_apply_unique_value_info_response(response);  // the gift's "value" details sheet
+        }
         if (g_gift_spoof_enabled) {
             patchgram_capture_emoji_doc_response(response);
             patchgram_apply_gift_spoof_response(response);
         }
         if (g_show_hidden_gifts_enabled) {
             patchgram_inject_hidden_gifts(response);
+        }
+        if (g_account_freeze_enabled) {
+            patchgram_apply_account_freeze_response(response);
         }
         patchgram_strip_noforwards_in_response(response);
         patchgram_apply_custom_username_list_response(response);
@@ -6288,6 +7250,7 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
             patchgram_apply_fact_check_response(response);
         }
     }
+    pthread_mutex_unlock(&g_received_queue_mutex);
 }
 
 static void patchgram_session_private_try_to_receive(void *session_private) {
@@ -6301,8 +7264,18 @@ static void patchgram_session_send_prepared(void *session, void *request_ref, in
     patchgram_mtproto_log_request(request_ref);
     if (g_gift_spoof_enabled) {
         int32_t gift_request_id = 0;
-        if (patchgram_gift_request_should_spoof(request_ref, &gift_request_id)) {
+        if (patchgram_gift_request_should_spoof(request_ref, g_gift_spoof_target_mode, &gift_request_id)) {
             patchgram_track_gift_request(gift_request_id);
+        }
+    }
+    if (g_gift_unique_enabled) {
+        int32_t unique_request_id = 0;
+        if (patchgram_gift_request_should_spoof(request_ref, g_gift_unique_target_mode, &unique_request_id)) {
+            patchgram_track_unique_gift_request(unique_request_id);
+        }
+        int32_t value_info_request_id = 0;
+        if (patchgram_unique_value_info_request_id(request_ref, &value_info_request_id)) {
+            patchgram_track_unique_value_info_request(value_info_request_id);
         }
     }
     patchgram_log_custom_username_request_tl(request_ref, ms_can_wait);

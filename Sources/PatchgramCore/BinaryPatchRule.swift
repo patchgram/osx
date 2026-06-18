@@ -17,7 +17,9 @@ public enum BinaryPatchRuleKind: String, Codable, Sendable {
     case fragmentPhone
     case customListUsernames
     case starGiftSpoof
+    case starGiftUniqueSpoof
     case showHiddenGifts
+    case accountFreeze
     case runtimeMemory
 }
 
@@ -618,6 +620,286 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
         if !trimmedCaption.isEmpty { parts.append("“\(trimmedCaption.prefix(16))”") }
         let summary = parts.isEmpty ? "no overrides" : parts.joined(separator: ", ")
         return "\(normalized.targetMode.label) - \(summary)"
+    }
+}
+
+/// Spoof profile UNIQUE gifts: makes a profile's gift show as an upgraded (unique) gift with a chosen
+/// title, unique number, backdrop, model and symbol (sourced from an upgradable gift on api.changes.tg
+/// / @GiftChanges). Applies to BOTH already-unique gifts (rewritten) and regular gifts (converted to
+/// unique). Sender + date are reused from `StarGiftSpoofPatchConfig`; targetMode selects whose profile.
+public struct StarGiftUniqueSpoofPatchConfig: Codable, Hashable, Sendable {
+    public static let defaultConfig = StarGiftUniqueSpoofPatchConfig(
+        targetMode: .onlySelf, giftName: "", title: "", numText: "",
+        backdropName: "", backdropCenterColor: 0, backdropEdgeColor: 0, backdropPatternColor: 0,
+        backdropTextColor: 0, backdropRarityPermille: 0,
+        modelName: "", modelEmojiId: 0, modelRarityPermille: 0,
+        symbolName: "", symbolEmojiId: 0, symbolRarityPermille: 0
+    )
+
+    public let targetMode: BotVerificationTargetMode  // whose profile (all / only me / all except me)
+    public let giftName: String              // chosen upgradable gift (e.g. "Scared Cat"); UI filter key
+    public let title: String                 // starGiftUnique.title; empty = leave
+    public let numText: String               // unique number (starGiftUnique.num); "0"/empty = leave
+    public let backdropName: String          // backdrop display name; empty = leave the backdrop alone
+    public let backdropCenterColor: Int32    // resolved from api.changes.tg /backdrops/:gift
+    public let backdropEdgeColor: Int32
+    public let backdropPatternColor: Int32
+    public let backdropTextColor: Int32
+    public let backdropRarityPermille: Int32
+    public let modelName: String             // model display name; empty = leave the model alone
+    public let modelEmojiId: Int64           // model custom-emoji id (/emoji/:gift)
+    public let modelRarityPermille: Int32
+    public let symbolName: String            // symbol/pattern display name; empty = leave alone
+    public let symbolEmojiId: Int64          // symbol custom-emoji id
+    public let symbolRarityPermille: Int32
+    public let totalUpgradedText: String     // availability_issued (the "N" in "N of M issued"); 0 = default
+    public let maxUpgradedText: String       // availability_total (the "M"); 0 = default
+    public let modelCustom: Bool             // model uses a typed custom emoji id instead of a list pick
+    public let symbolCustom: Bool            // symbol uses a typed custom emoji id instead of a list pick
+    public let senderText: String            // savedStarGift.from_id (Bot-API peer id); empty/0 = leave
+    public let ownerText: String             // starGiftUnique.owner_id (Bot-API peer id); empty/0 = leave
+    public let hostEnabled: Bool             // set starGiftUnique.host_id
+    public let hostText: String              // host peer id (Bot-API)
+    public let ownerAddressEnabled: Bool     // set starGiftUnique.owner_address
+    public let ownerAddressText: String      // TON owner address string
+    public let dateText: String              // savedStarGift.date, "0"/empty = leave; "HH:mm:ss dd.MM.yyyy" or unix
+    // Value (starGiftUnique flags.8) + last resale (payments.uniqueStarGiftValueInfo). 0/empty = leave.
+    public let valueCurrencyText: String     // starGiftUnique.value_currency (e.g. "TON")
+    public let valueAmountText: String       // starGiftUnique.value_amount (raw long, smallest unit)
+    public let valueUsdAmountText: String    // starGiftUnique.value_usd_amount (raw long)
+    public let lastResaleCurrencyText: String// uniqueStarGiftValueInfo.currency
+    public let lastResaleAmountText: String  // uniqueStarGiftValueInfo.last_sale_price (raw long)
+    public let lastResaleDateText: String    // uniqueStarGiftValueInfo.last_sale_date; "0"/HH:mm:ss dd.MM.yyyy/unix
+
+    public init(
+        targetMode: BotVerificationTargetMode = .onlySelf,
+        giftName: String,
+        title: String,
+        numText: String,
+        backdropName: String,
+        backdropCenterColor: Int32,
+        backdropEdgeColor: Int32,
+        backdropPatternColor: Int32,
+        backdropTextColor: Int32,
+        backdropRarityPermille: Int32,
+        modelName: String,
+        modelEmojiId: Int64,
+        modelRarityPermille: Int32,
+        symbolName: String,
+        symbolEmojiId: Int64,
+        symbolRarityPermille: Int32,
+        totalUpgradedText: String = "0",
+        maxUpgradedText: String = "0",
+        modelCustom: Bool = false,
+        symbolCustom: Bool = false,
+        senderText: String = "",
+        ownerText: String = "",
+        hostEnabled: Bool = false,
+        hostText: String = "",
+        ownerAddressEnabled: Bool = false,
+        ownerAddressText: String = "",
+        dateText: String = "0",
+        valueCurrencyText: String = "",
+        valueAmountText: String = "",
+        valueUsdAmountText: String = "",
+        lastResaleCurrencyText: String = "",
+        lastResaleAmountText: String = "",
+        lastResaleDateText: String = "0"
+    ) {
+        self.targetMode = targetMode
+        self.giftName = giftName
+        self.title = title
+        self.numText = numText
+        self.backdropName = backdropName
+        self.backdropCenterColor = backdropCenterColor
+        self.backdropEdgeColor = backdropEdgeColor
+        self.backdropPatternColor = backdropPatternColor
+        self.backdropTextColor = backdropTextColor
+        self.backdropRarityPermille = backdropRarityPermille
+        self.modelName = modelName
+        self.modelEmojiId = modelEmojiId
+        self.modelRarityPermille = modelRarityPermille
+        self.symbolName = symbolName
+        self.symbolEmojiId = symbolEmojiId
+        self.symbolRarityPermille = symbolRarityPermille
+        self.totalUpgradedText = totalUpgradedText
+        self.maxUpgradedText = maxUpgradedText
+        self.modelCustom = modelCustom
+        self.symbolCustom = symbolCustom
+        self.senderText = senderText
+        self.ownerText = ownerText
+        self.hostEnabled = hostEnabled
+        self.hostText = hostText
+        self.ownerAddressEnabled = ownerAddressEnabled
+        self.ownerAddressText = ownerAddressText
+        self.dateText = dateText
+        self.valueCurrencyText = valueCurrencyText
+        self.valueAmountText = valueAmountText
+        self.valueUsdAmountText = valueUsdAmountText
+        self.lastResaleCurrencyText = lastResaleCurrencyText
+        self.lastResaleAmountText = lastResaleAmountText
+        self.lastResaleDateText = lastResaleDateText
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        targetMode = try c.decodeIfPresent(BotVerificationTargetMode.self, forKey: .targetMode) ?? .onlySelf
+        giftName = try c.decodeIfPresent(String.self, forKey: .giftName) ?? ""
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        numText = try c.decodeIfPresent(String.self, forKey: .numText) ?? "0"
+        backdropName = try c.decodeIfPresent(String.self, forKey: .backdropName) ?? ""
+        backdropCenterColor = try c.decodeIfPresent(Int32.self, forKey: .backdropCenterColor) ?? 0
+        backdropEdgeColor = try c.decodeIfPresent(Int32.self, forKey: .backdropEdgeColor) ?? 0
+        backdropPatternColor = try c.decodeIfPresent(Int32.self, forKey: .backdropPatternColor) ?? 0
+        backdropTextColor = try c.decodeIfPresent(Int32.self, forKey: .backdropTextColor) ?? 0
+        backdropRarityPermille = try c.decodeIfPresent(Int32.self, forKey: .backdropRarityPermille) ?? 0
+        modelName = try c.decodeIfPresent(String.self, forKey: .modelName) ?? ""
+        modelEmojiId = try c.decodeIfPresent(Int64.self, forKey: .modelEmojiId) ?? 0
+        modelRarityPermille = try c.decodeIfPresent(Int32.self, forKey: .modelRarityPermille) ?? 0
+        symbolName = try c.decodeIfPresent(String.self, forKey: .symbolName) ?? ""
+        symbolEmojiId = try c.decodeIfPresent(Int64.self, forKey: .symbolEmojiId) ?? 0
+        symbolRarityPermille = try c.decodeIfPresent(Int32.self, forKey: .symbolRarityPermille) ?? 0
+        totalUpgradedText = try c.decodeIfPresent(String.self, forKey: .totalUpgradedText) ?? "0"
+        maxUpgradedText = try c.decodeIfPresent(String.self, forKey: .maxUpgradedText) ?? "0"
+        modelCustom = try c.decodeIfPresent(Bool.self, forKey: .modelCustom) ?? false
+        symbolCustom = try c.decodeIfPresent(Bool.self, forKey: .symbolCustom) ?? false
+        senderText = try c.decodeIfPresent(String.self, forKey: .senderText) ?? ""
+        ownerText = try c.decodeIfPresent(String.self, forKey: .ownerText) ?? ""
+        hostEnabled = try c.decodeIfPresent(Bool.self, forKey: .hostEnabled) ?? false
+        hostText = try c.decodeIfPresent(String.self, forKey: .hostText) ?? ""
+        ownerAddressEnabled = try c.decodeIfPresent(Bool.self, forKey: .ownerAddressEnabled) ?? false
+        ownerAddressText = try c.decodeIfPresent(String.self, forKey: .ownerAddressText) ?? ""
+        dateText = try c.decodeIfPresent(String.self, forKey: .dateText) ?? "0"
+        valueCurrencyText = try c.decodeIfPresent(String.self, forKey: .valueCurrencyText) ?? ""
+        valueAmountText = try c.decodeIfPresent(String.self, forKey: .valueAmountText) ?? ""
+        valueUsdAmountText = try c.decodeIfPresent(String.self, forKey: .valueUsdAmountText) ?? ""
+        lastResaleCurrencyText = try c.decodeIfPresent(String.self, forKey: .lastResaleCurrencyText) ?? ""
+        lastResaleAmountText = try c.decodeIfPresent(String.self, forKey: .lastResaleAmountText) ?? ""
+        lastResaleDateText = try c.decodeIfPresent(String.self, forKey: .lastResaleDateText) ?? "0"
+    }
+
+    public var numValue: Int32 {
+        Int32(numText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+    // Bot-API peer id helpers: positive = user, -100… = channel, other negative = basic group.
+    private static func peerId(_ text: String) -> Int64 {
+        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let v = Int64(s) ?? 0
+        if v >= 0 { return v }
+        if s.hasPrefix("-100"), let id = Int64(s.dropFirst(4)) { return id }
+        return -v
+    }
+    private static func peerType(_ text: String) -> Int32 {  // 0 user, 1 channel, 2 chat
+        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let v = Int64(s) ?? 0
+        if v >= 0 { return 0 }
+        if s.hasPrefix("-100"), Int64(s.dropFirst(4)) != nil { return 1 }
+        return 2
+    }
+    public var senderId: Int64 { Self.peerId(senderText) }
+    public var senderPeerType: Int32 { Self.peerType(senderText) }
+    public var ownerId: Int64 { Self.peerId(ownerText) }
+    public var ownerPeerType: Int32 { Self.peerType(ownerText) }
+    public var hostId: Int64 { hostEnabled ? Self.peerId(hostText) : 0 }
+    public var hostPeerType: Int32 { Self.peerType(hostText) }
+    public var ownerAddress: String {
+        ownerAddressEnabled ? ownerAddressText.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    }
+    /// nil → invalid (the prompt rejects it); 0 → leave the original date. Accepts a unix timestamp or
+    /// "HH:mm:ss dd.MM.yyyy" (matches the base Spoof-profile-gifts date field).
+    public var dateUnix: Int32? {
+        let text = dateText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty || text == "0" { return 0 }
+        if let value = Int64(text), value >= 0, value <= Int64(Int32.max) { return Int32(value) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "HH:mm:ss dd.MM.yyyy"
+        guard let date = formatter.date(from: text) else { return nil }
+        let timestamp = Int64(date.timeIntervalSince1970)
+        guard timestamp >= 0, timestamp <= Int64(Int32.max) else { return nil }
+        return Int32(timestamp)
+    }
+    private static func longValue(_ text: String) -> Int64 {
+        Int64(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+    private static func dateValue(_ text: String) -> Int32 {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty || t == "0" { return 0 }
+        if let v = Int64(t), v >= 0, v <= Int64(Int32.max) { return Int32(v) }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = .current
+        f.dateFormat = "HH:mm:ss dd.MM.yyyy"
+        guard let d = f.date(from: t) else { return 0 }
+        let ts = Int64(d.timeIntervalSince1970)
+        return (ts >= 0 && ts <= Int64(Int32.max)) ? Int32(ts) : 0
+    }
+    public var valueAmount: Int64 { Self.longValue(valueAmountText) }
+    public var valueUsdAmount: Int64 { Self.longValue(valueUsdAmountText) }
+    public var valueCurrency: String { valueCurrencyText.trimmingCharacters(in: .whitespacesAndNewlines) }
+    public var lastResaleAmount: Int64 { Self.longValue(lastResaleAmountText) }
+    public var lastResaleCurrency: String { lastResaleCurrencyText.trimmingCharacters(in: .whitespacesAndNewlines) }
+    public var lastResaleDateUnix: Int32 { Self.dateValue(lastResaleDateText) }
+    public var totalUpgradedValue: Int32 {
+        Int32(totalUpgradedText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+    public var maxUpgradedValue: Int32 {
+        Int32(maxUpgradedText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+    public var hasBackdrop: Bool {
+        !backdropName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    public var hasModel: Bool { modelEmojiId != 0 }
+    public var hasSymbol: Bool { symbolEmojiId != 0 }
+    public var normalized: StarGiftUniqueSpoofPatchConfig {
+        StarGiftUniqueSpoofPatchConfig(
+            targetMode: targetMode,
+            giftName: giftName.trimmingCharacters(in: .whitespacesAndNewlines),
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            numText: numText.trimmingCharacters(in: .whitespacesAndNewlines),
+            backdropName: backdropName.trimmingCharacters(in: .whitespacesAndNewlines),
+            backdropCenterColor: backdropCenterColor,
+            backdropEdgeColor: backdropEdgeColor,
+            backdropPatternColor: backdropPatternColor,
+            backdropTextColor: backdropTextColor,
+            backdropRarityPermille: backdropRarityPermille,
+            modelName: modelName.trimmingCharacters(in: .whitespacesAndNewlines),
+            modelEmojiId: modelEmojiId,
+            modelRarityPermille: modelRarityPermille,
+            symbolName: symbolName.trimmingCharacters(in: .whitespacesAndNewlines),
+            symbolEmojiId: symbolEmojiId,
+            symbolRarityPermille: symbolRarityPermille,
+            totalUpgradedText: totalUpgradedText.trimmingCharacters(in: .whitespacesAndNewlines),
+            maxUpgradedText: maxUpgradedText.trimmingCharacters(in: .whitespacesAndNewlines),
+            modelCustom: modelCustom,
+            symbolCustom: symbolCustom,
+            senderText: senderText.trimmingCharacters(in: .whitespacesAndNewlines),
+            ownerText: ownerText.trimmingCharacters(in: .whitespacesAndNewlines),
+            hostEnabled: hostEnabled,
+            hostText: hostText.trimmingCharacters(in: .whitespacesAndNewlines),
+            ownerAddressEnabled: ownerAddressEnabled,
+            ownerAddressText: ownerAddressText.trimmingCharacters(in: .whitespacesAndNewlines),
+            dateText: dateText.trimmingCharacters(in: .whitespacesAndNewlines),
+            valueCurrencyText: valueCurrencyText.trimmingCharacters(in: .whitespacesAndNewlines),
+            valueAmountText: valueAmountText.trimmingCharacters(in: .whitespacesAndNewlines),
+            valueUsdAmountText: valueUsdAmountText.trimmingCharacters(in: .whitespacesAndNewlines),
+            lastResaleCurrencyText: lastResaleCurrencyText.trimmingCharacters(in: .whitespacesAndNewlines),
+            lastResaleAmountText: lastResaleAmountText.trimmingCharacters(in: .whitespacesAndNewlines),
+            lastResaleDateText: lastResaleDateText.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+    public var displayValue: String {
+        var parts: [String] = []
+        let g = giftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !g.isEmpty { parts.append(g) }
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { parts.append("“\(t.prefix(16))”") }
+        if hasModel { parts.append(modelName.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        if hasSymbol { parts.append(symbolName.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        if hasBackdrop { parts.append(backdropName.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        if numValue != 0 { parts.append("#\(numValue)") }
+        let summary = parts.isEmpty ? "not configured" : parts.joined(separator: ", ")
+        return "\(targetMode.label) - \(summary)"
     }
 }
 
@@ -2100,6 +2382,18 @@ public enum BinaryPatchRuleDefinitions {
             ]
         ),
         BinaryPatchRule(
+            id: "binary.account.freeze",
+            title: "Account freeze",
+            methodName: "help.getAppConfig / help.appConfig",
+            constructorId: "help.appConfig#dd18782e",
+            kind: .accountFreeze,
+            summary: "Installs a local runtime hook that injects freeze_since_date / freeze_until_date / freeze_appeal_url into the help.appConfig response, so Telegram Desktop shows the account as frozen. The since date is the moment the patch is active (today); until is a fixed far-future date.",
+            disabledBehavior: "Keeps Telegram's original app config and frozen state.",
+            riskNote: "This is a local client-side display patch on the app config response. It does not freeze or change your account on the server; only what your client displays changes.",
+            supportedBuildNote: "Hooks the MTProto help.appConfig response and edits its JSON object with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
+            replacements: []
+        ),
+        BinaryPatchRule(
             id: "binary.display.custom_ton",
             title: "Custom TON value",
             methodName: "CreditsAmountFromTL(MTPstarsTonAmount)",
@@ -2358,6 +2652,18 @@ public enum BinaryPatchRuleDefinitions {
             disabledBehavior: "Keeps Telegram's original star gifts and their data.",
             riskNote: "This is a local client-side display patch on the gift list response. It does not move, mint or change any gift server-side; only what your client displays changes.",
             supportedBuildNote: "Hooks the MTProto gift-list response and rewrites it with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
+            replacements: []
+        ),
+        BinaryPatchRule(
+            id: "binary.gifts.spoof_unique",
+            title: "Spoof profile unique gifts",
+            methodName: "payments.getSavedStarGifts / payments.savedStarGifts",
+            constructorId: "payments.savedStarGifts#95f389b1 / starGiftUnique#85f0a9cd",
+            kind: .starGiftUniqueSpoof,
+            summary: "Installs a local runtime hook that rewrites the upgraded (unique) star gifts in the payments.savedStarGifts response, so a profile's unique gift shows the title, unique number and backdrop (colours from an upgradable gift on api.changes.tg) you choose. Sender and date are reused from the Spoof profile gifts settings.",
+            disabledBehavior: "Keeps Telegram's original unique gifts and their data.",
+            riskNote: "This is a local client-side display patch on the gift list response. It does not mint, upgrade or change any gift server-side; only what your client displays changes. Gift data is sourced from api.changes.tg (@GiftChanges).",
+            supportedBuildNote: "Hooks the MTProto gift-list response and rewrites the starGiftUnique attributes with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
             replacements: []
         ),
         BinaryPatchRule(
@@ -2711,7 +3017,8 @@ public enum BinaryPatchRuleDefinitions {
              "binary.premium.local", "binary.display.custom_ton", "binary.display.custom_stars",
              "binary.visual.peer_badge", "binary.visual.bot_verification", "binary.visual.custom_level_rating",
              "binary.visual.self_identity_override", "binary.visual.local_personal_channel",
-             "binary.visual.fragment_phone", "binary.visual.custom_list_usernames":
+             "binary.visual.fragment_phone", "binary.visual.custom_list_usernames",
+             "binary.account.freeze":
             return .accounts
         case "binary.messages.settings", "binary.inline.callback_hover", "binary.visual.sensitive_blur",
              "binary.links.open_without_warning", "binary.visual.disable_spoilers",
@@ -2721,7 +3028,7 @@ public enum BinaryPatchRuleDefinitions {
         case "binary.config.disable_monetization", "binary.visual.no_premium_anim",
              "binary.stories.hide", "binary.ads.disable_sponsored":
             return .optimizations
-        case "binary.gifts.spoof_profile", "binary.gifts.show_hidden":
+        case "binary.gifts.spoof_profile", "binary.gifts.spoof_unique", "binary.gifts.show_hidden":
             return .gifts
         default:
             return .misc

@@ -41,6 +41,9 @@ struct ContentView: View {
         .sheet(isPresented: $viewModel.isShowingGiftSpoofSettings) {
             GiftSpoofSettingsView(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.isShowingGiftUniqueSpoofSettings) {
+            GiftUniqueSpoofSettingsView(viewModel: viewModel)
+        }
         .sheet(item: $viewModel.availableUpdate) { update in
             UpdateAvailableView(
                 update: update,
@@ -500,6 +503,8 @@ private struct SectionDetail: View {
                             } onRuleSettings: {
                                 if row.status.rule.kind == .starGiftSpoof {
                                     viewModel.showGiftSpoofSettings()
+                                } else if row.status.rule.kind == .starGiftUniqueSpoof {
+                                    viewModel.showGiftUniqueSpoofSettings()
                                 } else {
                                     viewModel.showBotVerificationSettings()
                                 }
@@ -630,7 +635,7 @@ private struct BinaryRuleCard: View {
                         .controlSize(.regular)
                         .help("Open the MTProto logger's log files (logs_mtproto_pg)")
                     }
-                    if row.status.rule.kind == .botVerification || row.status.rule.kind == .starGiftSpoof {
+                    if row.status.rule.kind == .botVerification || row.status.rule.kind == .starGiftSpoof || row.status.rule.kind == .starGiftUniqueSpoof {
                         Button {
                             onRuleSettings()
                         } label: {
@@ -638,7 +643,9 @@ private struct BinaryRuleCard: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.regular)
-                        .help(row.status.rule.kind == .starGiftSpoof ? "Configure profile gift spoofing" : "Manage bot verification presets")
+                        .help(row.status.rule.kind == .starGiftSpoof ? "Configure profile gift spoofing"
+                              : row.status.rule.kind == .starGiftUniqueSpoof ? "Configure profile unique gift spoofing"
+                              : "Manage bot verification presets")
                         .disabled(isWorking)
                     }
                     Toggle("", isOn: Binding(
@@ -1140,6 +1147,408 @@ private struct GiftSpoofSettingsView: View {
         auctionTitle = c.auctionTitle
         giftNumberText = c.giftNumberText
         wasRefunded = c.wasRefunded
+    }
+}
+
+/// GroupBox style for the gift settings sections: native-looking rounded fill but with a bit more inner
+/// padding so the label + content breathe away from the box edges.
+private struct PaddedSectionGroupBoxStyle: GroupBoxStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            configuration.label
+            configuration.content
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.quaternary.opacity(0.5))
+        )
+    }
+}
+
+private struct GiftUniqueSpoofSettingsView: View {
+    @ObservedObject var viewModel: PatchgramViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var targetMode: BotVerificationTargetMode = .onlySelf
+    @State private var giftName = ""
+    @State private var title = ""
+    @State private var numText = "0"
+    @State private var selectedBackdropName = ""
+    @State private var bdCenter: Int32 = 0
+    @State private var bdEdge: Int32 = 0
+    @State private var bdPattern: Int32 = 0
+    @State private var bdText: Int32 = 0
+    @State private var bdRarity: Int32 = 0
+    @State private var selectedModelName = ""
+    @State private var modelEmojiId: Int64 = 0
+    @State private var modelRarity: Int32 = 0
+    @State private var selectedSymbolName = ""
+    @State private var symbolEmojiId: Int64 = 0
+    @State private var symbolRarity: Int32 = 0
+    @State private var totalUpgradedText = "0"
+    @State private var maxUpgradedText = "0"
+    @State private var modelCustom = false
+    @State private var modelCustomName = ""
+    @State private var modelCustomId = ""
+    @State private var modelCustomPct = ""
+    @State private var symbolCustom = false
+    @State private var symbolCustomName = ""
+    @State private var symbolCustomId = ""
+    @State private var symbolCustomPct = ""
+    @State private var suppressGiftReset = false
+    @State private var senderText = ""
+    @State private var ownerText = ""
+    @State private var hostEnabled = false
+    @State private var hostText = ""
+    @State private var ownerAddressEnabled = false
+    @State private var ownerAddressText = ""
+    @State private var dateText = "0"
+    @State private var valueCurrencyText = ""
+    @State private var valueAmountText = ""
+    @State private var valueUsdAmountText = ""
+    @State private var lastResaleCurrencyText = ""
+    @State private var lastResaleAmountText = ""
+    @State private var lastResaleDateText = "0"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Label("Spoof Profile Unique Gifts", systemImage: "sparkles")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    viewModel.updateStarGiftUniqueSpoofConfig(currentConfig, applyNow: false)
+                    dismiss()
+                } label: { Label("Save", systemImage: "checkmark") }
+                .disabled(viewModel.isWorking)
+                Button {
+                    if viewModel.updateStarGiftUniqueSpoofConfig(currentConfig, applyNow: true) {
+                        dismiss()
+                    }
+                } label: { Label("Save & Apply", systemImage: "bolt.fill") }
+                .keyboardShortcut(.defaultAction)
+                .disabled(viewModel.isWorking)
+                Button { dismiss() } label: { Label("Cancel", systemImage: "xmark") }
+            }
+            .padding(18)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Make a profile's gift show as an upgraded (unique) gift. Works on already-unique gifts AND converts regular gifts. Pick a gift for its real model/symbol/backdrop lists, or “Empty” to type fully-custom model/symbol ids with backdrops from the full list. \"Save & Apply\" updates a running Telegram live — re-open the profile to refresh.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    GroupBox {
+                        Picker("", selection: $targetMode) {
+                            ForEach(BotVerificationTargetMode.allCases, id: \.self) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented).labelsHidden()
+                    } label: { Text("Whose profile").font(.subheadline).bold() }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Picker("", selection: $giftName) {
+                                    Text("Select a gift…").tag("")
+                                    Text("Empty (fully custom)").tag(PatchgramViewModel.emptyGiftName)
+                                    ForEach(viewModel.uniqueGiftNames, id: \.self) { name in
+                                        Text(name).tag(name)
+                                    }
+                                }
+                                .labelsHidden().pickerStyle(.menu)
+                                .onChange(of: giftName) { newValue in
+                                    if suppressGiftReset { suppressGiftReset = false; return }
+                                    selectedBackdropName = ""; bdCenter = 0; bdEdge = 0; bdPattern = 0; bdText = 0; bdRarity = 0
+                                    selectedModelName = ""; modelEmojiId = 0; modelRarity = 0
+                                    selectedSymbolName = ""; symbolEmojiId = 0; symbolRarity = 0
+                                    if newValue == PatchgramViewModel.emptyGiftName { modelCustom = true; symbolCustom = true }
+                                    viewModel.loadUniqueGiftBackdrops(forGift: newValue)
+                                }
+                                if viewModel.isLoadingUniqueGiftData { ProgressView().controlSize(.small) }
+                                Button {
+                                    viewModel.refreshUniqueGiftCatalog(currentGift: giftName)
+                                } label: { Label("Update lists", systemImage: "arrow.clockwise") }
+                                .controlSize(.small)
+                                .disabled(viewModel.isLoadingUniqueGiftData)
+                            }
+                            field("Title", text: $title, prompt: "Empty = use the chosen gift's name")
+                            field("Unique number", text: $numText, prompt: "0 = keep · the “#N” shown on the gift")
+                            HStack(alignment: .top, spacing: 12) {
+                                field("Upgraded (issued)", text: $totalUpgradedText, prompt: "0 = default · “N” in “N of M”")
+                                field("Max (total)", text: $maxUpgradedText, prompt: "0 = default · “M”")
+                            }
+                        }
+                    } label: { Text("Gift").font(.subheadline).bold() }
+
+                    GroupBox {
+                        if giftName.isEmpty {
+                            Text("Pick a gift (or “Empty”) to set its model, symbol and backdrop.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 10) {
+                                attributeBlock(
+                                    title: "Model", custom: $modelCustom,
+                                    customName: $modelCustomName, customId: $modelCustomId, customPct: $modelCustomPct,
+                                    selected: $selectedModelName, options: viewModel.uniqueGiftModels,
+                                    keepLabel: "Keep original model",
+                                    onPick: { m in modelEmojiId = m?.customEmojiId ?? 0; modelRarity = m?.rarityPermille ?? 0 }
+                                )
+                                attributeBlock(
+                                    title: "Symbol", custom: $symbolCustom,
+                                    customName: $symbolCustomName, customId: $symbolCustomId, customPct: $symbolCustomPct,
+                                    selected: $selectedSymbolName, options: viewModel.uniqueGiftSymbols,
+                                    keepLabel: "Keep original symbol",
+                                    onPick: { s in symbolEmojiId = s?.customEmojiId ?? 0; symbolRarity = s?.rarityPermille ?? 0 }
+                                )
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Backdrop").font(.subheadline).bold()
+                                    Picker("", selection: $selectedBackdropName) {
+                                        Text("Keep original backdrop").tag("")
+                                        ForEach(viewModel.uniqueGiftBackdrops) { drop in
+                                            Text("\(drop.name) · \(rarityLabel(drop.rarityPermille))").tag(drop.name)
+                                        }
+                                    }
+                                    .labelsHidden().pickerStyle(.menu)
+                                    .onChange(of: selectedBackdropName) { newValue in
+                                        if let drop = viewModel.uniqueGiftBackdrops.first(where: { $0.name == newValue }) {
+                                            bdCenter = drop.centerColor; bdEdge = drop.edgeColor
+                                            bdPattern = drop.patternColor; bdText = drop.textColor
+                                            bdRarity = drop.rarityPermille
+                                        }
+                                    }
+                                    if !selectedBackdropName.isEmpty {
+                                        HStack(spacing: 6) {
+                                            swatch(bdCenter); swatch(bdEdge); swatch(bdPattern); swatch(bdText)
+                                            Text("center · edge · pattern · text").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } label: { Text("Appearance").font(.subheadline).bold() }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            field("Sender (from)", text: $senderText, prompt: "empty = base · user id · -100… = channel")
+                            field("Owner", text: $ownerText, prompt: "empty = keep · user id · -100… = channel")
+                            field("Date", text: $dateText, prompt: "0 = keep · HH:mm:ss dd.MM.yyyy · or unix")
+                            VStack(alignment: .leading, spacing: 4) {
+                                Toggle("Host", isOn: $hostEnabled).toggleStyle(.checkbox)
+                                if hostEnabled {
+                                    TextField("host peer id · -100… = channel", text: $hostText).textFieldStyle(.roundedBorder)
+                                }
+                            }
+                            .onChange(of: hostEnabled) { isOn in
+                                // host needs an owner address to render → turning host on also turns it on
+                                // (but enabling owner address alone never flips host on).
+                                if isOn { ownerAddressEnabled = true }
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Toggle("Owner address", isOn: $ownerAddressEnabled).toggleStyle(.checkbox)
+                                if ownerAddressEnabled {
+                                    TextField("TON owner address", text: $ownerAddressText).textFieldStyle(.roundedBorder)
+                                }
+                            }
+                        }
+                    } label: { Text("Identity").font(.subheadline).bold() }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Value")
+                                .font(.caption).foregroundStyle(.secondary)
+                            HStack(alignment: .top, spacing: 12) {
+                                field("Currency", text: $valueCurrencyText, prompt: "empty = keep · e.g. TON")
+                                field("Amount", text: $valueAmountText, prompt: "0 = keep · raw long")
+                            }
+                            field("USD amount", text: $valueUsdAmountText, prompt: "0 = keep · raw long")
+                            Divider()
+                            Text("Last resale")
+                                .font(.caption).foregroundStyle(.secondary)
+                            HStack(alignment: .top, spacing: 12) {
+                                field("Currency", text: $lastResaleCurrencyText, prompt: "empty = keep · e.g. TON")
+                                field("Amount", text: $lastResaleAmountText, prompt: "0 = keep · raw long")
+                            }
+                            field("Last resale date", text: $lastResaleDateText, prompt: "0 = keep · HH:mm:ss dd.MM.yyyy · or unix")
+                            Text("Last-resale fields need a gift that already has resale history (else only its current value updates).")
+                                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                    } label: { Text("Value").font(.subheadline).bold() }
+
+                    Text(GiftChangesAPI.attribution)
+                        .font(.caption2).foregroundStyle(.secondary).padding(.top, 2)
+                }
+                .padding(18)
+                .groupBoxStyle(PaddedSectionGroupBoxStyle())
+            }
+        }
+        .frame(width: 560, height: 680)
+        .onAppear(perform: load)
+    }
+
+    @ViewBuilder
+    private func field(_ title: String, text: Binding<String>, prompt: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.subheadline).bold()
+            TextField(prompt, text: text).textFieldStyle(.roundedBorder)
+        }
+    }
+
+    /// Model/Symbol block: a Custom toggle (locked on for the "Empty" gift) switching between a
+    /// list pick and three typed fields (name / emoji id / rarity %).
+    @ViewBuilder
+    private func attributeBlock(
+        title: String,
+        custom: Binding<Bool>,
+        customName: Binding<String>,
+        customId: Binding<String>,
+        customPct: Binding<String>,
+        selected: Binding<String>,
+        options: [GiftChangesAttribute],
+        keepLabel: String,
+        onPick: @escaping (GiftChangesAttribute?) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 14) {
+                Text(title).font(.subheadline).bold()
+                Toggle("Custom", isOn: custom).toggleStyle(.checkbox).font(.caption)
+                    .disabled(giftName == PatchgramViewModel.emptyGiftName)
+                Spacer()
+            }
+            if custom.wrappedValue {
+                TextField("\(title.lowercased()) name", text: customName).textFieldStyle(.roundedBorder)
+                TextField("custom emoji id (document id)", text: customId).textFieldStyle(.roundedBorder)
+                TextField("rarity %, e.g. 0.5", text: customPct).textFieldStyle(.roundedBorder)
+            } else {
+                Picker("", selection: selected) {
+                    Text(keepLabel).tag("")
+                    ForEach(options) { o in
+                        Text("\(o.name) · \(rarityLabel(o.rarityPermille))").tag(o.name)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu)
+                .onChange(of: selected.wrappedValue) { newValue in
+                    onPick(options.first(where: { $0.name == newValue }))
+                }
+            }
+        }
+    }
+
+    private func swatch(_ rgb: Int32) -> some View {
+        let v = UInt32(bitPattern: rgb)
+        let r = Double((v >> 16) & 0xFF) / 255.0
+        let g = Double((v >> 8) & 0xFF) / 255.0
+        let b = Double(v & 0xFF) / 255.0
+        return RoundedRectangle(cornerRadius: 4)
+            .fill(Color(red: r, green: g, blue: b))
+            .frame(width: 22, height: 22)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(.secondary.opacity(0.4)))
+    }
+
+    private func rarityLabel(_ permille: Int32) -> String {
+        String(format: "%.1f%%", Double(permille) / 10.0)
+    }
+
+    private var currentConfig: StarGiftUniqueSpoofPatchConfig {
+        // Model/symbol: custom mode = typed name + id + rarity%; else the list pick.
+        let pctToPermille: (String) -> Int32 = { Int32(((Double($0.trimmingCharacters(in: .whitespaces)) ?? 0) * 10).rounded()) }
+        let mCustomName = modelCustomName.trimmingCharacters(in: .whitespaces)
+        let mName = modelCustom ? (mCustomName.isEmpty ? "Custom" : mCustomName) : selectedModelName
+        let mId = modelCustom ? (Int64(modelCustomId.trimmingCharacters(in: .whitespaces)) ?? 0) : modelEmojiId
+        let mRar = modelCustom ? pctToPermille(modelCustomPct) : modelRarity
+        let sCustomName = symbolCustomName.trimmingCharacters(in: .whitespaces)
+        let sName = symbolCustom ? (sCustomName.isEmpty ? "Custom" : sCustomName) : selectedSymbolName
+        let sId = symbolCustom ? (Int64(symbolCustomId.trimmingCharacters(in: .whitespaces)) ?? 0) : symbolEmojiId
+        let sRar = symbolCustom ? pctToPermille(symbolCustomPct) : symbolRarity
+        return StarGiftUniqueSpoofPatchConfig(
+            targetMode: targetMode,
+            giftName: giftName,
+            title: title,
+            numText: numText,
+            backdropName: selectedBackdropName,
+            backdropCenterColor: bdCenter,
+            backdropEdgeColor: bdEdge,
+            backdropPatternColor: bdPattern,
+            backdropTextColor: bdText,
+            backdropRarityPermille: bdRarity,
+            modelName: mName,
+            modelEmojiId: mId,
+            modelRarityPermille: mRar,
+            symbolName: sName,
+            symbolEmojiId: sId,
+            symbolRarityPermille: sRar,
+            totalUpgradedText: totalUpgradedText,
+            maxUpgradedText: maxUpgradedText,
+            modelCustom: modelCustom,
+            symbolCustom: symbolCustom,
+            senderText: senderText,
+            ownerText: ownerText,
+            hostEnabled: hostEnabled,
+            hostText: hostText,
+            ownerAddressEnabled: ownerAddressEnabled,
+            ownerAddressText: ownerAddressText,
+            dateText: dateText,
+            valueCurrencyText: valueCurrencyText,
+            valueAmountText: valueAmountText,
+            valueUsdAmountText: valueUsdAmountText,
+            lastResaleCurrencyText: lastResaleCurrencyText,
+            lastResaleAmountText: lastResaleAmountText,
+            lastResaleDateText: lastResaleDateText
+        )
+    }
+
+    private func load() {
+        let c = viewModel.starGiftUniqueSpoofConfig.normalized
+        targetMode = c.targetMode
+        suppressGiftReset = (giftName != c.giftName)  // setting giftName below would otherwise wipe selections
+        giftName = c.giftName
+        title = c.title
+        numText = c.numText
+        selectedBackdropName = c.backdropName
+        bdCenter = c.backdropCenterColor
+        bdEdge = c.backdropEdgeColor
+        bdPattern = c.backdropPatternColor
+        bdText = c.backdropTextColor
+        bdRarity = c.backdropRarityPermille
+        totalUpgradedText = c.totalUpgradedText
+        maxUpgradedText = c.maxUpgradedText
+        modelCustom = c.modelCustom
+        symbolCustom = c.symbolCustom
+        senderText = c.senderText
+        ownerText = c.ownerText
+        hostEnabled = c.hostEnabled
+        hostText = c.hostText
+        ownerAddressEnabled = c.ownerAddressEnabled
+        ownerAddressText = c.ownerAddressText
+        dateText = c.dateText
+        valueCurrencyText = c.valueCurrencyText
+        valueAmountText = c.valueAmountText
+        valueUsdAmountText = c.valueUsdAmountText
+        lastResaleCurrencyText = c.lastResaleCurrencyText
+        lastResaleAmountText = c.lastResaleAmountText
+        lastResaleDateText = c.lastResaleDateText
+        let permilleToPct: (Int32) -> String = { $0 == 0 ? "" : String(format: "%g", Double($0) / 10.0) }
+        if c.modelCustom {
+            modelCustomName = (c.modelName == "Custom") ? "" : c.modelName
+            modelCustomId = c.modelEmojiId != 0 ? String(c.modelEmojiId) : ""
+            modelCustomPct = permilleToPct(c.modelRarityPermille)
+        } else {
+            selectedModelName = c.modelName; modelEmojiId = c.modelEmojiId; modelRarity = c.modelRarityPermille
+        }
+        if c.symbolCustom {
+            symbolCustomName = (c.symbolName == "Custom") ? "" : c.symbolName
+            symbolCustomId = c.symbolEmojiId != 0 ? String(c.symbolEmojiId) : ""
+            symbolCustomPct = permilleToPct(c.symbolRarityPermille)
+        } else {
+            selectedSymbolName = c.symbolName; symbolEmojiId = c.symbolEmojiId; symbolRarity = c.symbolRarityPermille
+        }
+        viewModel.loadUniqueGiftCatalogIfNeeded()
+        if !c.giftName.isEmpty { viewModel.loadUniqueGiftBackdrops(forGift: c.giftName) }
     }
 }
 

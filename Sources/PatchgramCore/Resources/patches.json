@@ -1010,6 +1010,19 @@
         },
         {
           "category" : "accounts",
+          "constructorId" : "help.appconfig#dd18782e",
+          "disabledBehavior" : "Keeps Telegram's original app config and frozen state.",
+          "id" : "binary.account.freeze",
+          "kind" : "accountFreeze",
+          "methodName" : "help.getAppConfig / help.appConfig",
+          "replacements" : [],
+          "riskNote" : "This is a local client-side display patch on the app config response. It does not freeze or change your account on the server; only what your client displays changes.",
+          "summary" : "Installs a local runtime hook that injects freeze_since_date / freeze_until_date / freeze_appeal_url into the help.appConfig response, so Telegram Desktop shows the account as frozen. The since date is the moment the patch is active (today); until is a fixed far-future date.",
+          "supportedBuildNote" : "Hooks the MTProto help.appConfig response and edits its JSON object with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
+          "title" : "Account freeze"
+        },
+        {
+          "category" : "accounts",
           "constructorId" : "payments.getstarstransactions#69da4557 / payments.starsstatus.balance",
           "disabledBehavior" : "Restores Telegram's original MTPstarsTonAmount to CreditsAmount conversion.",
           "id" : "binary.display.custom_ton",
@@ -1415,6 +1428,19 @@
           "summary" : "Installs a local runtime hook that rewrites the saved star gifts in the payments.savedStarGifts response before Telegram reads it, so a profile's gifts show the sender, date, gift id and Stars price you configure. Each value is optional (0 = leave the original).",
           "supportedBuildNote" : "Hooks the MTProto gift-list response and rewrites it with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
           "title" : "Spoof profile gifts"
+        },
+        {
+          "category" : "gifts",
+          "constructorId" : "payments.savedstargifts#95f389b1 / stargiftunique#85f0a9cd",
+          "disabledBehavior" : "Keeps Telegram's original unique gifts and their data.",
+          "id" : "binary.gifts.spoof_unique",
+          "kind" : "starGiftUniqueSpoof",
+          "methodName" : "payments.getSavedStarGifts / payments.savedStarGifts",
+          "replacements" : [],
+          "riskNote" : "This is a local client-side display patch on the gift list response. It does not mint, upgrade or change any gift server-side; only what your client displays changes. Gift data is sourced from api.changes.tg (@GiftChanges).",
+          "summary" : "Installs a local runtime hook that rewrites the upgraded (unique) star gifts in the payments.savedStarGifts response, so a profile's unique gift shows the title, unique number and backdrop (colours from an upgradable gift on api.changes.tg) you choose. Sender and date are reused from the Spoof profile gifts settings.",
+          "supportedBuildNote" : "Hooks the MTProto gift-list response and rewrites the starGiftUnique attributes with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
+          "title" : "Spoof profile unique gifts"
         },
         {
           "category" : "gifts",
