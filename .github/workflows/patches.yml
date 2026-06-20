@@ -36,7 +36,8 @@ jobs:
           # 1.1.0: patches.json gained the Gifts category + the starGiftSpoof rule kind; older apps can't
           # decode the new rule kind, so they must reject this bundle.
           # 1.1.1: patches.json gained the accountFreeze + starGiftUniqueSpoof rule kinds (same reason).
-          MIN_APP="1.1.1"
+          # 1.2.0: patches.json gained the giftFakeTransfer rule kind (same reason).
+          MIN_APP="1.2.0"
           KEY="$RUNNER_TEMP/patchgram-signing.pem"
           printf '%s' "$PATCHGRAM_SIGNING_KEY" > "$KEY"
           ./scripts/build-patch-bundle.sh "$VERSION" "$MIN_APP" "$KEY" "$RUNNER_TEMP/dist" "Patch bundle $GITHUB_REF_NAME"

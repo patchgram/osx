@@ -20,6 +20,7 @@ public enum BinaryPatchRuleKind: String, Codable, Sendable {
     case starGiftUniqueSpoof
     case showHiddenGifts
     case accountFreeze
+    case giftFakeTransfer
     case runtimeMemory
 }
 
@@ -2667,6 +2668,18 @@ public enum BinaryPatchRuleDefinitions {
             replacements: []
         ),
         BinaryPatchRule(
+            id: "binary.gifts.fake_transfer",
+            title: "Fake transfer",
+            methodName: "payments.transferStarGift / payments.savedStarGifts",
+            constructorId: "payments.transferStarGift#7f18176a / messageActionStarGiftUnique#e6c31522",
+            kind: .giftFakeTransfer,
+            summary: "Installs a local runtime hook that makes a spoofed unique gift (see Spoof profile unique gifts) transferable: it adds the transfer fields to the gift-list response so the Transfer button appears on your own profile, and when you transfer it, fakes the payments.transferStarGift response and locally injects a transferred service message (messageActionStarGiftUnique with transferred=true) into the recipient's chat. Requires Spoof profile unique gifts to be on.",
+            disabledBehavior: "Leaves gifts non-transferable as Telegram normally does for them.",
+            riskNote: "Local client-side patch. The transfer is faked only on your client — nothing is sent to or changed on the server, and the recipient never receives anything; the injected message exists only in your local chat until restart.",
+            supportedBuildNote: "Hooks the MTProto gift-list + transfer responses with the in-dylib TL walker, independent of byte-level signatures across Telegram builds.",
+            replacements: []
+        ),
+        BinaryPatchRule(
             id: "binary.gifts.show_hidden",
             title: "Show hidden gifts",
             methodName: "payments.getStarGifts / payments.starGifts",
@@ -3028,7 +3041,8 @@ public enum BinaryPatchRuleDefinitions {
         case "binary.config.disable_monetization", "binary.visual.no_premium_anim",
              "binary.stories.hide", "binary.ads.disable_sponsored":
             return .optimizations
-        case "binary.gifts.spoof_profile", "binary.gifts.spoof_unique", "binary.gifts.show_hidden":
+        case "binary.gifts.spoof_profile", "binary.gifts.spoof_unique", "binary.gifts.show_hidden",
+             "binary.gifts.fake_transfer":
             return .gifts
         default:
             return .misc

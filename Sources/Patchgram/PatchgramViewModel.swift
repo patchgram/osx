@@ -36,6 +36,7 @@ struct BinaryRuleRowState: Identifiable, Hashable {
         "binary.stickers.recent_limit",
         "binary.gifts.spoof_profile",
         "binary.gifts.spoof_unique",
+        "binary.gifts.fake_transfer",
         "binary.gifts.show_hidden",
         "binary.account.freeze"
     ]
@@ -393,6 +394,7 @@ final class PatchgramViewModel: ObservableObject {
         "binary.stickers.recent_limit",
         "binary.gifts.spoof_profile",
         "binary.gifts.spoof_unique",
+        "binary.gifts.fake_transfer",
         "binary.gifts.show_hidden",
         "binary.account.freeze"
     ]

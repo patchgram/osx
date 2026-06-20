@@ -228,6 +228,7 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let giftSpoofAuctionTitle: String
     let giftSpoofGiftNum: Int32
     let giftSpoofWasRefunded: Bool
+    let giftFakeTransferEnabled: Bool
     let giftUniqueEnabled: Bool
     let giftUniqueTargetMode: BotVerificationTargetMode
     let giftUniqueGiftName: String
@@ -407,6 +408,7 @@ public final class BinaryPatchEngine {
     private static let fragmentPhoneRuleId = "binary.visual.fragment_phone"
     private static let starGiftSpoofRuleId = "binary.gifts.spoof_profile"
     private static let starGiftUniqueSpoofRuleId = "binary.gifts.spoof_unique"
+    private static let giftFakeTransferRuleId = "binary.gifts.fake_transfer"
     private static let showHiddenGiftsRuleId = "binary.gifts.show_hidden"
     private static let customListUsernamesRuleId = "binary.visual.custom_list_usernames"
     private static let visualPeerBadgeRuleId = "binary.visual.peer_badge"
@@ -477,6 +479,7 @@ public final class BinaryPatchEngine {
         fragmentPhoneRuleId,
         starGiftSpoofRuleId,
         starGiftUniqueSpoofRuleId,
+        giftFakeTransferRuleId,
         showHiddenGiftsRuleId,
         accountFreezeRuleId,
         customListUsernamesRuleId,
@@ -2161,6 +2164,7 @@ public final class BinaryPatchEngine {
             giftSpoofAuctionTitle: starGiftSpoofConfig.auctionTitle.trimmingCharacters(in: .whitespacesAndNewlines),
             giftSpoofGiftNum: starGiftSpoofConfig.giftNumber,
             giftSpoofWasRefunded: starGiftSpoofConfig.wasRefunded,
+            giftFakeTransferEnabled: enabled.contains(Self.giftFakeTransferRuleId),
             giftUniqueEnabled: enabled.contains(Self.starGiftUniqueSpoofRuleId),
             giftUniqueTargetMode: starGiftUniqueSpoofConfig.targetMode,
             giftUniqueGiftName: starGiftUniqueSpoofConfig.giftName,

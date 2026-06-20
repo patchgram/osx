@@ -1,7 +1,6 @@
-Release 1.1.1
+Release 1.2.0
 
-- **New "Spoof profile unique gifts" patch** (Gifts, dylib). Makes a profile's gift show as an upgraded (unique) gift — locally — by rewriting the `payments.savedStarGifts` response. In its Settings window you pick an upgradable gift (catalog from `api.changes.tg`) or **Empty** for fully-custom ids, then set the title, unique number, model, symbol, backdrop, issued/total counts, value and last-resale, and identity (sender, owner, host, owner address, date). Works on already-unique gifts and converts regular gifts to unique; for a converted gift it also answers the value-details request locally so it shows instead of failing. Live "Save & Apply" with whose-profile targeting.
-- **Account freeze** subpatch (Custom account settings): shows your account as frozen — locally — by injecting freeze dates and an appeal URL into the `help.appConfig` response.
-- Fixed a rare crash when switching channels/chats with gift spoofing active.
+- **New "Fake transfer" patch** (Gifts, dylib). Makes a spoofed gift transferable and fakes the transfer — locally. It adds a **Transfer** button to the gift on your own profile and in the gift-send window, and when you transfer it, a "transferred" service message appears in the recipient's chat. Requires **Spoof profile unique gifts**.
+  - **Safe:** with it on, even a real gift is never actually transferred — the request is invalidated, so nothing reaches the server and the recipient receives nothing. The injected message is local-only and disappears on restart.
 
-Run "Update patches" to pull the matching patch bundle (this bundle requires app 1.1.1+).
+Run "Update patches" to pull the matching patch bundle (this bundle requires app 1.2.0+).

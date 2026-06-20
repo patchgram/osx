@@ -502,6 +502,7 @@ static uint32_t g_gift_spoof_logs = 0;
 // (sourced from api.changes.tg). It has its OWN date (g_unique_date); sender falls back to the base
 // Spoof-profile-gifts sender when this patch leaves it 0. Model/symbol stickers are left as-is for now.
 static int g_gift_unique_enabled = 0;
+static int g_fake_transfer_enabled = 0;   // makes spoofed unique gifts transferable + fakes the transfer
 static enum PatchgramTargetMode g_gift_unique_target_mode = PatchgramTargetOnlySelf;
 static char g_unique_gift_name[128] = {0};   // chosen gift name → title fallback when title is empty
 static char g_unique_title[256] = {0};       // starGiftUnique.title; empty = use the gift name
@@ -2533,6 +2534,7 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     // Spoof profile UNIQUE gifts: title/num + backdrop (name + colours + rarity). sender/date are reused
     // from the base giftSpoof* values above.
     g_gift_unique_enabled = patchgram_json_bool(json, "giftUniqueEnabled", false) ? 1 : 0;
+    g_fake_transfer_enabled = patchgram_json_bool(json, "giftFakeTransferEnabled", false) ? 1 : 0;
     {
         char unique_title[256]; unique_title[0] = 0;
         patchgram_json_string(json, "giftUniqueTitle", unique_title, sizeof(unique_title));
@@ -6860,13 +6862,29 @@ static uint8_t *patchgram_unique_build(const uint8_t *old, size_t old_len,
     static uint8_t symbuf[180]; size_t sym_len = 0;
     if (want_symbol) { patchgram_tl_write_string(symbuf, &sym_len, g_unique_symbol_name); }
 
-    const int MAXE = PATCHGRAM_MAX_GIFT_ENTRIES * 5;
+    static const uint8_t zero8[8] = {0};  // transfer_stars = 0 (free transfer) for the fake-transfer button
+    const int MAXE = PATCHGRAM_MAX_GIFT_ENTRIES * 7;
     struct PatchgramGiftEdit *edits = (struct PatchgramGiftEdit *)calloc((size_t)MAXE, sizeof(*edits));
     uint8_t *blobs = (uint8_t *)calloc((size_t)gc, PATCHGRAM_UNIQUE_BLOB_MAX);  // built unique blobs (mode B)
-    if (!edits || !blobs) { free(edits); free(blobs); return NULL; }
+    uint8_t *flagbufs = (uint8_t *)calloc((size_t)gc, 4);  // per-gift rewritten savedStarGift flags (fake transfer)
+    if (!edits || !blobs || !flagbufs) { free(edits); free(blobs); free(flagbufs); return NULL; }
     int ne = 0;
     for (int g = 0; g < gc; g++) {
         struct PatchgramGiftEntry *e = &rw->entries[g];
+        // Fake transfer: add savedStarGift.transfer_stars (flags.8 = 0) so unique->starsForTransfer >= 0 and
+        // tdesktop shows a working Transfer button. Insert at the gift_num position (correct field order for
+        // f8) and set the flag bit — only when f8 isn't already present and no field of order >f8 / <f19 is
+        // present (else the insert would break field order; skip → no button, no corruption). The rebuild is
+        // re-validated below, so a bad insert is discarded rather than applied.
+        if (g_fake_transfer_enabled && e->flags_off && e->gift_num_at
+            && !(e->saved_flags & (1u << 8))
+            && !(e->saved_flags & ((1u << 13) | (1u << 15) | (1u << 16) | (1u << 18)))
+            && ne + 2 <= MAXE) {
+            uint32_t *fl = (uint32_t *)(flagbufs + (size_t)g * 4);
+            *fl = e->saved_flags | (1u << 8);
+            edits[ne].off = e->flags_off; edits[ne].oldlen = 4; edits[ne].rep = (const uint8_t *)fl; edits[ne].replen = 4; ne++;
+            edits[ne].off = e->gift_num_at; edits[ne].oldlen = 0; edits[ne].rep = zero8; edits[ne].replen = 8; ne++;
+        }
         if (e->is_unique) {
             if (want_title && e->u_title_off && e->u_title_len) {
                 edits[ne].off = e->u_title_off; edits[ne].oldlen = e->u_title_len; edits[ne].rep = titlebuf; edits[ne].replen = title_len; ne++;
@@ -6893,7 +6911,7 @@ static uint8_t *patchgram_unique_build(const uint8_t *old, size_t old_len,
             }
         }
     }
-    if (ne == 0) { free(edits); free(blobs); return NULL; }
+    if (ne == 0) { free(edits); free(blobs); free(flagbufs); return NULL; }
     for (int i = 1; i < ne; i++) {  // sort by offset
         struct PatchgramGiftEdit key = edits[i]; int j = i - 1;
         while (j >= 0 && edits[j].off > key.off) { edits[j + 1] = edits[j]; j--; }
@@ -6901,10 +6919,10 @@ static uint8_t *patchgram_unique_build(const uint8_t *old, size_t old_len,
     }
     long long delta = 0;
     for (int i = 0; i < ne; i++) { delta += (long long)edits[i].replen - (long long)edits[i].oldlen; }
-    if ((long long)old_len + delta <= 0) { free(edits); free(blobs); return NULL; }
+    if ((long long)old_len + delta <= 0) { free(edits); free(blobs); free(flagbufs); return NULL; }
     size_t new_len = (size_t)((long long)old_len + delta);
     uint8_t *buf = (uint8_t *)malloc(new_len);
-    if (!buf) { free(edits); free(blobs); return NULL; }
+    if (!buf) { free(edits); free(blobs); free(flagbufs); return NULL; }
     size_t src = 0, dst = 0; bool ok = true;
     for (int i = 0; i < ne && ok; i++) {
         if (edits[i].off < src || edits[i].off + edits[i].oldlen > old_len) { ok = false; break; }
@@ -6916,7 +6934,7 @@ static uint8_t *patchgram_unique_build(const uint8_t *old, size_t old_len,
     if (ok && src <= old_len && dst + (old_len - src) <= new_len) {
         memcpy(buf + dst, old + src, old_len - src); dst += old_len - src;
     } else { ok = false; }
-    free(edits); free(blobs);  // blob bytes already copied into buf
+    free(edits); free(blobs); free(flagbufs);  // blob bytes already copied into buf
     if (!ok || dst != new_len) { free(buf); return NULL; }
     if (!patchgram_savedgifts_valid(buf, dst)) { free(buf); return NULL; }
     *out_len = dst;
@@ -6959,6 +6977,337 @@ static bool patchgram_unique_writeback(void *response, uint32_t *words, int64_t 
     return false;
 }
 
+// ===================== Fake transfer (binary.gifts.fake_transfer) =====================
+// Captures the recipient peer from each payments.transferStarGift request, then replaces the
+// (consumed-once) Updates response with a fabricated `updates` carrying a transferred
+// messageActionStarGiftUnique service message in the recipient's chat. pts=0/pts_count=0 + seq=0 make it
+// apply immediately (no gap check, no getDifference). Nothing is sent server-side; local-only.
+#define PATCHGRAM_TL_TRANSFER_STAR_GIFT 0x7f18176au
+#define PATCHGRAM_TL_INPUT_SAVED_GIFT_USER 0x69279795u
+#define PATCHGRAM_TL_INPUT_SAVED_GIFT_CHAT 0xf101aa7fu
+#define PATCHGRAM_TL_INPUT_SAVED_GIFT_SLUG 0x2085c238u
+#define PATCHGRAM_TL_INPUT_PEER_USER_FULL 0xdde8a54cu
+#define PATCHGRAM_TL_INPUT_PEER_CHANNEL_FULL 0x27bcbbfcu
+#define PATCHGRAM_TL_INPUT_PEER_CHAT_FULL 0x35a95cb9u
+#define PATCHGRAM_TL_UPDATES 0x74ae4240u
+#define PATCHGRAM_TL_UPDATE_NEW_MESSAGE 0x1f2b0afdu
+#define PATCHGRAM_TL_MESSAGE_SERVICE 0x7a800e0au
+#define PATCHGRAM_TL_MSG_ACTION_STAR_GIFT_UNIQUE 0xe6c31522u
+
+// A sticker Document captured from the gift list — used as the model/pattern fallback when building the
+// gift inside the transfer message, so it renders (tdesktop requires model/pattern document->sticker()).
+static uint8_t g_transfer_src_doc[4096];
+static size_t g_transfer_src_doc_len = 0;
+static int g_fake_transfer_logs = 0;
+// Distinct message id per fake transfer so re-transferring (same peer) doesn't collide with a previous
+// fake message (same id → tdesktop dedups/replaces it). High base keeps it above real msg ids.
+static uint32_t g_fake_transfer_msg_seq = 0;
+
+struct PatchgramTransferReq { int32_t request_id; int peer_type; int64_t peer_id; };
+static struct PatchgramTransferReq g_transfer_reqs[PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS] = {0};
+static int g_transfer_req_head = 0;
+static pthread_mutex_t g_transfer_req_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void patchgram_track_transfer_req(int32_t id, int pt, int64_t pid) {
+    if (id == 0) { return; }
+    pthread_mutex_lock(&g_transfer_req_mutex);
+    g_transfer_reqs[g_transfer_req_head].request_id = id;
+    g_transfer_reqs[g_transfer_req_head].peer_type = pt;
+    g_transfer_reqs[g_transfer_req_head].peer_id = pid;
+    g_transfer_req_head = (g_transfer_req_head + 1) % PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS;
+    pthread_mutex_unlock(&g_transfer_req_mutex);
+}
+static bool patchgram_take_transfer_req(int32_t id, int *pt, int64_t *pid) {
+    if (id == 0) { return false; }
+    bool found = false;
+    pthread_mutex_lock(&g_transfer_req_mutex);
+    for (int i = 0; i < PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS; i++) {
+        if (g_transfer_reqs[i].request_id == id) {
+            *pt = g_transfer_reqs[i].peer_type; *pid = g_transfer_reqs[i].peer_id;
+            g_transfer_reqs[i].request_id = 0; found = true; break;
+        }
+    }
+    pthread_mutex_unlock(&g_transfer_req_mutex);
+    return found;
+}
+
+// Advance `*off` past one InputPeer (the fixed-size variants we expect). False on unknown → caller bails.
+static bool patchgram_skip_input_peer(const uint8_t *b, size_t len, size_t *off) {
+    if (*off + 4 > len) { return false; }
+    uint32_t c; memcpy(&c, b + *off, 4); *off += 4;
+    switch (c) {
+        case PATCHGRAM_TL_INPUT_PEER_SELF: return true;                       // no fields
+        case PATCHGRAM_TL_INPUT_PEER_CHAT_FULL: *off += 8; return *off <= len;    // chat_id
+        case PATCHGRAM_TL_INPUT_PEER_USER_FULL:                               // user_id + access_hash
+        case PATCHGRAM_TL_INPUT_PEER_CHANNEL_FULL: *off += 16; return *off <= len; // channel_id + access_hash
+        default: return false;
+    }
+}
+
+// Parse a payments.transferStarGift request → recipient (peer_type 0 user / 1 channel / 2 chat, peer_id)
+// + request id. False on anything unexpected (then no fake is attempted).
+static bool patchgram_transfer_request_peer(void *request_ref, int32_t *id_out, int *pt_out, int64_t *pid_out) {
+    if (!request_ref) { return false; }
+    void *request_data = NULL; memcpy(&request_data, request_ref, sizeof(request_data));
+    if (!request_data) { return false; }
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) { return false; }
+    if (words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION] != PATCHGRAM_TL_TRANSFER_STAR_GIFT) { return false; }
+    const uint8_t *b = (const uint8_t *)(words + PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION);
+    size_t len = (size_t)(wc - PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) * sizeof(uint32_t);
+    size_t off = 4;  // past the transferStarGift ctor
+    if (off + 4 > len) { return false; }
+    uint32_t sg; memcpy(&sg, b + off, 4); off += 4;          // stargift: InputSavedStarGift
+    if (sg == PATCHGRAM_TL_INPUT_SAVED_GIFT_USER) { off += 4; }                                    // msg_id:int
+    else if (sg == PATCHGRAM_TL_INPUT_SAVED_GIFT_CHAT) { if (!patchgram_skip_input_peer(b, len, &off)) { return false; } off += 8; }  // peer + saved_id
+    else if (sg == PATCHGRAM_TL_INPUT_SAVED_GIFT_SLUG) { if (!patchgram_tl_skip_string(b, len, &off)) { return false; } }
+    else { return false; }
+    if (off + 4 > len) { return false; }
+    uint32_t pc; memcpy(&pc, b + off, 4); off += 4;          // to_id: InputPeer
+    int64_t pid = 0; int pt = 0;
+    if (pc == PATCHGRAM_TL_INPUT_PEER_USER_FULL) { pt = 0; if (off + 8 > len) { return false; } memcpy(&pid, b + off, 8); }
+    else if (pc == PATCHGRAM_TL_INPUT_PEER_CHANNEL_FULL) { pt = 1; if (off + 8 > len) { return false; } memcpy(&pid, b + off, 8); }
+    else if (pc == PATCHGRAM_TL_INPUT_PEER_CHAT_FULL) { pt = 2; if (off + 8 > len) { return false; } memcpy(&pid, b + off, 8); }
+    else if (pc == PATCHGRAM_TL_INPUT_PEER_SELF) { pt = 0; pid = (int64_t)g_self_user_id; }
+    else { return false; }
+    if (pid == 0) { return false; }
+    int32_t rid = 0; memcpy(&rid, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(rid));
+    if (rid == 0) { return false; }
+    *id_out = rid; *pt_out = pt; *pid_out = pid;
+    return true;
+}
+
+// Build the fabricated `updates` with a transferred service message in the recipient's chat. Returns a
+// malloc'd word buffer (caller installs Qt-borrowed; never freed — small, user-triggered) + *wc_out, or
+// NULL when the message gift couldn't be built (no renderable model/pattern doc → no fake, error shows).
+static uint32_t *patchgram_build_transfer_updates(int peer_type, int64_t peer_id, int32_t now, int64_t *wc_out) {
+    if (wc_out) { *wc_out = 0; }
+    static uint8_t giftblob[PATCHGRAM_UNIQUE_BLOB_MAX];
+    size_t glen = patchgram_build_unique_blob(giftblob, sizeof giftblob, 0, g_transfer_src_doc, g_transfer_src_doc_len);
+    if (glen == 0) { return NULL; }
+    const uint32_t peer_ctor = patchgram_peer_ctor(peer_type);
+    const int have_self = (g_self_user_id != 0);
+    const size_t cap = glen + 256;
+    uint8_t *out = (uint8_t *)calloc(cap, 1);
+    if (!out) { return NULL; }
+    size_t p = 0;
+#define PG_PUT_U32(v) do { if (p + 4 > cap) { free(out); return NULL; } uint32_t _t=(uint32_t)(v); memcpy(out+p,&_t,4); p+=4; } while(0)
+#define PG_PUT_I64(v) do { if (p + 8 > cap) { free(out); return NULL; } int64_t _t=(int64_t)(v); memcpy(out+p,&_t,8); p+=8; } while(0)
+#define PG_PUT_BLOB(s,n) do { if (p + (n) > cap) { free(out); return NULL; } memcpy(out+p,(s),(n)); p+=(n); } while(0)
+    PG_PUT_U32(PATCHGRAM_TL_UPDATES);                 // updates#74ae4240
+    PG_PUT_U32(PATCHGRAM_TL_VECTOR_ID); PG_PUT_U32(1);// updates: Vector<Update> count=1
+    PG_PUT_U32(PATCHGRAM_TL_UPDATE_NEW_MESSAGE);      // updateNewMessage
+    // message: messageService#7a800e0a
+    {
+        uint32_t mflags = (1u << 1);                  // out
+        if (have_self) { mflags |= (1u << 8); }       // from_id
+        PG_PUT_U32(PATCHGRAM_TL_MESSAGE_SERVICE);
+        PG_PUT_U32(mflags);
+        PG_PUT_U32(0x70000000u + (g_fake_transfer_msg_seq++ & 0x0fffffffu)); // unique high local-only id
+        if (have_self) { PG_PUT_U32(PATCHGRAM_TL_PEER_USER); PG_PUT_I64((int64_t)g_self_user_id); } // from_id
+        PG_PUT_U32(peer_ctor); PG_PUT_I64(peer_id);   // peer_id (recipient)
+        PG_PUT_U32((uint32_t)now);                    // date
+        // action: messageActionStarGiftUnique#e6c31522
+        uint32_t aflags = (1u << 1) | (1u << 7);      // transferred + peer/saved_id
+        if (have_self) { aflags |= (1u << 6); }       // from_id
+        PG_PUT_U32(PATCHGRAM_TL_MSG_ACTION_STAR_GIFT_UNIQUE);
+        PG_PUT_U32(aflags);
+        PG_PUT_BLOB(giftblob, glen);                  // gift: StarGift
+        if (have_self) { PG_PUT_U32(PATCHGRAM_TL_PEER_USER); PG_PUT_I64((int64_t)g_self_user_id); } // from_id (f6)
+        PG_PUT_U32(peer_ctor); PG_PUT_I64(peer_id);   // peer (f7)
+        PG_PUT_I64(0);                                 // saved_id (f7)
+    }
+    PG_PUT_U32(0);                                     // pts (0 + count 0 → applied without gap check)
+    PG_PUT_U32(0);                                     // pts_count
+    PG_PUT_U32(PATCHGRAM_TL_VECTOR_ID); PG_PUT_U32(0); // users (empty)
+    PG_PUT_U32(PATCHGRAM_TL_VECTOR_ID); PG_PUT_U32(0); // chats (empty)
+    PG_PUT_U32((uint32_t)now);                         // date
+    PG_PUT_U32(0);                                     // seq (0 → skip the seq gate)
+#undef PG_PUT_U32
+#undef PG_PUT_I64
+#undef PG_PUT_BLOB
+    if (p & 3u) { free(out); return NULL; }
+    if (wc_out) { *wc_out = (int64_t)(p / sizeof(uint32_t)); }
+    return (uint32_t *)out;
+}
+
+static void patchgram_apply_transfer_response(void *response) {
+    if (!response || !g_fake_transfer_enabled) { return; }
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+    int pt = 0; int64_t pid = 0;
+    if (!patchgram_take_transfer_req(request_id, &pt, &pid)) { return; }  // only OUR transferStarGift
+    int32_t now = (int32_t)time(NULL);
+    int64_t wc = 0;
+    uint32_t *reply = patchgram_build_transfer_updates(pt, pid, now, &wc);
+    if (!reply || wc <= 0) { free(reply); return; }
+    void *data_header = NULL;  // Qt-borrowed buffer (consumed once via applyUpdates), like fragment phone
+    memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_D_OFFSET, &data_header, sizeof(data_header));
+    memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, &reply, sizeof(reply));
+    memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &wc, sizeof(wc));
+    if (g_fake_transfer_logs < 32) {
+        g_fake_transfer_logs++;
+        patchgram_log("FAKE TRANSFER reqId=%d -> peer(type=%d id=%lld) words=%lld self=%lld srcDoc=%zu",
+                      (int)request_id, pt, (long long)pid, (long long)wc,
+                      (long long)g_self_user_id, g_transfer_src_doc_len);
+    }
+}
+
+// Before transferStarGift, tdesktop ALWAYS fetches a payment form via getPaymentForm(inputInvoiceStarGiftTransfer)
+// — the server rejects it for a not-really-unique gift with STARGIFT_NOT_UNIQUE, so the transfer never starts.
+// tdesktop's getPaymentForm fail handler treats the error "NO_PAYMENT_NEEDED" as a FREE transfer → it then
+// sends the direct transferStarGift (which patchgram_apply_transfer_response fakes). So: rewrite the rpc_error
+// message to "NO_PAYMENT_NEEDED" in place (same 20-byte TL span as STARGIFT_NOT_UNIQUE) for OUR form request.
+#define PATCHGRAM_TL_GET_PAYMENT_FORM 0x37148dbbu
+#define PATCHGRAM_TL_INPUT_INVOICE_STAR_GIFT_TRANSFER 0x4a5f5bd9u
+#define PATCHGRAM_TL_RPC_ERROR 0x2144ca19u
+static int32_t g_transfer_form_request_ids[PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS] = {0};
+static int g_transfer_form_request_head = 0;
+static pthread_mutex_t g_transfer_form_request_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void patchgram_track_transfer_form_request(int32_t id) {
+    if (id == 0) { return; }
+    pthread_mutex_lock(&g_transfer_form_request_mutex);
+    g_transfer_form_request_ids[g_transfer_form_request_head] = id;
+    g_transfer_form_request_head = (g_transfer_form_request_head + 1) % PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS;
+    pthread_mutex_unlock(&g_transfer_form_request_mutex);
+}
+static bool patchgram_take_transfer_form_request(int32_t id) {
+    if (id == 0) { return false; }
+    bool found = false;
+    pthread_mutex_lock(&g_transfer_form_request_mutex);
+    for (int i = 0; i < PATCHGRAM_MAX_TRACKED_GIFT_REQUESTS; i++) {
+        if (g_transfer_form_request_ids[i] == id) { g_transfer_form_request_ids[i] = 0; found = true; break; }
+    }
+    pthread_mutex_unlock(&g_transfer_form_request_mutex);
+    return found;
+}
+// getPaymentForm#37148dbb { flags:#, invoice:InputInvoice, ... } — true when invoice is a star-gift transfer.
+static bool patchgram_transfer_form_request_id(void *request_ref, int32_t *id_out) {
+    if (!request_ref) { return false; }
+    void *request_data = NULL; memcpy(&request_data, request_ref, sizeof(request_data));
+    if (!request_data) { return false; }
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 2) { return false; }
+    if (words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION] != PATCHGRAM_TL_GET_PAYMENT_FORM) { return false; }
+    // body: getPaymentForm ctor, flags, then the invoice ctor (InputInvoice).
+    if (words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 2] != PATCHGRAM_TL_INPUT_INVOICE_STAR_GIFT_TRANSFER) { return false; }
+    int32_t rid = 0; memcpy(&rid, (const uint8_t *)request_data + PATCHGRAM_REQUEST_DATA_REQUEST_ID_OFFSET, sizeof(rid));
+    if (rid == 0) { return false; }
+    *id_out = rid;
+    return true;
+}
+static void patchgram_apply_transfer_form_response(void *response) {
+    if (!response || !g_fake_transfer_enabled) { return; }
+    int32_t request_id = 0;
+    memcpy(&request_id, (const uint8_t *)response + PATCHGRAM_RESPONSE_REQUEST_ID_OFFSET, sizeof(request_id));
+    if (!patchgram_take_transfer_form_request(request_id)) { return; }  // only OUR getPaymentForm(transfer)
+    uint32_t *words = NULL; int64_t word_count = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&word_count, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(word_count));
+    if (!words || word_count < 3) { return; }
+    uint8_t *body = (uint8_t *)words;
+    size_t bytelen = (size_t)word_count * sizeof(uint32_t);
+    uint32_t top = 0; memcpy(&top, body, 4);
+    if (top != PATCHGRAM_TL_RPC_ERROR) { return; }   // a real form succeeded → leave it
+    // rpc_error{ error_code:int, error_message:string } — message at offset 8.
+    size_t moff = 8, mend = 8;
+    if (!patchgram_tl_skip_string(body, bytelen, &mend)) { return; }
+    const size_t old_span = mend - moff;
+    const char *msg = "NO_PAYMENT_NEEDED";
+    const size_t new_span = patchgram_tl_string_length(msg);
+    if (new_span <= old_span) {
+        size_t w = moff;
+        patchgram_tl_write_string(body, &w, msg);
+        if (old_span > new_span) { memset(body + moff + new_span, 0, old_span - new_span); }
+        if (g_fake_transfer_logs < 32) {
+            g_fake_transfer_logs++;
+            patchgram_log("FAKE TRANSFER form reqId=%d rpc_error -> NO_PAYMENT_NEEDED (oldSpan=%zu)",
+                          (int)request_id, old_span);
+        }
+    }
+}
+
+// The gift send/transfer window queries getSavedStarGifts with exclude_* filters, so the server returns
+// nothing for the unique-spoof to rewrite. Strip those bare-bool exclude flags from the OUTGOING request
+// so the server returns the full gift list (which the unique-spoof then rewrites → spoofed gifts show in
+// that window too). Preserves flags.6 (collection_id, has data) and the non-exclude bools.
+static int g_fake_transfer_strip_logs = 0;
+static void patchgram_strip_saved_gifts_excludes(void *request_ref) {
+    if (!request_ref) { return; }
+    void *request_data = NULL; memcpy(&request_data, request_ref, sizeof(request_data));
+    if (!request_data) { return; }
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 1) { return; }
+    if (words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION] != PATCHGRAM_TL_GET_SAVED_STAR_GIFTS) { return; }
+    const uint32_t mask = (1u<<0)|(1u<<1)|(1u<<2)|(1u<<4)|(1u<<7)|(1u<<8)|(1u<<10); // exclude_* bare bools
+    uint32_t *flags = &words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 1];
+    const uint32_t before = *flags;
+    if ((before & mask) == 0) { return; }  // no excludes (e.g. the profile request) → leave it
+    *flags = before & ~mask;
+    if (g_fake_transfer_strip_logs < 16) {
+        g_fake_transfer_strip_logs++;
+        patchgram_log("FAKE TRANSFER strip excludes: getSavedStarGifts flags %#x -> %#x", before, *flags);
+    }
+}
+
+// Real-NFT protection: overwrite the stargift InputSavedStarGift (at body offset `off`) with a bogus
+// inputSavedStarGiftSlug of the SAME byte span, so the server can't resolve it (STARGIFT_SLUG_INVALID) and
+// NEVER actually transfers a real gift — the fake transfer is then purely local. Returns true if rewritten.
+static bool patchgram_invalidate_stargift(uint8_t *body, size_t bytelen, size_t off) {
+    if (off + 4 > bytelen) { return false; }
+    uint32_t sg; memcpy(&sg, body + off, 4);
+    size_t end = off + 4;
+    if (sg == PATCHGRAM_TL_INPUT_SAVED_GIFT_USER) { end += 4; }                                       // msg_id:int
+    else if (sg == PATCHGRAM_TL_INPUT_SAVED_GIFT_CHAT) { if (!patchgram_skip_input_peer(body, bytelen, &end)) { return false; } end += 8; } // peer + saved_id
+    else if (sg == PATCHGRAM_TL_INPUT_SAVED_GIFT_SLUG) { if (!patchgram_tl_skip_string(body, bytelen, &end)) { return false; } }
+    else { return false; }
+    if (end > bytelen) { return false; }
+    const size_t span = end - off;
+    if (span < 8 || (span & 3u)) { return false; }
+    const size_t slen = span - 5;  // 4 (ctor) + 1 (len byte) + slen == span, with 1+slen a multiple of 4
+    if (slen > 250) { return false; }
+    uint32_t slug_ctor = PATCHGRAM_TL_INPUT_SAVED_GIFT_SLUG;
+    memcpy(body + off, &slug_ctor, 4);
+    size_t w = off + 4;
+    body[w++] = (uint8_t)slen;
+    for (size_t i = 0; i < slen; i++) { body[w++] = 'x'; }   // bogus, non-resolvable slug
+    while (w < off + span) { body[w++] = 0; }                // residual padding (normally none)
+    return true;
+}
+
+static int g_fake_transfer_protect_logs = 0;
+static void patchgram_protect_real_gift(void *request_ref) {
+    if (!request_ref) { return; }
+    void *request_data = NULL; memcpy(&request_data, request_ref, sizeof(request_data));
+    if (!request_data) { return; }
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, (const uint8_t *)request_data + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) { return; }
+    const uint32_t top = words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION];
+    size_t off;
+    if (top == PATCHGRAM_TL_TRANSFER_STAR_GIFT) {
+        off = 4;  // transferStarGift { stargift, to_id } — stargift right after the ctor
+    } else if (top == PATCHGRAM_TL_GET_PAYMENT_FORM
+               && wc > PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 2
+               && words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 2] == PATCHGRAM_TL_INPUT_INVOICE_STAR_GIFT_TRANSFER) {
+        off = 12;  // getPaymentForm { flags, invoice: inputInvoiceStarGiftTransfer { stargift, to_id } }
+    } else {
+        return;
+    }
+    uint8_t *body = (uint8_t *)(words + PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION);
+    size_t bytelen = (size_t)(wc - PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) * sizeof(uint32_t);
+    if (patchgram_invalidate_stargift(body, bytelen, off) && g_fake_transfer_protect_logs < 16) {
+        g_fake_transfer_protect_logs++;
+        patchgram_log("FAKE TRANSFER protect: stargift -> bogus slug (top=%#x off=%zu)", top, off);
+    }
+}
+
 static void patchgram_apply_gift_unique_response(void *response) {
     if (!response || !g_gift_unique_enabled) { return; }
     patchgram_load_unique_docs();  // restore previously-captured model/symbol docs (once)
@@ -6979,6 +7328,20 @@ static void patchgram_apply_gift_unique_response(void *response) {
     rw.date = g_unique_date;                         // this patch's own date (0 = leave the original)
     rw.gift_num = g_unique_num;                      // keep savedStarGift.gift_num in sync (when present)
     const int applied = patchgram_tl_rewrite_saved_star_gifts((uint8_t *)words, (size_t)word_count * sizeof(uint32_t), &rw);
+    // Fake transfer: stash a real sticker Document from this gift list to use as the model/pattern
+    // fallback when building the gift inside the (later) transfer message, so it renders.
+    if (g_fake_transfer_enabled) {
+        const size_t total = (size_t)word_count * sizeof(uint32_t);
+        for (int gi = 0; gi < rw.gift_count; gi++) {
+            struct PatchgramGiftEntry *e = &rw.entries[gi];
+            if (e->sticker_doc_off && e->sticker_doc_len && e->sticker_doc_len <= sizeof g_transfer_src_doc
+                && e->sticker_doc_off + e->sticker_doc_len <= total) {
+                memcpy(g_transfer_src_doc, (const uint8_t *)words + e->sticker_doc_off, e->sticker_doc_len);
+                g_transfer_src_doc_len = e->sticker_doc_len;
+                break;
+            }
+        }
+    }
     size_t new_len = 0;
     uint8_t *buf = patchgram_unique_build((const uint8_t *)words, (size_t)word_count * sizeof(uint32_t), &rw, &new_len);
     bool wrote = false;
@@ -7230,6 +7593,10 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
             patchgram_apply_gift_unique_response(response);
             patchgram_apply_unique_value_info_response(response);  // the gift's "value" details sheet
         }
+        if (g_fake_transfer_enabled) {
+            patchgram_apply_transfer_form_response(response);  // turn the form's STARGIFT_NOT_UNIQUE into "free"
+            patchgram_apply_transfer_response(response);       // fake the transfer + inject the local message
+        }
         if (g_gift_spoof_enabled) {
             patchgram_capture_emoji_doc_response(response);
             patchgram_apply_gift_spoof_response(response);
@@ -7277,6 +7644,18 @@ static void patchgram_session_send_prepared(void *session, void *request_ref, in
         if (patchgram_unique_value_info_request_id(request_ref, &value_info_request_id)) {
             patchgram_track_unique_value_info_request(value_info_request_id);
         }
+    }
+    if (g_fake_transfer_enabled) {
+        int32_t tr_id = 0; int tr_pt = 0; int64_t tr_pid = 0;
+        if (patchgram_transfer_request_peer(request_ref, &tr_id, &tr_pt, &tr_pid)) {
+            patchgram_track_transfer_req(tr_id, tr_pt, tr_pid);
+        }
+        int32_t form_id = 0;
+        if (patchgram_transfer_form_request_id(request_ref, &form_id)) {
+            patchgram_track_transfer_form_request(form_id);
+        }
+        patchgram_strip_saved_gifts_excludes(request_ref);  // show spoofed gifts in the send/transfer window
+        patchgram_protect_real_gift(request_ref);           // bogus slug → never transfer a REAL gift (after tracking to_id)
     }
     patchgram_log_custom_username_request_tl(request_ref, ms_can_wait);
     int32_t custom_username_full_user_request_id = 0;

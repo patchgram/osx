@@ -1444,6 +1444,19 @@
         },
         {
           "category" : "gifts",
+          "constructorId" : "payments.transferstargift#7f18176a / messageactionstargiftunique#e6c31522",
+          "disabledBehavior" : "Leaves gifts non-transferable as Telegram normally does for them.",
+          "id" : "binary.gifts.fake_transfer",
+          "kind" : "giftFakeTransfer",
+          "methodName" : "payments.transferStarGift / payments.savedStarGifts",
+          "replacements" : [],
+          "riskNote" : "Local client-side patch. The transfer is faked only on your client — nothing is sent to or changed on the server, and the recipient never receives anything; the injected message exists only in your local chat until restart.",
+          "summary" : "Installs a local runtime hook that makes a spoofed unique gift (see Spoof profile unique gifts) transferable: it adds the transfer fields to the gift-list response so the Transfer button appears on your own profile, and when you transfer it, fakes the payments.transferStarGift response and locally injects a transferred service message (messageActionStarGiftUnique with transferred=true) into the recipient's chat. Requires Spoof profile unique gifts to be on.",
+          "supportedBuildNote" : "Hooks the MTProto gift-list + transfer responses with the in-dylib TL walker, independent of byte-level signatures across Telegram builds.",
+          "title" : "Fake transfer"
+        },
+        {
+          "category" : "gifts",
           "constructorId" : "payments.getstargifts#c4563590 / payments.stargifts#2ed82995",
           "disabledBehavior" : "Shows only the gifts Telegram returns.",
           "id" : "binary.gifts.show_hidden",

@@ -1140,7 +1140,7 @@ final class BinaryPatchEngineTests: XCTestCase {
             BinaryPatchRuleDefinitions.builtInRules.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        XCTAssertEqual(BinaryPatchRuleCatalog.rules.count, 31)
+        XCTAssertEqual(BinaryPatchRuleCatalog.rules.count, 32)
         for rule in BinaryPatchRuleCatalog.rules {
             let seed = try XCTUnwrap(builtInById[rule.id], "no built-in seed for \(rule.id)")
             XCTAssertEqual(rule, seed, "patches.json round-trip mismatch for \(rule.id)")
@@ -1150,7 +1150,7 @@ final class BinaryPatchEngineTests: XCTestCase {
     func testPatchBundleVerifierAcceptsSignedBundleAndRejectsTampering() throws {
         let provider = PatchgramResourceProvider()
         let manifestData = provider.bundledData(named: "patch-manifest.json")
-        let signature = try XCTUnwrap(Data(base64Encoded: "MNcbHsscnhKmA7Dt4DIXSeahzOvuoaUBR/R/xYFCNyUonMimNhLGTyryrxzkrw9jDnXNQbAHZFb1+LMT/255Bg=="))
+        let signature = try XCTUnwrap(Data(base64Encoded: "iM+CTc7X2WfIqLvIEBBJpGEJgELQgKg23fVYdYPNWFg01kKN4Qwah4baHd6Hr/4X+8bRH/ou1g+RKFeW5dx6CA=="))
         let files: [String: Data] = [
             "patches.json": provider.bundledData(named: "patches.json"),
             "engine.c.template": provider.bundledData(named: "engine.c.template")
@@ -1158,21 +1158,21 @@ final class BinaryPatchEngineTests: XCTestCase {
         let verifier = PatchBundleVerifier()
 
         // Valid signed bundle is accepted (proves openssl-signed → CryptoKit-verified, pinned key).
-        let manifest = try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.1.1")
-        XCTAssertEqual(manifest.bundleVersion, 13)
+        let manifest = try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.2.0")
+        XCTAssertEqual(manifest.bundleVersion, 14)
 
         // Tampered file → rejected.
         var tampered = files
         tampered["patches.json"] = Data("tampered".utf8)
-        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: signature, files: tampered, appVersion: "1.1.1"))
+        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: signature, files: tampered, appVersion: "1.2.0"))
 
         // Forged signature → rejected.
         var badSig = signature
         badSig[0] ^= 0xFF
-        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: badSig, files: files, appVersion: "1.1.1"))
+        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: badSig, files: files, appVersion: "1.2.0"))
 
         // App older than minAppVersion → rejected (this bundle requires 1.1.1).
-        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.1.0"))
+        XCTAssertThrowsError(try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.1.1"))
     }
 
     func testResourceProviderPrefersCacheThenFallsBackToBundle() throws {
@@ -1195,7 +1195,7 @@ final class BinaryPatchEngineTests: XCTestCase {
         let provider = PatchgramResourceProvider(cacheDirectory: dir)
 
         // No cache → full bundled catalog.
-        XCTAssertEqual(PatchCatalogLoader.load(provider: provider).count, 31)
+        XCTAssertEqual(PatchCatalogLoader.load(provider: provider).count, 32)
 
         // A written cache bundle (what a verified update produces) is loaded with full fidelity —
         // this is the hot-reload path: writeCacheFiles + reload → catalog reflects the new patches.

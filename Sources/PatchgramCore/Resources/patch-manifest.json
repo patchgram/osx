@@ -1,1 +1,1 @@
-{"bundleVersion":13,"files":{"engine.c.template":"9b9368687103ec368ebef4dd74edb78d8418db5fdb3e9472950ace19151ab413","patches.json":"76d56d9bcef74fec95626560699179ad1f4618a137e17f3e6ecca355260cc91c"},"minAppVersion":"1.1.1","notes":"Patch bundle patches-v13"}
+{"bundleVersion":14,"files":{"engine.c.template":"004de836ea6dc2eec82b6a2a3112add21d520992197fca61d9bce457d245bf0f","patches.json":"2001cff63bb0b20f99b09f405711204424cec6e9bfb073bc4f3553a04d67787b"},"minAppVersion":"1.2.0","notes":"Patch bundle patches-v14"}
