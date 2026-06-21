@@ -218,6 +218,7 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let giftSpoofGiftId: Int64
     let giftSpoofStickerId: Int64
     let giftSpoofStars: Int64
+    let giftSpoofConvertStars: Int64
     let giftSpoofCaption: String
     let giftSpoofAvailable: Int32
     let giftSpoofTotal: Int32
@@ -2154,6 +2155,7 @@ public final class BinaryPatchEngine {
             giftSpoofGiftId: starGiftSpoofConfig.giftId,
             giftSpoofStickerId: starGiftSpoofConfig.stickerEmojiId,
             giftSpoofStars: starGiftSpoofConfig.stars,
+            giftSpoofConvertStars: starGiftSpoofConfig.convertStars,
             giftSpoofCaption: starGiftSpoofConfig.caption.trimmingCharacters(in: .whitespacesAndNewlines),
             giftSpoofAvailable: starGiftSpoofConfig.available,
             giftSpoofTotal: starGiftSpoofConfig.total,

@@ -475,6 +475,7 @@ static int32_t g_gift_spoof_date = 0;
 static int64_t g_gift_spoof_gift_id = 0;
 static int64_t g_gift_spoof_sticker_id = 0;
 static int64_t g_gift_spoof_stars = 0;
+static int64_t g_gift_spoof_convert_stars = 0; // starGift + savedStarGift.convert_stars; 0 = leave
 static char g_gift_spoof_caption[512] = {0};  // empty = leave the gift message unchanged
 static int32_t g_gift_spoof_available = 0;     // starGift.availability_remains; 0 = leave
 static int32_t g_gift_spoof_total = 0;         // starGift.availability_total; 0 = leave
@@ -2519,6 +2520,7 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     g_gift_spoof_gift_id = patchgram_json_i64(json, "giftSpoofGiftId", 0);
     g_gift_spoof_sticker_id = patchgram_json_i64(json, "giftSpoofStickerId", 0);
     g_gift_spoof_stars = patchgram_json_i64(json, "giftSpoofStars", 0);
+    g_gift_spoof_convert_stars = patchgram_json_i64(json, "giftSpoofConvertStars", 0);
     snprintf(g_gift_spoof_caption, sizeof(g_gift_spoof_caption), "%s", gift_spoof_caption);
     g_gift_spoof_available = (int32_t)patchgram_json_i64(json, "giftSpoofAvailable", 0);
     g_gift_spoof_total = (int32_t)patchgram_json_i64(json, "giftSpoofTotal", 0);
@@ -5341,6 +5343,7 @@ struct PatchgramTLRewrite {
     int64_t gift_id;        // 0 = leave unchanged
     int64_t sticker_id;     // 0 = leave; else overwrite the gift sticker Document.id (custom emoji id)
     int64_t stars;          // 0 = leave unchanged
+    int64_t convert_stars;  // 0 = leave; else overwrite starGift + savedStarGift convert_stars
     int32_t available;      // starGift.availability_remains (exact value when force_limited; 0 allowed)
     int32_t total;          // starGift.availability_total (exact value when force_limited; 0 allowed)
     int force_limited;      // when set, supply is authoritative — write available/total verbatim
@@ -5472,6 +5475,11 @@ static void patchgram_gift_rewrite_field(struct PatchgramTLRewrite *rw, uint32_t
     } else if (ctor == PATCHGRAM_TL_STAR_GIFT && p->op == PG_TL_LONG
                && rw->stars && strcmp(name, "stars") == 0) {
         if (r->pos + 8 <= r->len) { int64_t v = rw->stars; memcpy(rw->base + r->pos, &v, 8); rw->applied++; }
+    } else if ((ctor == PATCHGRAM_TL_STAR_GIFT || ctor == PATCHGRAM_TL_SAVED_STAR_GIFT)
+               && p->op == PG_TL_LONG && rw->convert_stars && strcmp(name, "convert_stars") == 0) {
+        // convert-to-Stars value — present on starGift (always) and savedStarGift (flag.4 when set); both
+        // overwritten in place. The displayed "convert to N Stars" reads the savedStarGift one.
+        if (r->pos + 8 <= r->len) { int64_t v = rw->convert_stars; memcpy(rw->base + r->pos, &v, 8); rw->applied++; }
     } else if (ctor == PATCHGRAM_TL_STAR_GIFT && p->op == PG_TL_INT
                && rw->force_limited && strcmp(name, "availability_remains") == 0) {
         // Already-limited gift (flag.0 present) — overwrite supply verbatim (0 = sold out is valid);
@@ -7462,6 +7470,7 @@ static void patchgram_apply_gift_spoof_response(void *response) {
     rw.gift_id = g_gift_spoof_gift_id;
     rw.sticker_id = g_gift_spoof_sticker_id;
     rw.stars = g_gift_spoof_stars;
+    rw.convert_stars = g_gift_spoof_convert_stars;
     rw.available = g_gift_spoof_available;
     rw.total = g_gift_spoof_total;
     rw.force_limited = g_gift_spoof_force_limited;

@@ -1150,7 +1150,7 @@ final class BinaryPatchEngineTests: XCTestCase {
     func testPatchBundleVerifierAcceptsSignedBundleAndRejectsTampering() throws {
         let provider = PatchgramResourceProvider()
         let manifestData = provider.bundledData(named: "patch-manifest.json")
-        let signature = try XCTUnwrap(Data(base64Encoded: "iM+CTc7X2WfIqLvIEBBJpGEJgELQgKg23fVYdYPNWFg01kKN4Qwah4baHd6Hr/4X+8bRH/ou1g+RKFeW5dx6CA=="))
+        let signature = try XCTUnwrap(Data(base64Encoded: "kLPgjEVUcb31nDVEabuV1eLfR81em0pIEWdjUz1coIoN4TxDUdyrITARQc9vWM13zd5+8WoQu3FsTk9S63tBAg=="))
         let files: [String: Data] = [
             "patches.json": provider.bundledData(named: "patches.json"),
             "engine.c.template": provider.bundledData(named: "engine.c.template")
@@ -1159,7 +1159,7 @@ final class BinaryPatchEngineTests: XCTestCase {
 
         // Valid signed bundle is accepted (proves openssl-signed → CryptoKit-verified, pinned key).
         let manifest = try verifier.verify(manifestData: manifestData, signature: signature, files: files, appVersion: "1.2.0")
-        XCTAssertEqual(manifest.bundleVersion, 14)
+        XCTAssertEqual(manifest.bundleVersion, 15)
 
         // Tampered file → rejected.
         var tampered = files

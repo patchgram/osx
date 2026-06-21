@@ -436,6 +436,7 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
         giftIdText: "0",
         stickerEmojiIdText: "0",
         starsText: "0",
+        convertStarsText: "0",
         caption: "",
         availableText: "0",
         totalText: "0",
@@ -454,6 +455,7 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
     public let giftIdText: String          // gift id; 0 = leave unchanged
     public let stickerEmojiIdText: String  // custom emoji id for the sticker; 0 = leave unchanged
     public let starsText: String           // price in Stars; 0 = leave unchanged
+    public let convertStarsText: String    // convert-to-Stars value (starGift + savedStarGift.convert_stars); 0 = leave
     public let caption: String             // gift message/caption; empty = leave unchanged
     public let availableText: String       // availability_remains (supply left); 0 = leave unchanged
     public let totalText: String           // availability_total (total supply); 0 = leave unchanged
@@ -472,6 +474,7 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
         giftIdText: String,
         stickerEmojiIdText: String = "0",
         starsText: String,
+        convertStarsText: String = "0",
         caption: String = "",
         availableText: String = "0",
         totalText: String = "0",
@@ -489,6 +492,7 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
         self.giftIdText = giftIdText
         self.stickerEmojiIdText = stickerEmojiIdText
         self.starsText = starsText
+        self.convertStarsText = convertStarsText
         self.caption = caption
         self.availableText = availableText
         self.totalText = totalText
@@ -502,7 +506,7 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case targetMode, senderIdText, dateText, giftIdText, stickerEmojiIdText, starsText, caption
+        case targetMode, senderIdText, dateText, giftIdText, stickerEmojiIdText, starsText, convertStarsText, caption
         case availableText, totalText, forceLimited, forceUpgrade, forceAuction, upgradePriceText
         case auctionTitle, giftNumberText, wasRefunded
     }
@@ -515,6 +519,7 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
         giftIdText = try c.decodeIfPresent(String.self, forKey: .giftIdText) ?? "0"
         stickerEmojiIdText = try c.decodeIfPresent(String.self, forKey: .stickerEmojiIdText) ?? "0"
         starsText = try c.decodeIfPresent(String.self, forKey: .starsText) ?? "0"
+        convertStarsText = try c.decodeIfPresent(String.self, forKey: .convertStarsText) ?? "0"
         caption = try c.decodeIfPresent(String.self, forKey: .caption) ?? ""
         availableText = try c.decodeIfPresent(String.self, forKey: .availableText) ?? "0"
         totalText = try c.decodeIfPresent(String.self, forKey: .totalText) ?? "0"
@@ -535,6 +540,7 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
             giftIdText: giftIdText.trimmingCharacters(in: .whitespacesAndNewlines),
             stickerEmojiIdText: stickerEmojiIdText.trimmingCharacters(in: .whitespacesAndNewlines),
             starsText: starsText.trimmingCharacters(in: .whitespacesAndNewlines),
+            convertStarsText: convertStarsText.trimmingCharacters(in: .whitespacesAndNewlines),
             caption: caption,
             availableText: availableText.trimmingCharacters(in: .whitespacesAndNewlines),
             totalText: totalText.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -572,6 +578,7 @@ public struct StarGiftSpoofPatchConfig: Codable, Hashable, Sendable {
     public var giftId: Int64 { max(0, Self.longValue(giftIdText)) }
     public var stickerEmojiId: Int64 { max(0, Self.longValue(stickerEmojiIdText)) }
     public var stars: Int64 { max(0, Self.longValue(starsText)) }
+    public var convertStars: Int64 { max(0, Self.longValue(convertStarsText)) }
     public var available: Int32 { Int32(clamping: max(0, Self.longValue(availableText))) }
     public var total: Int32 { Int32(clamping: max(0, Self.longValue(totalText))) }
     public var upgradePrice: Int64 { max(0, Self.longValue(upgradePriceText)) }

@@ -944,6 +944,7 @@ private struct GiftSpoofSettingsView: View {
     @State private var giftIdText = "0"
     @State private var stickerEmojiIdText = "0"
     @State private var starsText = "0"
+    @State private var convertStarsText = "0"
     @State private var caption = ""
     @State private var availableText = "0"
     @State private var totalText = "0"
@@ -1048,6 +1049,8 @@ private struct GiftSpoofSettingsView: View {
 
                     field("Stars price", text: $starsText, prompt: "0 = keep original price")
 
+                    field("Convert (Stars)", text: $convertStarsText, prompt: "0 = keep · the “convert to N Stars” value")
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Badges")
                             .font(.subheadline).bold()
@@ -1116,6 +1119,7 @@ private struct GiftSpoofSettingsView: View {
             giftIdText: giftIdText,
             stickerEmojiIdText: stickerEmojiIdText,
             starsText: starsText,
+            convertStarsText: convertStarsText,
             caption: caption,
             availableText: availableText,
             totalText: totalText,
@@ -1137,6 +1141,7 @@ private struct GiftSpoofSettingsView: View {
         giftIdText = c.giftIdText
         stickerEmojiIdText = c.stickerEmojiIdText
         starsText = c.starsText
+        convertStarsText = c.convertStarsText
         caption = c.caption
         availableText = c.availableText
         totalText = c.totalText
