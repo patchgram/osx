@@ -6743,6 +6743,54 @@ static void patchgram_unique_capture_response(void *response) {
     }
 }
 
+// Capture the chosen HIDDEN-gift emoji documents (by id) from a getCustomEmojiDocuments (bare
+// Vector<Document>) / messages.stickerSet / starGiftUpgradePreview response into g_hidden_doc_* (slot i ↔
+// hidden gift i), so patchgram_inject_hidden_gifts embeds a renderable doc (correct id + access_hash)
+// instead of a swapped-id clone of some other gift's sticker (wrong hash → the chosen emoji never renders).
+// The autoload appends these ids to the client's getCustomEmojiDocuments, so the docs flow by here.
+static void patchgram_capture_hidden_docs(void *response) {
+    if (!response || !g_show_hidden_gifts_enabled || g_hidden_gift_count <= 0) { return; }
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc < 3) { return; }
+    if (words[0] != PATCHGRAM_TL_VECTOR_ID && words[0] != PATCHGRAM_TL_MESSAGES_STICKER_SET
+        && words[0] != PATCHGRAM_TL_STAR_GIFT_UPGRADE_PREVIEW) { return; }
+    const uint8_t *body = (const uint8_t *)words; const size_t blen = (size_t)wc * sizeof(uint32_t);
+    for (int i = 0; i < g_hidden_gift_count && i < PATCHGRAM_MAX_HIDDEN_GIFTS; i++) {
+        const int64_t want = g_hidden_emoji_ids[i];
+        if (!want || (g_hidden_doc_ids[i] == want && g_hidden_doc_len[i] > 0)) { continue; }  // unset / already have it
+        struct PatchgramTLReader r = { body, blen, 0, false };
+        char s = 0; struct PatchgramTLOut o = { &s, 1, 0, true };
+        struct PatchgramTLRewrite vrw; memset(&vrw, 0, sizeof vrw); vrw.base = (uint8_t *)body; vrw.find_doc_id = want;
+        const uint32_t top = patchgram_tl_u32(&r);
+        if (top == PATCHGRAM_TL_VECTOR_ID) {
+            const int32_t count = (int32_t)patchgram_tl_u32(&r);
+            if (count < 0 || count > 4096) { continue; }
+            for (int32_t j = 0; j < count && !r.err && vrw.found_len == 0; j++) {
+                patchgram_tl_decode_value(0, PG_TL_BOXED, &r, &o, 0, &vrw);
+            }
+        } else {
+            patchgram_tl_decode_ctor(top, &r, &o, 0, false, &vrw);
+        }
+        if (vrw.found_len == 0 || vrw.found_off + vrw.found_len > blen) { continue; }
+        // Slim (drop thumbs) + flip documentAttributeSticker → customEmoji, then store into slot i.
+        static uint8_t slim[1024];
+        size_t slen = patchgram_doc_slim(body + vrw.found_off, vrw.found_len, slim, sizeof slim);
+        if (slen == 0 || slen > sizeof(g_hidden_doc_bytes[0])) { continue; }
+        struct PatchgramTLRewrite frw; memset(&frw, 0, sizeof frw); frw.base = slim; frw.find_sticker_attr = 1;
+        struct PatchgramTLReader rr = { slim, slen, 0, false }; char sk = 0; struct PatchgramTLOut oo = { &sk, 1, 0, true };
+        patchgram_tl_decode_ctor(patchgram_tl_u32(&rr), &rr, &oo, 0, false, &frw);
+        if (frw.sticker_attr_off > 0 && frw.sticker_attr_flags == 0 && frw.sticker_attr_off + 4 <= slen) {
+            uint32_t ce = PATCHGRAM_TL_DOC_ATTR_CUSTOM_EMOJI; memcpy(slim + frw.sticker_attr_off, &ce, 4);
+        }
+        memcpy(g_hidden_doc_bytes[i], slim, slen);
+        g_hidden_doc_len[i] = (uint16_t)slen;
+        g_hidden_doc_ids[i] = want;
+        if (g_hidden_gift_logs < 32) { g_hidden_gift_logs++; patchgram_log("HIDDEN GIFT captured doc id=%lld len=%zu slot=%d", (long long)want, slen, i); }
+    }
+}
+
 // documentAttributeCustomEmoji (so it renders via the custom-emoji path; only when its flags==0). Used to
 // turn a regular gift's sticker into the model/pattern documents of a built starGiftUnique. Returns bytes.
 static size_t patchgram_clone_doc_emoji(const uint8_t *src, size_t src_len, int64_t new_id,
@@ -7618,6 +7666,7 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
             patchgram_apply_gift_spoof_response(response);
         }
         if (g_show_hidden_gifts_enabled) {
+            patchgram_capture_hidden_docs(response);  // grab the chosen emoji docs (autoload-fetched) first
             patchgram_inject_hidden_gifts(response);
         }
         if (g_account_freeze_enabled) {
