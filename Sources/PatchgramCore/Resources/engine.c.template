@@ -6691,7 +6691,14 @@ static void patchgram_unique_store_doc(const uint8_t *body, size_t off, size_t l
         uint32_t ce = PATCHGRAM_TL_DOC_ATTR_CUSTOM_EMOJI; memcpy(slim + frw.sticker_attr_off, &ce, 4);
     }
     int slot = -1;
-    for (int i = 0; i < PATCHGRAM_UNIQUE_DOC_SLOTS; i++) { if (g_unique_doc_ids[i] == emoji_id) { slot = i; break; } }
+    // This cache only ever holds the current config's model + symbol docs, so RESERVE a fixed slot for
+    // each (model→0, symbol→1). Otherwise, once the 4 slots fill with accumulated/stale docs across
+    // sessions, the "first free, else slot 0" fallback pushed BOTH the model and symbol onto slot 0 in
+    // the same view — the symbol (captured second) overwrote the model, so the gift rebuilt with the
+    // original sticker as its model while the symbol rendered fine.
+    if (g_unique_model_emoji_id && emoji_id == g_unique_model_emoji_id) { slot = 0; }
+    else if (g_unique_symbol_emoji_id && emoji_id == g_unique_symbol_emoji_id) { slot = 1; }
+    if (slot < 0) { for (int i = 0; i < PATCHGRAM_UNIQUE_DOC_SLOTS; i++) { if (g_unique_doc_ids[i] == emoji_id) { slot = i; break; } } }
     if (slot < 0) { for (int i = 0; i < PATCHGRAM_UNIQUE_DOC_SLOTS; i++) { if (g_unique_doc_len[i] == 0) { slot = i; break; } } }
     if (slot < 0) { slot = 0; }
     memcpy(g_unique_doc_bytes[slot], slim, slen);
@@ -7636,6 +7643,55 @@ static void patchgram_session_private_try_to_receive(void *session_private) {
     }
 }
 
+// ---- Custom-emoji auto-load BY ID (ported from the Windows build) -------------------------------------
+// The unique-gift model/symbol (and the spoof-gift sticker, hidden-gift emoji) render via the client's
+// customEmojiManager, which needs the chosen custom-emoji DOCUMENT loaded. The client fetches docs by id
+// with messages.getCustomEmojiDocuments and then pulls each returned doc's FULL sticker set. So we APPEND
+// the configured emoji ids to the FIRST getCustomEmojiDocuments the client sends: it then fetches exactly
+// those emoji + their packs (no pack short-names, works for ANY id the user typed), and the reply flows
+// through the existing patchgram_unique_capture_response → a renderable doc for the built gift. One-shot.
+#define PATCHGRAM_TL_GET_CUSTOM_EMOJI_DOCS 0xd9ab0f54u  // messages.getCustomEmojiDocuments{ document_id:Vector<long> }
+static int g_emoji_autoload_done = 0;
+
+// Append `n` longs to the END of the getCustomEmojiDocuments request's document_id:Vector<long> (it is the
+// body's only/last field, so we append + bump the count word — no tail to shift). Grows the Qt6 request
+// QVector: into spare QArrayData capacity if it fits, else a realloc gated on a uniquely-owned (ref==1)
+// header (the request is freshly built + not yet in toSendMap → ref==1; refuse to touch a shared buffer).
+static int patchgram_autoload_append_emoji(void *request_ref, const int64_t *ids, int n) {
+    if (n <= 0 || !request_ref) { return 0; }
+    void *request_data = NULL; memcpy(&request_data, request_ref, sizeof(request_data));
+    if (!request_data) { return 0; }
+    uint8_t *cont = (uint8_t *)request_data;
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, cont + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, cont + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc <= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 3) { return 0; }  // need ctor+vector+count
+    void *d = NULL; memcpy(&d, cont + PATCHGRAM_QVECTOR_D_OFFSET, sizeof(d));
+    const uintptr_t dp = (uintptr_t)d, wp = (uintptr_t)words;
+    const uintptr_t data_off = (wp > dp) ? (wp - dp) : 0;  // QArrayData header -> data distance
+    if (!d || (dp & 7u) != 0 || data_off < 16 || data_off > 64) { return 0; }
+    const int64_t new_wc = wc + (int64_t)n * 2;            // each long = 2 words
+    int64_t cap = 0; memcpy(&cap, (const uint8_t *)d + 8, sizeof(cap));
+    if (new_wc > cap) {
+        int32_t ref = 0; memcpy(&ref, d, sizeof(ref));    // QArrayData::ref — 1 = uniquely owned
+        if (ref != 1) { return 0; }
+        void *nd = realloc(d, (size_t)data_off + (size_t)new_wc * 4);
+        if (!nd) { return 0; }
+        d = nd;
+        int64_t newcap = new_wc; memcpy((uint8_t *)d + 8, &newcap, sizeof(newcap));  // QArrayData::alloc
+        words = (uint32_t *)((uint8_t *)d + data_off);
+        memcpy(cont + PATCHGRAM_QVECTOR_D_OFFSET, &d, sizeof(d));
+        memcpy(cont + PATCHGRAM_QVECTOR_PTR_OFFSET, &words, sizeof(words));
+    }
+    uint8_t *end = (uint8_t *)(words + wc);               // append right after the last existing word
+    for (int i = 0; i < n; i++) { int64_t v = ids[i]; memcpy(end, &v, 8); end += 8; }
+    words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 2] += (uint32_t)n;            // bump Vector<long> count
+    memcpy(cont + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_wc, sizeof(new_wc));           // publish new length
+    words[PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION - 1] =
+        (uint32_t)((new_wc - PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION) * 4);       // message_data_length
+    return 1;
+}
+
 static void patchgram_session_send_prepared(void *session, void *request_ref, int64_t ms_can_wait) {
     patchgram_mtproto_log_request(request_ref);
     if (g_gift_spoof_enabled) {
@@ -7725,6 +7781,43 @@ static void patchgram_session_send_prepared(void *session, void *request_ref, in
                 (long long)ms_can_wait,
                 g_message_fact_check_text
             );
+        }
+    }
+    // Custom-emoji auto-load: append the configured gift emoji ids to the FIRST getCustomEmojiDocuments the
+    // client sends, so the client fetches their docs + full packs BY ID — the model/symbol/sticker the user
+    // typed then renders without manually opening any pack. Reply flows through the existing capture. One-shot.
+    // (MUST be near the end: a realloc inside the append may move the request buffer.)
+    if (!g_emoji_autoload_done &&
+        (g_gift_unique_enabled || g_gift_spoof_enabled || g_show_hidden_gifts_enabled)) {
+        void *rdata = NULL; memcpy(&rdata, request_ref, sizeof(rdata));
+        if (rdata) {
+            uint32_t *w = NULL; int64_t wcount = 0;
+            memcpy(&w, (uint8_t *)rdata + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(w));
+            memcpy(&wcount, (uint8_t *)rdata + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wcount));
+            if (w && wcount >= PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION + 3) {
+                const uint32_t *body = w + PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION;  // [0]=ctor [1]=vector [2]=count
+                if (body[0] == PATCHGRAM_TL_GET_CUSTOM_EMOJI_DOCS && body[1] == PATCHGRAM_TL_VECTOR_ID) {
+                    int64_t ids[3 + PATCHGRAM_MAX_HIDDEN_GIFTS]; int n = 0;
+                    const int cap = (int)(sizeof ids / sizeof ids[0]);
+                    if (g_gift_unique_enabled) {
+                        if (g_unique_model_emoji_id  && n < cap) { ids[n++] = g_unique_model_emoji_id; }
+                        if (g_unique_symbol_emoji_id && n < cap) { ids[n++] = g_unique_symbol_emoji_id; }
+                    }
+                    if (g_gift_spoof_enabled && g_gift_spoof_sticker_id && n < cap) { ids[n++] = g_gift_spoof_sticker_id; }
+                    if (g_show_hidden_gifts_enabled) {
+                        for (int i = 0; i < g_hidden_gift_count && n < cap; i++) {
+                            if (g_hidden_emoji_ids[i]) { ids[n++] = g_hidden_emoji_ids[i]; }
+                        }
+                    }
+                    if (n > 0 && patchgram_autoload_append_emoji(request_ref, ids, n)) {
+                        g_emoji_autoload_done = 1;
+                        patchgram_log(
+                            "EMOJI AUTOLOAD appended %d id(s) to getCustomEmojiDocuments (unique=%d spoof=%d hidden=%d)",
+                            n, g_gift_unique_enabled, (int)g_gift_spoof_enabled, g_show_hidden_gifts_enabled
+                        );
+                    }
+                }
+            }
         }
     }
     if (g_original_session_send_prepared) {
