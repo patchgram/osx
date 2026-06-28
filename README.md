@@ -17,7 +17,8 @@ The patcher groups patches into five sections. Each row links to the code that i
 behavior lives in the injected hook [`engine.c.template`](Sources/PatchgramCore/Resources/engine.c.template),
 and byte-patch / request-rewrite rules are defined in
 [`patches.json`](Sources/PatchgramCore/Resources/patches.json). Plain-language descriptions of every patch
-are in [patchlist.md](patchlist.md) ([RU](patchlist_ru.md)).
+are in [patchlist.md](patchlist.md) ([RU](patchlist_ru.md)). To author a new patch (architecture, how to
+find sites, write/build/ship a patch, tools), see [docs/patch-authoring.md](docs/patch-authoring.md).
 
 > Code links are pinned to commit [`27d6543`](https://github.com/patchgram/osx/tree/27d6543) so the line
 > numbers stay valid as the engine evolves. `engine.c.template:N` = the runtime function; `patches.json:N`
