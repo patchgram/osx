@@ -281,6 +281,7 @@ private struct PatchgramRuntimeConfigFile: Codable {
     let callbackHoverEnabled: Bool
     let blockTypingEnabled: Bool
     let blockReadMessagesEnabled: Bool
+    let hideBlockedEnabled: Bool
     let messageSettingsEnabled: Bool
     let messageTypingEnabled: Bool
     let messageReadReceiptsEnabled: Bool
@@ -423,6 +424,7 @@ public final class BinaryPatchEngine {
     private static let customStarsRuleId = "binary.display.custom_stars"
     private static let blockTypingRuleId = "binary.activity.block_typing"
     private static let blockReadMessagesRuleId = "binary.read_receipts.block_history_read"
+    private static let hideBlockedRuleId = "binary.messages.hide_blocked"
     private static let messageSettingsRuleId = "binary.messages.settings"
     private static let messageTypingAlternativeGroup = "messages.typing.disable"
     private static let messageReadReceiptsAlternativeGroupPrefix = "messages.read_receipts."
@@ -2218,6 +2220,7 @@ public final class BinaryPatchEngine {
             callbackHoverEnabled: enabled.contains(Self.callbackHoverRuleId),
             blockTypingEnabled: enabled.contains(Self.blockTypingRuleId),
             blockReadMessagesEnabled: enabled.contains(Self.blockReadMessagesRuleId),
+            hideBlockedEnabled: enabled.contains(Self.hideBlockedRuleId),
             messageSettingsEnabled: enabled.contains(Self.messageSettingsRuleId),
             messageTypingEnabled: messageTypingOn,
             messageReadReceiptsEnabled: messageReadReceiptsOn,

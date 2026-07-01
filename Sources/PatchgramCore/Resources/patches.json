@@ -23,7 +23,7 @@
             }
           ],
           "riskNote" : "The wrapper only sets DYLD_INSERT_LIBRARIES for Telegram; it does not modify Telegram's own bytes. The dylib's hooks stay inert until a feature patch enables them.",
-          "summary" : "Injects Patchgram.dylib into Telegram Desktop through a DYLD_INSERT_LIBRARIES launcher wrapper. This is the base hook every runtime patch loads through; enabling it on its own loads the dylib with no behavior change so the runtime hooks are present.",
+          "summary" : "Injects Patchgram.dylib into Telegram via a DYLD_INSERT_LIBRARIES launcher — the base hook every runtime patch loads through.",
           "supportedBuildNote" : "Dylib injection installs a DYLD_INSERT_LIBRARIES launcher wrapper and is independent of the Telegram Desktop build version.",
           "title" : "Dylib injection"
         },
@@ -46,7 +46,7 @@
             }
           ],
           "riskNote" : "Cosmetic local overlay drawn by the injected dylib via AppKit; it does not modify Telegram's own bytes or data.",
-          "summary" : "Shows a native AppKit overlay inside Telegram: a floating button opens a panel where you pick a .png OR an animated .tgs sticker plus an animation style; with it on, the chosen image rains over an open profile and auto-follows it. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
+          "summary" : "Rains a chosen image or animated sticker over an open profile, drawn natively by the dylib.",
           "supportedBuildNote" : "The overlay is a native AppKit window, independent of the Telegram Desktop build version.",
           "title" : "Profile rain overlay"
         },
@@ -69,9 +69,32 @@
             }
           ],
           "riskNote" : "Diagnostic only: the dylib observes the request/response buffers it already hooks and appends them to local .log files; it does not modify Telegram's bytes or traffic. The logs can contain sensitive request/response data, so treat the files as private.",
-          "summary" : "Logs every MTProto request Telegram sends and every response it receives, each with a timestamp, to log_<start>.log files inside Telegram.app/Contents/Resources/logs_mtproto_pg. The logger opens its file in the injected dylib's constructor — before Telegram sends its first packet — so the trace is complete from launch. Each line records the direction, request id, TL constructor, and a hex preview of the body. Drawn by Patchgram.dylib — no Telegram bytes are patched.",
+          "summary" : "Logs every MTProto request and response (fully decoded TL, timestamped) to log files next to Telegram.",
           "supportedBuildNote" : "Uses the dylib's existing send/receive hooks; independent of byte-level signatures, so it is resilient across Telegram Desktop builds.",
           "title" : "MTProto request/response logger"
+        },
+        {
+          "category" : "messages",
+          "constructorId" : "hide-blocked",
+          "delivery" : "runtimeMemory",
+          "disabledBehavior" : "Stops hiding blocked users' messages; re-opening the chat shows them again.",
+          "id" : "binary.messages.hide_blocked",
+          "kind" : "runtimeMemory",
+          "methodName" : "messages.getHistory + contacts.getBlocked",
+          "replacements" : [
+            {
+              "alternativeGroup" : "messages.hide_blocked.runtime_flag",
+              "expectedOccurrences" : 1,
+              "id" : "messages.hide_blocked.runtime_flag",
+              "mode" : "toggle",
+              "originalHex" : "",
+              "patchedHex" : ""
+            }
+          ],
+          "riskNote" : "Local display-only filter: it removes blocked users' messages from the history the client shows and changes nothing server-side.",
+          "summary" : "Hides messages from people who are in your blocklist (blocked users).",
+          "supportedBuildNote" : "Uses the dylib's existing send/receive hooks; independent of byte-level signatures, so it is resilient across Telegram Desktop builds.",
+          "title" : "Hide blocked users' messages"
         },
         {
           "category" : "accounts",
@@ -99,7 +122,7 @@
             }
           ],
           "riskNote" : "This is version-sensitive binary patching; Patchgram refuses to patch when the expected instruction windows are not unique.",
-          "summary" : "Patches the serialized account.updateStatus request so its offline Bool is always boolTrue.",
+          "summary" : "Keeps your account offline by forcing the account.updateStatus request to offline.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Always offline"
         },
@@ -209,7 +232,7 @@
             }
           ],
           "riskNote" : "These are client-side serialization patches. Telegram can still update local state; this prevents the patched requests from being serialized with valid MTProto method ids.",
-          "summary" : "Groups message privacy tweaks: block typing activity, block read receipts, keep drafts local, schedule sends locally, and locally inject custom Fact Check blocks.",
+          "summary" : "Groups message-privacy subpatches: typing, read receipts, local drafts, scheduled send, custom Fact Check, copy/save protect, and TTL.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Message settings"
         },
@@ -239,7 +262,7 @@
             }
           ],
           "riskNote" : "This is a local UI patch. It bypasses Telegram's external-link confirmation dialog, including suspicious or mismatched display links.",
-          "summary" : "Skips Telegram's hidden-url confirmation branch so links open directly without the Open this link? warning.",
+          "summary" : "Opens hidden/external links directly, without Telegram's confirmation warning.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Open links without warning"
         },
@@ -262,7 +285,7 @@
             }
           ],
           "riskNote" : "This is a client-side request serialization patch. It only affects the add-contact request path matched by the built-in ARM64 pattern.",
-          "summary" : "Forces the serialized contacts.addContact flags to keep only f_note, preventing add_phone_privacy_exception from being sent.",
+          "summary" : "Stops sending the phone-privacy exception when you add a contact.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Don't share phone when adding contacts"
         },
@@ -324,7 +347,7 @@
             }
           ],
           "riskNote" : "This only changes local client-side limits. Telegram server account/session rules still apply.",
-          "summary" : "Raises Telegram's local account add/menu/storage checks from the upstream 6-account cap to 999 accounts.",
+          "summary" : "Raises the local account limit from 6 to 999.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "999 accounts"
         }
@@ -360,7 +383,7 @@
             }
           ],
           "riskNote" : "This is a local UI patch only. It shows data already present in the message markup and does not send bot callbacks by itself.",
-          "summary" : "Treats bot callback, WebView, and SimpleWebView inline buttons as URL-like for hover/copy text so callback-data is visible locally.",
+          "summary" : "Shows bot inline-button callback data locally on hover/copy.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Show bot callback-data on hover"
         }
@@ -966,7 +989,7 @@
             }
           ],
           "riskNote" : "This is a local runtime patch. It scans known arm64 byte windows on startup/config reload instead of rewriting them on disk, so exact semantic coverage can still differ between Telegram Desktop versions until each path is replaced by a higher-level hook.",
-          "summary" : "Uses Patchgram.dylib to disable selected monetization config, gift/status requests, paid reactions, Premium effects, and local Premium/Stars/Gifts/Boost UI gates at runtime.",
+          "summary" : "Disables Premium, Stars, TON, Gifts, boosts and related monetization UI/requests at runtime.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Disable Premium, Stars, TON & Gifts"
         },
@@ -1004,7 +1027,7 @@
             }
           ],
           "riskNote" : "This is a local UI patch only. Server-side Premium entitlements, payments, boosts, and account state are unchanged.",
-          "summary" : "Forces the current session's local Premium availability stream to report true for UI gates, following 's localPremium behavior.",
+          "summary" : "Makes the client treat Premium as locally available for UI gates.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Local Telegram Premium"
         },
@@ -1017,7 +1040,7 @@
           "methodName" : "help.getAppConfig / help.appConfig",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch on the app config response. It does not freeze or change your account on the server; only what your client displays changes.",
-          "summary" : "Installs a local runtime hook that injects freeze_since_date / freeze_until_date / freeze_appeal_url into the help.appConfig response, so Telegram Desktop shows the account as frozen. The since date is the moment the patch is active (today); until is a fixed far-future date.",
+          "summary" : "Shows your account as frozen locally by injecting freeze dates and an appeal URL into help.appConfig.",
           "supportedBuildNote" : "Hooks the MTProto help.appConfig response and edits its JSON object with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
           "title" : "Account freeze"
         },
@@ -1050,7 +1073,7 @@
             }
           ],
           "riskNote" : "This is still a local display patch; it rewrites the decoded balance amount in the built app and does not change server-side TON data.",
-          "summary" : "Overrides Telegram's local conversion of TON balances from payments.StarsStatus responses, including My TON and payments.getStarsTransactions results.",
+          "summary" : "Locally overrides your displayed TON balance.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Custom TON value"
         },
@@ -1083,7 +1106,7 @@
             }
           ],
           "riskNote" : "This is still a local display patch; it rewrites the decoded balance amount in the built app and does not change server-side Stars data.",
-          "summary" : "Overrides Telegram's local conversion of Stars balances from payments.StarsStatus responses, including My Stars and payments.getStarsTransactions results.",
+          "summary" : "Locally overrides your displayed Stars balance.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Custom Stars value"
         }
@@ -1111,7 +1134,7 @@
             }
           ],
           "riskNote" : "This is a local display behavior change. It does not change Telegram server-side content metadata.",
-          "summary" : "Installs a runtime memory patch for local sensitive-content blur suppression, forcing media sensitivity checks to return false locally.",
+          "summary" : "Disables local sensitive-content blur.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Sensitive blur"
         },
@@ -1134,7 +1157,7 @@
             }
           ],
           "riskNote" : "Local display-only change to the in-panel recent-sticker cap; it does not change server data. The number actually shown is still bounded by how many recent stickers exist (server limit ~200).",
-          "summary" : "Raises the recent stickers display limit from Telegram's default 20 to 200, so the \"Recent\" row in the sticker panel shows many more recently-used stickers. Runtime memory patch on the kRecentDisplayLimit comparison in StickersListWidget::collectRecentStickers.",
+          "summary" : "Raises the Recent stickers panel limit from 20 to 200.",
           "supportedBuildNote" : "Derived from Telegram Desktop 6.9.3 (arm64). Other builds are patched only when the exact byte pattern matches.",
           "title" : "More recent stickers"
         }
@@ -1334,7 +1357,7 @@
             }
           ],
           "riskNote" : "This rewrites local client peer flags only. Server-side account state and Telegram trust labels are unchanged.",
-          "summary" : "Forces a local verification-status flag on peers. Choose Verified, Scam, or Fake, then apply it to all peers, all except your own user, or only your own user.",
+          "summary" : "Adds a local Verified, Scam, or Fake badge to selected peers.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Visual peer badge"
         },
@@ -1347,7 +1370,7 @@
           "methodName" : "UserData::setBotVerifyDetails / ChannelData::setBotVerifyDetails",
           "replacements" : [],
           "riskNote" : "This is a local client-side runtime patch. It does not change Telegram server-side verification state.",
-          "summary" : "Installs a local runtime hook for Telegram's bot verification details. Choose who receives the local bot verification and which preset to use.",
+          "summary" : "Adds local bot-verification details to selected peers.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Bot verification"
         },
@@ -1360,7 +1383,7 @@
           "methodName" : "UserData::setStarsRating",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not change Telegram server-side Stars rating data.",
-          "summary" : "Installs a local runtime hook for Telegram's user Stars rating. Choose who receives the local rating and set level, rating, current_level_rating, and next_level_rating.",
+          "summary" : "Overrides the local Stars level/rating for selected users.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Custom level rating"
         },
@@ -1373,7 +1396,7 @@
           "methodName" : "Info::Profile::PhoneOrHiddenValue",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not change your Telegram account phone number or privacy settings.",
-          "summary" : "Installs a local runtime hook that returns an empty profile phone value for your own user, causing Telegram Desktop to omit the mobile phone row in the self-profile.",
+          "summary" : "Hides the phone row in your own profile.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Hide self phone"
         },
@@ -1386,7 +1409,7 @@
           "methodName" : "UserData::phone / local display user id",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not change your Telegram account phone, real PeerId, authorization, or server state.",
-          "summary" : "Installs a local runtime hook that overrides the phone string stored on your own UserData and provides a local display-only user id for Patchgram visual details.",
+          "summary" : "Locally replaces your own phone number and displayed user id.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Self identity override"
         },
@@ -1399,7 +1422,7 @@
           "methodName" : "UserData::personalChannelId",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not attach a channel to your Telegram account or change server-side profile data.",
-          "summary" : "Installs a local runtime hook that writes a display-only personal channel id into your own UserData so Telegram Desktop shows it as attached in the self-profile.",
+          "summary" : "Locally attaches a channel to your own profile by id.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Local attached channel"
         },
@@ -1412,7 +1435,7 @@
           "methodName" : "Info::Profile::IsCollectiblePhone / fragment.getCollectibleInfo",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not mint or transfer a Fragment collectible phone number.",
-          "summary" : "Installs a local runtime hook that makes selected phone rows look collectible and stores local fragment.collectibleInfo values for the phone collectible dialog.",
+          "summary" : "Makes your phone look collectible (Fragment) with local collectibleInfo values.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Fragment phone"
         },
@@ -1425,7 +1448,7 @@
           "methodName" : "payments.getSavedStarGifts / payments.savedStarGifts",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch on the gift list response. It does not move, mint or change any gift server-side; only what your client displays changes.",
-          "summary" : "Installs a local runtime hook that rewrites the saved star gifts in the payments.savedStarGifts response before Telegram reads it, so a profile's gifts show the sender, date, gift id and Stars price you configure. Each value is optional (0 = leave the original).",
+          "summary" : "Rewrites the star gifts shown on a profile — sender, date, gift id, Stars price and more.",
           "supportedBuildNote" : "Hooks the MTProto gift-list response and rewrites it with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
           "title" : "Spoof profile gifts"
         },
@@ -1438,7 +1461,7 @@
           "methodName" : "payments.getSavedStarGifts / payments.savedStarGifts",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch on the gift list response. It does not mint, upgrade or change any gift server-side; only what your client displays changes. Gift data is sourced from api.changes.tg (@GiftChanges).",
-          "summary" : "Installs a local runtime hook that rewrites the upgraded (unique) star gifts in the payments.savedStarGifts response, so a profile's unique gift shows the title, unique number and backdrop (colours from an upgradable gift on api.changes.tg) you choose. Sender and date are reused from the Spoof profile gifts settings.",
+          "summary" : "Shows a profile's gift as an upgraded (unique) gift with a title, number, model, symbol and backdrop you choose.",
           "supportedBuildNote" : "Hooks the MTProto gift-list response and rewrites the starGiftUnique attributes with the in-dylib TL walker, so it is independent of byte-level signatures across Telegram builds.",
           "title" : "Spoof profile unique gifts"
         },
@@ -1451,7 +1474,7 @@
           "methodName" : "payments.transferStarGift / payments.savedStarGifts",
           "replacements" : [],
           "riskNote" : "Local client-side patch. The transfer is faked only on your client — nothing is sent to or changed on the server, and the recipient never receives anything; the injected message exists only in your local chat until restart.",
-          "summary" : "Installs a local runtime hook that makes a spoofed unique gift (see Spoof profile unique gifts) transferable: it adds the transfer fields to the gift-list response so the Transfer button appears on your own profile, and when you transfer it, fakes the payments.transferStarGift response and locally injects a transferred service message (messageActionStarGiftUnique with transferred=true) into the recipient's chat. Requires Spoof profile unique gifts to be on.",
+          "summary" : "Makes a spoofed gift transferable and fakes the transfer with a local service message. Requires Spoof profile unique gifts.",
           "supportedBuildNote" : "Hooks the MTProto gift-list + transfer responses with the in-dylib TL walker, independent of byte-level signatures across Telegram builds.",
           "title" : "Fake transfer"
         },
@@ -1464,7 +1487,7 @@
           "methodName" : "payments.getStarGifts / payments.starGifts",
           "replacements" : [],
           "riskNote" : "Local client-side display patch on the available-gifts response. The extra gifts are shown locally; buying a gift that the server doesn't actually offer will still fail server-side.",
-          "summary" : "Installs a local runtime hook that appends extra star gifts (price 50 Stars, not limited) to the payments.starGifts response, so they appear in the gift purchase menu. Their stickers use the matching custom emoji (resolved from api.changes.tg).",
+          "summary" : "Adds extra star gifts to the gift-purchase menu locally.",
           "supportedBuildNote" : "Hooks the MTProto available-gifts response and appends entries with the in-dylib TL walker, independent of byte-level signatures.",
           "title" : "Show hidden gifts"
         },
@@ -1477,7 +1500,7 @@
           "methodName" : "Data::UsernamesInfo / fragment.getCollectibleInfo",
           "replacements" : [],
           "riskNote" : "This is a local client-side display patch. It does not reserve, mint, buy, or assign Telegram usernames on the server.",
-          "summary" : "Installs a local runtime hook that replaces the usernames list shown for your self-profile and returns local Fragment collectible info for configured collectible usernames.",
+          "summary" : "Replaces the username list shown on your own profile, with local Fragment collectible info.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Custom list usernames"
         },
@@ -1499,7 +1522,7 @@
             }
           ],
           "riskNote" : "This is a local visual patch. It does not change sticker, Premium, or account state on Telegram servers.",
-          "summary" : "Installs a runtime memory patch that returns from Sticker::checkPremiumEffectStart before Telegram can start premium sticker effects.",
+          "summary" : "Stops Premium sticker/effect animations locally.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Disable premium effects"
         },
@@ -1614,7 +1637,7 @@
             }
           ],
           "riskNote" : "This is a local client-side media display patch. It does not change spoiler metadata already stored on Telegram servers.",
-          "summary" : "Installs runtime memory patches that suppress local media spoiler flags and rendering, so spoiler-marked photos and videos are shown normally.",
+          "summary" : "Shows spoiler-marked photos and videos normally.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Disable media spoilers"
         }
@@ -1786,7 +1809,7 @@
             }
           ],
           "riskNote" : "This blocks the known local receive/fetch paths for stories in the selected ARM64 build. Telegram may add new story request paths in future builds.",
-          "summary" : "Clears local stories state on users/channels and invalidates the known story fetch/read/view request constructors.",
+          "summary" : "Hides stories locally and blocks story fetch/read/view requests.",
           "supportedBuildNote" : "Built-in ARM64 patterns were derived from Telegram Desktop 6.8.4 and 6.8.5. Other builds are patched only when the exact byte patterns match.",
           "title" : "Hide stories"
         }

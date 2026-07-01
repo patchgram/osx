@@ -237,6 +237,12 @@ static bool g_custom_ton_enabled = false;
 static bool g_custom_stars_enabled = false;
 static bool g_block_typing_enabled = false;
 static bool g_block_read_messages_enabled = false;
+static bool g_hide_blocked_enabled = false;   // Messages patch: hide messages from blocklisted users
+// Blocked user ids captured from contacts.blocked / contacts.blockedSlice responses (open-addressing set).
+#define PATCHGRAM_BLOCKED_CAP 16384           // power of two; ~12k blocked users at 0.75 load
+static uint64_t g_blocked_ids[PATCHGRAM_BLOCKED_CAP] = {0};
+static int g_blocked_count = 0;
+static int g_hide_blocked_logs = 0;
 static bool g_message_settings_enabled = false;
 static bool g_message_typing_enabled = false;
 static bool g_message_read_receipts_enabled = false;
@@ -2660,6 +2666,7 @@ static bool patchgram_load_runtime_config(const char *config_path, bool apply_me
     g_custom_stars_enabled = patchgram_json_bool(json, "customStarsEnabled", false);
     g_block_typing_enabled = patchgram_json_bool(json, "blockTypingEnabled", false);
     g_block_read_messages_enabled = patchgram_json_bool(json, "blockReadMessagesEnabled", false);
+    g_hide_blocked_enabled = patchgram_json_bool(json, "hideBlockedEnabled", false);
     g_message_settings_enabled = patchgram_json_bool(json, "messageSettingsEnabled", false);
     g_message_typing_enabled = patchgram_json_bool(json, "messageTypingEnabled", false);
     g_message_read_receipts_enabled = patchgram_json_bool(json, "messageReadReceiptsEnabled", false);
@@ -5282,6 +5289,18 @@ struct PatchgramTLOut { char *buf; size_t cap; size_t len; bool full; };
 #define PATCHGRAM_TL_PEER_USER 0x59511722u
 #define PATCHGRAM_TL_PEER_CHANNEL 0xa2a5371eu
 #define PATCHGRAM_TL_PEER_CHAT 0x36c6019au
+// Hide-blocked-users patch (Messages): history responses + the blocklist.
+#define PATCHGRAM_TL_MESSAGE 0x7600b9d3u                 // message#7600b9d3 (flags@+4, flags2@+8, id@+12, from_id:flags.8?Peer@+16)
+#define PATCHGRAM_TL_MESSAGE_EMPTY 0x90a6ca84u
+#define PATCHGRAM_TL_MESSAGES_MESSAGES 0x1d73e7eau       // { messages:Vector<Message>, topics, chats, users }
+#define PATCHGRAM_TL_MESSAGES_SLICE 0x5f206716u          // { flags, count, ..., messages:Vector<Message>, ... }
+#define PATCHGRAM_TL_MESSAGES_CHANNEL 0xc776ba4eu        // { flags, pts, count, ..., messages:Vector<Message>, ... }
+#define PATCHGRAM_TL_CONTACTS_BLOCKED 0x0ade1591u        // { blocked:Vector<PeerBlocked>, chats, users }
+#define PATCHGRAM_TL_CONTACTS_BLOCKED_SLICE 0xe1664194u  // { count:int, blocked:Vector<PeerBlocked>, chats, users }
+#define PATCHGRAM_TL_PEER_BLOCKED 0xe8fd8014u            // peerBlocked { peer_id:Peer, date:int } — fixed 20 bytes
+#define PATCHGRAM_TL_CONTACTS_BLOCK 0x2e2e8734u          // contacts.block { flags, my_stories_from?, id:InputPeer }
+#define PATCHGRAM_TL_CONTACTS_UNBLOCK 0xb550d328u        // contacts.unblock { flags, my_stories_from?, id:InputPeer }
+#define PATCHGRAM_TL_INPUT_PEER_USER 0xdde8a54cu         // inputPeerUser { user_id:long, access_hash:long }
 #define PATCHGRAM_TL_DOCUMENT 0x8fd4c4d8u
 #define PATCHGRAM_TL_TEXT_WITH_ENTITIES 0x751f3146u
 #define PATCHGRAM_TL_PAYMENTS_STAR_GIFTS 0x2ed82995u       // payments.starGifts (available-gifts response)
@@ -5376,6 +5395,8 @@ struct PatchgramTLRewrite {
     int find_first_doc;     // when != 0, capture the FIRST Document of any id (clone template)
     int find_gifts_end;     // when != 0, capture the offset where payments.starGifts.gifts ends
     size_t gifts_end_off;   // = start of the `chats` field (used as a well-formed-response guard)
+    int find_msgs;          // when != 0, capture where the top-level `messages` vector begins (hide-blocked)
+    size_t msgs_vec_off;    // byte offset of the messages Vector ctor word (0 = not seen)
 };
 
 static const struct PatchgramTLCtor *patchgram_tl_find(uint32_t id) {
@@ -5711,6 +5732,12 @@ static void patchgram_tl_decode_ctor(uint32_t id, struct PatchgramTLReader *r,
         if (rw && rw->find_gifts_end && id == PATCHGRAM_TL_PAYMENTS_STAR_GIFTS
             && strcmp(pname0, "chats") == 0) {
             rw->gifts_end_off = r->pos;  // gifts vector ends here; insert injected gifts before chats
+        }
+        // Hide-blocked: record where the top-level `messages` Vector begins in a history response.
+        if (rw && rw->find_msgs && rw->msgs_vec_off == 0 && strcmp(pname0, "messages") == 0
+            && (id == PATCHGRAM_TL_MESSAGES_MESSAGES || id == PATCHGRAM_TL_MESSAGES_SLICE
+                || id == PATCHGRAM_TL_MESSAGES_CHANNEL)) {
+            rw->msgs_vec_off = r->pos;   // points at the messages Vector ctor word
         }
         if (p->op == PG_TL_FLAGS) {
             const size_t flags_pos = r->pos;
@@ -7623,6 +7650,164 @@ static void patchgram_mtproto_log_response(void *response) {
     patchgram_mtproto_log_emit("<- RESPONSE", request_id, words, word_count, 0);
 }
 
+// ---- Hide messages from blocklisted users (Messages patch) ------------------------------------------
+// Blocked user ids are captured from contacts.blocked / contacts.blockedSlice responses (Telegram fetches
+// the blocklist itself — blocked_mode — and whenever the Blocked-users settings open). History responses
+// (messages.messages / messagesSlice / channelMessages) then have every message whose sender (from_id) is
+// blocked removed, in place (SHRINK ONLY — never grow/realloc), and the walk bails without touching the
+// buffer on any decode anomaly so a malformed response can never be corrupted or crash the client.
+#define PATCHGRAM_BLOCKED_TOMBSTONE 0xFFFFFFFFFFFFFFFFULL   // a removed (unblocked) slot; keep probing past it
+static void patchgram_blocked_add(uint64_t id) {
+    if (!id || id == PATCHGRAM_BLOCKED_TOMBSTONE) { return; }
+    if (g_blocked_count >= (PATCHGRAM_BLOCKED_CAP * 3) / 4) { return; }
+    size_t h = (size_t)((id * 11400714819323198485ULL) >> 48) & (PATCHGRAM_BLOCKED_CAP - 1);
+    long first_free = -1;
+    for (int probe = 0; probe < PATCHGRAM_BLOCKED_CAP; probe++) {
+        uint64_t slot = g_blocked_ids[h];
+        if (slot == id) { return; }                             // already present
+        if (slot == 0) {                                        // end of probe chain → insert
+            size_t at = (first_free >= 0) ? (size_t)first_free : h;
+            g_blocked_ids[at] = id; g_blocked_count++; return;
+        }
+        if (slot == PATCHGRAM_BLOCKED_TOMBSTONE && first_free < 0) { first_free = (long)h; }
+        h = (h + 1) & (PATCHGRAM_BLOCKED_CAP - 1);
+    }
+    if (first_free >= 0) { g_blocked_ids[first_free] = id; g_blocked_count++; }
+}
+static int patchgram_blocked_has(uint64_t id) {
+    if (!id || id == PATCHGRAM_BLOCKED_TOMBSTONE || g_blocked_count == 0) { return 0; }
+    size_t h = (size_t)((id * 11400714819323198485ULL) >> 48) & (PATCHGRAM_BLOCKED_CAP - 1);
+    for (int probe = 0; probe < PATCHGRAM_BLOCKED_CAP; probe++) {
+        uint64_t slot = g_blocked_ids[h];
+        if (slot == 0) { return 0; }
+        if (slot == id) { return 1; }
+        h = (h + 1) & (PATCHGRAM_BLOCKED_CAP - 1);
+    }
+    return 0;
+}
+// Unblock: drop an id from the set (tombstone the slot) so the patch stops hiding that user immediately.
+static void patchgram_blocked_remove(uint64_t id) {
+    if (!id || id == PATCHGRAM_BLOCKED_TOMBSTONE || g_blocked_count == 0) { return; }
+    size_t h = (size_t)((id * 11400714819323198485ULL) >> 48) & (PATCHGRAM_BLOCKED_CAP - 1);
+    for (int probe = 0; probe < PATCHGRAM_BLOCKED_CAP; probe++) {
+        uint64_t slot = g_blocked_ids[h];
+        if (slot == 0) { return; }                              // not present
+        if (slot == id) { g_blocked_ids[h] = PATCHGRAM_BLOCKED_TOMBSTONE; g_blocked_count--; return; }
+        h = (h + 1) & (PATCHGRAM_BLOCKED_CAP - 1);
+    }
+}
+
+// Capture blocked user ids from a contacts.blocked / contacts.blockedSlice response. Each peerBlocked is a
+// fixed 20 bytes (ctor + 12-byte Peer + int date); we validate the ctor of every entry and bail on mismatch.
+static void patchgram_capture_blocked_response(void *response) {
+    if (!response || !g_hide_blocked_enabled) { return; }
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc < 4) { return; }
+    size_t vec_word;                                   // word index of the `blocked` Vector ctor
+    if (words[0] == PATCHGRAM_TL_CONTACTS_BLOCKED) { vec_word = 1; }          // [ctor][vector][count][items…]
+    else if (words[0] == PATCHGRAM_TL_CONTACTS_BLOCKED_SLICE) { vec_word = 2; } // [ctor][count][vector][count][items…]
+    else { return; }
+    if ((int64_t)vec_word + 2 >= wc || words[vec_word] != PATCHGRAM_TL_VECTOR_ID) { return; }
+    int32_t count = (int32_t)words[vec_word + 1];
+    if (count < 0 || count > 100000) { return; }
+    const uint8_t *base = (const uint8_t *)words; const size_t blen = (size_t)wc * 4;
+    const size_t items_off = (vec_word + 2) * 4;
+    int added = 0;
+    for (int32_t i = 0; i < count; i++) {
+        const size_t it = items_off + (size_t)i * 20;  // peerBlocked = 20 bytes (ctor + 12B Peer + int)
+        if (it + 20 > blen) { break; }
+        uint32_t pbc; memcpy(&pbc, base + it, 4);
+        if (pbc != PATCHGRAM_TL_PEER_BLOCKED) { break; }   // stride assumption broke → stop safely
+        uint32_t pc; memcpy(&pc, base + it + 4, 4);
+        if (pc == PATCHGRAM_TL_PEER_USER) {
+            uint64_t uid; memcpy(&uid, base + it + 8, 8);
+            patchgram_blocked_add(uid); added++;
+        }
+    }
+    if (added && g_hide_blocked_logs < 16) {
+        g_hide_blocked_logs++;
+        patchgram_log("HIDE BLOCKED captured %d blocked user id(s) (total known=%d)", added, g_blocked_count);
+    }
+}
+
+// Is a single history message element (span [s,e)) from a blocked user? Reads from_id from its fixed prefix
+// (message: flags@+4 flags2@+8 id@+12 from_id@+16; messageService: flags@+4 id@+8 from_id@+12).
+static int patchgram_msg_from_blocked(const uint8_t *base, size_t s, size_t e) {
+    if (s + 8 > e) { return 0; }
+    uint32_t ctor; memcpy(&ctor, base + s, 4);
+    uint32_t flags; size_t from_off;
+    if (ctor == PATCHGRAM_TL_MESSAGE) { memcpy(&flags, base + s + 4, 4); from_off = s + 16; }
+    else if (ctor == PATCHGRAM_TL_MESSAGE_SERVICE) { memcpy(&flags, base + s + 4, 4); from_off = s + 12; }
+    else { return 0; }                                 // messageEmpty / unknown → keep
+    if (!(flags & 0x100u)) { return 0; }               // no from_id (flags.8) → keep (e.g. private-chat peer)
+    if (from_off + 12 > e) { return 0; }
+    uint32_t pctor; memcpy(&pctor, base + from_off, 4);
+    if (pctor != PATCHGRAM_TL_PEER_USER) { return 0; } // only user senders can be blocked
+    uint64_t uid; memcpy(&uid, base + from_off + 4, 8);
+    return patchgram_blocked_has(uid);
+}
+
+// Remove blocked users' messages from a history response, in place. Compacts survivors + the trailing
+// (topics/chats/users) fields leftward and shrinks the buffer; never grows. Bails (no change) on anomaly.
+static void patchgram_hide_blocked_messages_response(void *response) {
+    if (!response || !g_hide_blocked_enabled || g_blocked_count == 0) { return; }
+    uint32_t *words = NULL; int64_t wc = 0;
+    memcpy(&words, (const uint8_t *)response + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(words));
+    memcpy(&wc, (const uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wc));
+    if (!words || wc < 4) { return; }
+    if (words[0] != PATCHGRAM_TL_MESSAGES_MESSAGES && words[0] != PATCHGRAM_TL_MESSAGES_SLICE
+        && words[0] != PATCHGRAM_TL_MESSAGES_CHANNEL) { return; }
+    uint8_t *base = (uint8_t *)words; const size_t blen = (size_t)wc * 4;
+
+    // 1. Locate the top-level messages Vector via the schema walker (its position varies by ctor).
+    struct PatchgramTLReader r = { base, blen, 0, false };
+    char s = 0; struct PatchgramTLOut o = { &s, 1, 0, true };
+    struct PatchgramTLRewrite frw; memset(&frw, 0, sizeof frw); frw.base = base; frw.find_msgs = 1;
+    patchgram_tl_decode_ctor(patchgram_tl_u32(&r), &r, &o, 0, false, &frw);
+    if (r.err || frw.msgs_vec_off == 0 || frw.msgs_vec_off + 8 > blen) { return; }
+    const size_t vec_off = frw.msgs_vec_off;
+    uint32_t vecid; memcpy(&vecid, base + vec_off, 4);
+    if (vecid != PATCHGRAM_TL_VECTOR_ID) { return; }
+    int32_t count; memcpy(&count, base + vec_off + 4, 4);
+    if (count <= 0 || count > 100000) { return; }
+
+    // 2. Walk the items; compact survivors down as we go (decode each to find its span; drop if blocked).
+    const size_t items_start = vec_off + 8;
+    struct PatchgramTLReader ir = { base, blen, items_start, false };
+    size_t write_ptr = items_start;
+    int removed = 0;
+    for (int32_t i = 0; i < count; i++) {
+        const size_t es = ir.pos;
+        char s2 = 0; struct PatchgramTLOut o2 = { &s2, 1, 0, true };
+        struct PatchgramTLRewrite drw; memset(&drw, 0, sizeof drw); drw.base = base;
+        patchgram_tl_decode_value(0, PG_TL_BOXED, &ir, &o2, 0, &drw);
+        if (ir.err || ir.pos <= es || ir.pos > blen) { return; }   // decode anomaly → abandon, no change
+        const size_t ee = ir.pos;
+        if (patchgram_msg_from_blocked(base, es, ee)) {
+            removed++;
+        } else {
+            if (write_ptr != es) { memmove(base + write_ptr, base + es, ee - es); }
+            write_ptr += (ee - es);
+        }
+    }
+    if (removed == 0) { return; }
+    const size_t msgs_end = ir.pos;                    // end of the messages vector (start of topics)
+    const size_t tail_len = blen - msgs_end;           // topics + chats + users, unchanged
+    if (write_ptr + tail_len > blen) { return; }       // sanity (can't happen when only shrinking)
+    memmove(base + write_ptr, base + msgs_end, tail_len);
+    int32_t new_count = count - removed;
+    memcpy(base + vec_off + 4, &new_count, 4);          // publish fewer messages
+    int64_t new_wc = (int64_t)((write_ptr + tail_len) / 4);
+    memcpy((uint8_t *)response + PATCHGRAM_QVECTOR_SIZE_OFFSET, &new_wc, sizeof(new_wc));  // shrink buffer
+    if (g_hide_blocked_logs < 32) {
+        g_hide_blocked_logs++;
+        patchgram_log("HIDE BLOCKED removed %d message(s) from a history response (%d -> %d)",
+                      removed, count, new_count);
+    }
+}
+
 static void patchgram_apply_fragment_phone_received_queue(void *session_private) {
     if (!session_private) {
         return;
@@ -7671,6 +7856,10 @@ static void patchgram_apply_fragment_phone_received_queue(void *session_private)
         }
         if (g_account_freeze_enabled) {
             patchgram_apply_account_freeze_response(response);
+        }
+        if (g_hide_blocked_enabled) {
+            patchgram_capture_blocked_response(response);          // learn the blocklist as it flows by
+            patchgram_hide_blocked_messages_response(response);    // strip blocked users' messages from history
         }
         patchgram_strip_noforwards_in_response(response);
         patchgram_apply_custom_username_list_response(response);
@@ -7830,6 +8019,33 @@ static void patchgram_session_send_prepared(void *session, void *request_ref, in
                 (long long)ms_can_wait,
                 g_message_fact_check_text
             );
+        }
+    }
+    // Hide-blocked: react to the user blocking/unblocking someone WITHOUT waiting for a blocklist reload.
+    // contacts.block / contacts.unblock carry the target InputPeer, so we update the set the moment the
+    // action is sent — the next history load in any chat is then filtered against the current blocklist.
+    if (g_hide_blocked_enabled) {
+        void *rd = NULL; memcpy(&rd, request_ref, sizeof(rd));
+        if (rd) {
+            uint32_t *w = NULL; int64_t wcnt = 0;
+            memcpy(&w, (const uint8_t *)rd + PATCHGRAM_QVECTOR_PTR_OFFSET, sizeof(w));
+            memcpy(&wcnt, (const uint8_t *)rd + PATCHGRAM_QVECTOR_SIZE_OFFSET, sizeof(wcnt));
+            const int64_t bpos = PATCHGRAM_SERIALIZED_REQUEST_BODY_POSITION;
+            if (w && wcnt >= bpos + 5) {                 // ctor + flags + inputPeer ctor + user_id (2 words)
+                const uint32_t *b = w + bpos;
+                if ((b[0] == PATCHGRAM_TL_CONTACTS_BLOCK || b[0] == PATCHGRAM_TL_CONTACTS_UNBLOCK)
+                    && b[2] == PATCHGRAM_TL_INPUT_PEER_USER) {
+                    uint64_t uid; memcpy(&uid, &b[3], 8);
+                    if (b[0] == PATCHGRAM_TL_CONTACTS_BLOCK) { patchgram_blocked_add(uid); }
+                    else { patchgram_blocked_remove(uid); }
+                    if (g_hide_blocked_logs < 32) {
+                        g_hide_blocked_logs++;
+                        patchgram_log("HIDE BLOCKED %s user id=%llu (total known=%d)",
+                                      b[0] == PATCHGRAM_TL_CONTACTS_BLOCK ? "blocked" : "unblocked",
+                                      (unsigned long long)uid, g_blocked_count);
+                    }
+                }
+            }
         }
     }
     // Custom-emoji auto-load: append the configured gift emoji ids to the FIRST getCustomEmojiDocuments the

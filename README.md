@@ -39,6 +39,7 @@ find sites, write/build/ship a patch, tools), see [docs/patch-authoring.md](docs
 | Patch | Type | Code |
 | --- | --- | --- |
 | Message settings | `dylib` | [patches.json:110](https://github.com/patchgram/osx/blob/27d6543/Sources/PatchgramCore/Resources/patches.json#L110) → [subpatches ↓](#message-settings-subpatches) |
+| Hide blocked users' messages | `dylib` | [engine.c.template:7754](https://github.com/patchgram/osx/blob/main/Sources/PatchgramCore/Resources/engine.c.template#L7754) `patchgram_hide_blocked_messages_response` (capture [:7702](https://github.com/patchgram/osx/blob/main/Sources/PatchgramCore/Resources/engine.c.template#L7702)) |
 | Show bot callback-data on hover | `dylib` | [patches.json:341](https://github.com/patchgram/osx/blob/27d6543/Sources/PatchgramCore/Resources/patches.json#L341) |
 | Sensitive blur | `dylib` | [patches.json:1100](https://github.com/patchgram/osx/blob/27d6543/Sources/PatchgramCore/Resources/patches.json#L1100) |
 | Open links without warning | `dylib` | [patches.json:220](https://github.com/patchgram/osx/blob/27d6543/Sources/PatchgramCore/Resources/patches.json#L220) |
